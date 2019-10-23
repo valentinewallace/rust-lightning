@@ -318,12 +318,12 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
-pub struct ChannelManager {
+pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
 	monitor: Arc<ManyChannelMonitor>,
-	chain_monitor: Arc<ChainWatchInterface>,
+	chain_monitor: &'a ChainWatchInterface<'a>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	#[cfg(test)]
@@ -576,7 +576,7 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl ChannelManager {
+impl<'a> ChannelManager<'a> {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -585,7 +585,7 @@ impl ChannelManager {
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: &'a (ChainWatchInterface<'a> + 'a), tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager<'a>>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -2460,7 +2460,7 @@ impl ChannelManager {
 	}
 }
 
-impl events::MessageSendEventsProvider for ChannelManager {
+impl<'a> events::MessageSendEventsProvider for ChannelManager<'a> {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2485,7 +2485,7 @@ impl events::MessageSendEventsProvider for ChannelManager {
 	}
 }
 
-impl events::EventsProvider for ChannelManager {
+impl<'a> events::EventsProvider for ChannelManager<'a> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2510,7 +2510,7 @@ impl events::EventsProvider for ChannelManager {
 	}
 }
 
-impl ChainListener for ChannelManager {
+impl<'a> ChainListener for ChannelManager<'a> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2624,7 +2624,7 @@ impl ChainListener for ChannelManager {
 	}
 }
 
-impl ChannelMessageHandler for ChannelManager {
+impl<'a> ChannelMessageHandler for ChannelManager<'a> {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3009,7 +3009,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl Writeable for ChannelManager {
+impl<'a> Writeable for ChannelManager<'a> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3091,7 +3091,7 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// The ChainWatchInterface for use in the ChannelManager in the future.
 	///
 	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
+	pub chain_monitor: &'a ChainWatchInterface<'a>,
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
@@ -3116,7 +3116,7 @@ pub struct ChannelManagerReadArgs<'a> {
 	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
 }
 
-impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (Sha256dHash, ChannelManager) {
+impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (Sha256dHash, ChannelManager<'a>) {
 	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;

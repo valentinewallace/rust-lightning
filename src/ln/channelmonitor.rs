@@ -133,12 +133,12 @@ pub trait ManyChannelMonitor: Send + Sync {
 ///
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
-pub struct SimpleManyChannelMonitor<Key> {
+pub struct SimpleManyChannelMonitor<'a, Key> {
 	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
-	chain_monitor: Arc<ChainWatchInterface>,
+	chain_monitor: Arc<ChainWatchInterface<'a>>,
 	broadcaster: Arc<BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
 	pending_htlc_updated: Mutex<HashMap<PaymentHash, Vec<(HTLCSource, Option<PaymentPreimage>)>>>,
@@ -146,7 +146,7 @@ pub struct SimpleManyChannelMonitor<Key> {
 	fee_estimator: Arc<FeeEstimator>
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<'a, Key> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
@@ -210,7 +210,7 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<'a, Key> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
 	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
@@ -260,7 +260,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 	}
 }
 
-impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
+impl<'a> ManyChannelMonitor for SimpleManyChannelMonitor<'a, OutPoint> {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_update_monitor_by_key(funding_txo, monitor) {
 			Ok(_) => Ok(()),
@@ -284,7 +284,7 @@ impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash> events::EventsProvider for SimpleManyChannelMonitor<Key> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash> events::EventsProvider for SimpleManyChannelMonitor<'a, Key> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();

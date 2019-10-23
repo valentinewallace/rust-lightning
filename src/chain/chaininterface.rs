@@ -34,7 +34,7 @@ pub enum ChainError {
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
-pub trait ChainWatchInterface: Sync + Send {
+pub trait ChainWatchInterface<'a>: Sync + Send {
 	/// Provides a txid/random-scriptPubKey-in-the-tx which much be watched for.
 	fn install_watch_tx(&self, txid: &Sha256dHash, script_pub_key: &Script);
 
@@ -47,7 +47,7 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	/// Register the given listener to receive events. Only a weak pointer is provided and the
 	/// registration should be freed once that pointer expires.
-	fn register_listener(&self, listener: Weak<ChainListener>);
+	fn register_listener(&self, listener: Weak<ChainListener + 'a>);
 	//TODO: unregister
 
 	/// Gets the script and value in satoshis for a given unspent transaction output given a
@@ -201,16 +201,16 @@ impl ChainWatchedUtil {
 /// Utility to capture some common parts of ChainWatchInterface implementors.
 ///
 /// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
-pub struct ChainWatchInterfaceUtil {
+pub struct ChainWatchInterfaceUtil<'a> {
 	network: Network,
 	watched: Mutex<ChainWatchedUtil>,
-	listeners: Mutex<Vec<Weak<ChainListener>>>,
+	listeners: Mutex<Vec<Weak<ChainListener + 'a>>>,
 	reentered: AtomicUsize,
 	logger: Arc<Logger>,
 }
 
 /// Register listener
-impl ChainWatchInterface for ChainWatchInterfaceUtil {
+impl<'a> ChainWatchInterface<'a> for ChainWatchInterfaceUtil<'a> {
 	fn install_watch_tx(&self, txid: &Sha256dHash, script_pub_key: &Script) {
 		let mut watched = self.watched.lock().unwrap();
 		if watched.register_tx(txid, script_pub_key) {
@@ -232,7 +232,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		}
 	}
 
-	fn register_listener(&self, listener: Weak<ChainListener>) {
+	fn register_listener(&self, listener: Weak<ChainListener + 'a>) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}
@@ -245,9 +245,9 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 	}
 }
 
-impl ChainWatchInterfaceUtil {
+impl<'a> ChainWatchInterfaceUtil<'a> {
 	/// Creates a new ChainWatchInterfaceUtil for the given network
-	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
+	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil<'a> {
 		ChainWatchInterfaceUtil {
 			network: network,
 			watched: Mutex::new(ChainWatchedUtil::new()),
