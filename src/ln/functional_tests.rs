@@ -6029,17 +6029,17 @@ fn test_data_loss_protect() {
 	// Restore node A from previous state
 	let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", 0)));
 	let chan_monitor = <(Sha256dHash, ChannelMonitor)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0), Arc::clone(&logger)).unwrap().1;
-	let chain_monitor = Arc::new(ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+	let chain_monitor = ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger));
 	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 	let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
-	let monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
+	let monitor = Arc::new(test_utils::TestChannelMonitor::new(&chain_monitor, tx_broadcaster.clone(), logger.clone(), feeest.clone()));
 	let mut channel_monitors = HashMap::new();
 	channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &chan_monitor);
 	let node_state_0 = <(Sha256dHash, ChannelManager)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
 		keys_manager: Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::clone(&logger), 42, 21)),
 		fee_estimator: feeest.clone(),
 		monitor: monitor.clone(),
-		chain_monitor: chain_monitor.clone(),
+		chain_monitor: &chain_monitor,
 		logger: Arc::clone(&logger),
 		tx_broadcaster,
 		default_config: UserConfig::new(),
@@ -6048,7 +6048,7 @@ fn test_data_loss_protect() {
 	nodes[0].node = Arc::new(node_state_0);
 	monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok();
 	nodes[0].chan_monitor = monitor;
-	nodes[0].chain_monitor = chain_monitor;
+	nodes[0].chain_monitor = &chain_monitor;
 	check_added_monitors!(nodes[0], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());

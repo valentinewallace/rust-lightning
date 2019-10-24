@@ -138,7 +138,7 @@ pub struct SimpleManyChannelMonitor<'a, Key> {
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
-	chain_monitor: Arc<ChainWatchInterface<'a>>,
+	chain_monitor: &'a ChainWatchInterface<'a>,
 	broadcaster: Arc<BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
 	pending_htlc_updated: Mutex<HashMap<PaymentHash, Vec<(HTLCSource, Option<PaymentPreimage>)>>>,
@@ -213,7 +213,7 @@ impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelM
 impl<'a, Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<'a, Key> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
+	pub fn new(chain_monitor: &'a (ChainWatchInterface<'a> + 'a), broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
 		let res = Arc::new(SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,

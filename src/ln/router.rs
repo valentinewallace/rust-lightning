@@ -348,17 +348,17 @@ pub struct RouteHint {
 
 /// Tracks a view of the network, receiving updates from peers and generating Routes to
 /// payment destinations.
-pub struct Router<'a> {
+pub struct Router<'a, 'b> {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
-	chain_monitor: Arc<ChainWatchInterface<'a>>,
+	chain_monitor: &'a ChainWatchInterface<'b>,
 	logger: Arc<Logger>,
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl<'a> Writeable for Router<'a> {
+impl<'a, 'b> Writeable for Router<'a, 'b> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
@@ -373,18 +373,18 @@ impl<'a> Writeable for Router<'a> {
 /// At a high-level, the process for deserializing a Router and resuming normal operation is:
 /// 1) Deserialize the Router by filling in this struct and calling <Router>::read(reaser, args).
 /// 2) Register the new Router with your ChainWatchInterface
-pub struct RouterReadArgs<'a> {
+pub struct RouterReadArgs<'a, 'b> {
 	/// The ChainWatchInterface for use in the Router in the future.
 	///
 	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface<'a>>,
+	pub chain_monitor: &'a ChainWatchInterface<'b>,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: Arc<Logger>,
 }
 
-impl<'a, R: ::std::io::Read> ReadableArgs<R, RouterReadArgs<'a>> for Router<'a> {
-	fn read(reader: &mut R, args: RouterReadArgs<'a>) -> Result<Router<'a>, DecodeError> {
+impl<'a, 'b, R: ::std::io::Read> ReadableArgs<R, RouterReadArgs<'a, 'b>> for Router<'a, 'b> {
+	fn read(reader: &mut R, args: RouterReadArgs<'a, 'b>) -> Result<Router<'a, 'b>, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -409,7 +409,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<'a> RoutingMessageHandler for Router<'a> {
+impl<'a, 'b> RoutingMessageHandler for Router<'a, 'b> {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
@@ -740,9 +740,9 @@ struct DummyDirectionalChannelInfo {
 	fee_proportional_millionths: u32,
 }
 
-impl<'a> Router<'a> {
+impl<'a, 'b> Router<'a, 'b> {
 	/// Creates a new router with the given node_id to be used as the source for get_route()
-	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
+	pub fn new(our_pubkey: PublicKey, chain_monitor: &'a (ChainWatchInterface<'b> + 'a), logger: Arc<Logger>) -> Router<'a, 'b> {
 		let mut nodes = BTreeMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),
@@ -1037,8 +1037,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
-		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
+		let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger));
+		let router = Router::new(our_id, &chain_monitor, Arc::clone(&logger));
 
 		// Build network from our_id to node8:
 		//

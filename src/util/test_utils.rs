@@ -49,7 +49,7 @@ pub struct TestChannelMonitor<'a> {
 }
 
 impl<'a> TestChannelMonitor<'a> {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface<'a>>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
+	pub fn new(chain_monitor: &'a (chaininterface::ChainWatchInterface<'a> + 'a), broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),

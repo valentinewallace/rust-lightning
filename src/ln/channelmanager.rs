@@ -322,7 +322,7 @@ pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
-	monitor: Arc<ManyChannelMonitor>,
+	monitor: Arc<ManyChannelMonitor + 'a>,
 	chain_monitor: &'a ChainWatchInterface<'a>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
@@ -585,7 +585,7 @@ impl<'a> ChannelManager<'a> {
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: &'a (ChainWatchInterface<'a> + 'a), tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager<'a>>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, chain_monitor: &'a (ChainWatchInterface<'a> + 'a), tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager<'a>>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -3087,7 +3087,7 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: Arc<ManyChannelMonitor>,
+	pub monitor: Arc<ManyChannelMonitor + 'a>,
 	/// The ChainWatchInterface for use in the ChannelManager in the future.
 	///
 	/// No calls to the ChainWatchInterface will be made during deserialization.
