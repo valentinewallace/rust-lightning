@@ -620,7 +620,9 @@ mod fuzzy_internal_msgs {
 		NonFinalNode {
 			short_channel_id: u64,
 		},
-		FinalNode,
+		FinalNode {
+			// custom_records: 
+		},
 	}
 
 	pub struct OnionHopData {
