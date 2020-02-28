@@ -1024,7 +1024,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 				let short_channel_id = match next_hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::FinalNode => {
+					msgs::OnionHopDataFormat::FinalNode { custom_records } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
 					},
 				};
@@ -1160,6 +1160,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 	/// committed on our end and we're just waiting for a monitor update to send it. Do NOT retry
 	/// the payment via a different route unless you intend to pay twice!
 	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash) -> Result<(), APIError> {
+		self.internal_send_payment(route, payment_hash, None)
+	}
+
+	/// Hi
+	pub fn send_spontaneous_payment(&self, route: Route, payment_preimage: PaymentPreimage) -> Result<(), APIError> {
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+		self.internal_send_payment(route, payment_hash, Some(payment_preimage))
+	}
+
+	fn internal_send_payment(&self, route: Route, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>) -> Result<(), APIError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
 			return Err(APIError::RouteError{err: "Route didn't go anywhere/had bogus size"});
 		}
@@ -1176,7 +1186,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 
 		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height, payment_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
 			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
 		}
@@ -1239,6 +1249,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 			Ok(_) => unreachable!(),
 			Err(e) => { Err(APIError::ChannelUnavailable { err: e.err }) }
 		}
+
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.

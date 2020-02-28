@@ -1,4 +1,4 @@
-use ln::channelmanager::{PaymentHash, HTLCSource};
+use ln::channelmanager::{PaymentHash, PaymentPreimage, HTLCSource};
 use ln::msgs;
 use ln::router::{Route,RouteHop};
 use util::byte_utils;
@@ -19,6 +19,7 @@ use secp256k1;
 
 use std::io::Cursor;
 use std::sync::Arc;
+use std::collections::HashMap;
 
 pub(super) struct OnionKeys {
 	#[cfg(test)]
@@ -108,11 +109,12 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32, keysend_preimage: Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
+	let keysend_record: u64 = 5482373484;
 
 	for (idx, hop) in route.hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -123,7 +125,9 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 		res.insert(0, msgs::OnionHopData {
 			format: if hop.node_features.supports_variable_length_onion() {
 				if idx == 0 {
-					msgs::OnionHopDataFormat::FinalNode
+					msgs::OnionHopDataFormat::FinalNode {
+						custom_records: HashMap::new(),
+					}
 				} else {
 					msgs::OnionHopDataFormat::NonFinalNode {
 						short_channel_id: last_short_channel_id,
@@ -147,6 +151,23 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 		}
 		last_short_channel_id = hop.short_channel_id;
 	}
+
+	match keysend_preimage {
+		Some(preimage) => {
+			assert!(route.hops[0].node_features.supports_variable_length_onion());
+			let final_hop_idx = {
+				res.len() - 1
+			};
+			match &mut res[final_hop_idx].format {
+				msgs::OnionHopDataFormat::FinalNode { custom_records } => {
+					custom_records.insert(keysend_record, preimage.0.to_vec());
+				},
+				_ => {},
+			}
+		},
+		_ => {},
+	}
+
 	Ok((res, cur_value_msat, cur_cltv))
 }
 

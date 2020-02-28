@@ -27,6 +27,7 @@ use std::error::Error;
 use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
+use std::collections::HashMap;
 
 use util::events;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
@@ -336,7 +337,7 @@ impl Writeable for NetAddress {
 	}
 }
 
-impl<R: ::std::io::Read>  Readable<R> for Result<NetAddress, u8> {
+impl<R: ::std::io::Read> Readable<R> for Result<NetAddress, u8> {
 	fn read(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
 		let byte = <u8 as Readable<R>>::read(reader)?;
 		match byte {
@@ -621,7 +622,7 @@ mod fuzzy_internal_msgs {
 			short_channel_id: u64,
 		},
 		FinalNode {
-			// custom_records: 
+			custom_records: std::collections::HashMap<u64, Vec<u8>>,
 		},
 	}
 
@@ -984,7 +985,7 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id)
 				});
 			},
-			OnionHopDataFormat::FinalNode => {
+			OnionHopDataFormat::FinalNode { custom_records: _ } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
@@ -1021,7 +1022,9 @@ impl<R: Read> Readable<R> for OnionHopData {
 					short_channel_id,
 				}
 			} else {
-				OnionHopDataFormat::FinalNode
+				OnionHopDataFormat::FinalNode {
+					custom_records: HashMap::new(),
+				}
 			};
 			(format, amt.0, cltv_value.0)
 		} else {
