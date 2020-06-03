@@ -17,9 +17,10 @@ mod utils;
 pub mod http_clients;
 
 use lightning::chain::{chaininterface, keysinterface};
-use lightning::chain::chaininterface::{BlockNotifierArc, ChainListener};
+use lightning::chain::chaininterface::{BlockNotifierArc, ChainListener, ChainWatchInterface};
 use lightning::ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use lightning::ln::channelmanager::SimpleArcChannelManager;
+use lightning::util::logger::Logger;
 
 use bitcoin::hashes::hex::ToHex;
 
@@ -31,7 +32,7 @@ use bitcoin::hash_types::BlockHash;
 use std::future::Future;
 use std::vec::Vec;
 use std::pin::Pin;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Deref};
 
 #[derive(Clone, Debug, PartialEq)]
 /// A block header and some associated data. This information should be available from most block
@@ -214,7 +215,7 @@ pub trait AChainListener {
 	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32);
 }
 
-impl AChainListener for &BlockNotifierArc {
+impl<C: Deref> AChainListener for &BlockNotifierArc<C> where C::Target: ChainWatchInterface {
 	fn a_block_connected(&mut self, block: &Block, height: u32) {
 		self.block_connected(block, height);
 	}
@@ -223,9 +224,11 @@ impl AChainListener for &BlockNotifierArc {
 	}
 }
 
-impl<M, B, F> AChainListener for &SimpleArcChannelManager<M, B, F>
-		where M: ManyChannelMonitor<keysinterface::InMemoryChannelKeys>,
-		      B: chaininterface::BroadcasterInterface, F: chaininterface::FeeEstimator {
+impl<M, B, F, L> AChainListener for &SimpleArcChannelManager<M, B, F, L>
+where M: ManyChannelMonitor<Keys = keysinterface::InMemoryChannelKeys>,
+		      B: chaininterface::BroadcasterInterface, F: chaininterface::FeeEstimator,
+					L: Logger,
+{
 	fn a_block_connected(&mut self, block: &Block, height: u32) {
 		let mut txn = Vec::with_capacity(block.txdata.len());
 		let mut idxn = Vec::with_capacity(block.txdata.len());

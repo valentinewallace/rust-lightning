@@ -32,6 +32,7 @@ use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
+use ln::chan_data::ChannelDataPersister;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -160,11 +161,12 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 ///
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
-pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref>
-	where T::Target: BroadcasterInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
-        C::Target: ChainWatchInterface,
+pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref, D: Deref>
+where T::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			C::Target: ChainWatchInterface,
+			D::Target: ChannelDataPersister,
 {
 	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
@@ -173,15 +175,16 @@ pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: D
 	chain_monitor: C,
 	broadcaster: T,
 	logger: L,
-	fee_estimator: F
+	fee_estimator: F,
+	data_persister: D,
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send>
-	ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
-	where T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send, D: Deref + Sync + Send> ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C, D>
+where T::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			C::Target: ChainWatchInterface,
+			D::Target: ChannelDataPersister,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
@@ -208,21 +211,23 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
-	where T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
+impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref, D: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C, D>
+where T::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			C::Target: ChainWatchInterface,
+			D::Target: ChannelDataPersister,
 {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: C, broadcaster: T, logger: L, feeest: F) -> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C> {
+	pub fn new(chain_monitor: C, broadcaster: T, logger: L, feeest: F, data_persister: D) -> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C, D> {
 		let res = SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
+			data_persister,
 		};
 
 		res
@@ -260,16 +265,23 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send> ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint, ChanSigner, T, F, L, C>
-	where T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
+impl<ChanSigner: ChannelKeys + Writeable, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send, D: Deref + Sync + Send> ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint, ChanSigner, T, F, L, C, D>
+where T::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			C::Target: ChainWatchInterface,
+			D::Target: ChannelDataPersister,
 {
 	type Keys = ChanSigner;
 
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_monitor_by_key(funding_txo, monitor) {
+			Ok(_) => {},
+			Err(_) => { return Err(ChannelMonitorUpdateErr::PermanentFailure); },
+		}
+
+		let mut monitors = self.monitors.lock().unwrap();
+		match self.data_persister.save_single_channel_data(funding_txo, &monitors.get_mut(&funding_txo).unwrap()) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
@@ -277,8 +289,19 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 
 	fn update_monitor(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.update_monitor_by_key(funding_txo, update) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
+			Ok(_) => {},
+			Err(_) => { return Err(ChannelMonitorUpdateErr::PermanentFailure); },
+		}
+
+		let mut monitors = self.monitors.lock().unwrap();
+		match monitors.get_mut(&funding_txo) {
+			Some(monitor) => {
+				match self.data_persister.save_single_channel_data(funding_txo, &monitor) {
+					Ok(_) => Ok(()),
+					Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
+				}
+			},
+			None => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
 	}
 
@@ -291,11 +314,12 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
-	where T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref, D: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C, D>
+where T::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			C::Target: ChainWatchInterface,
+			D::Target: ChannelDataPersister,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let mut pending_events = Vec::new();
@@ -1872,7 +1896,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	///
 	/// Returns a list of new (txid, outputs) pairs which spends of must be watched for. Note that
 	/// after this call these are also available via get_outputs_to_watch().
-	fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -1978,7 +2002,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	///
 	/// This is very similar to ChainListener::block_disconnected itself, but requires an &mut self,
 	/// and an explicit reference to a transaction broadcaster and fee estimator.
-	fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)
+	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
