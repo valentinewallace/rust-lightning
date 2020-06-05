@@ -1663,8 +1663,19 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
 	}
 
-	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
+	pub fn update_add_htlc<F>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_state: PendingHTLCStatus, create_pending_htlc_status: F) -> Result<(), ChannelError>
+	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus {
+		if !self.is_usable() {
+			// TODO: Note that |20 is defined as "channel FROM the processing
+			// node has been disabled" (emphasis mine), which seems to imply
+			// that we can't return |20 for an inbound channel being disabled.
+			// This probably needs a spec update but should definitely be
+			// allowed.
+			pending_forward_state = create_pending_htlc_status(self, pending_forward_state, 0x1000|20);
+		}
+		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
+		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if remote_sent_shutdown {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
