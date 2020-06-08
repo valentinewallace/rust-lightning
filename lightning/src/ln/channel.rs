@@ -1733,7 +1733,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	pub fn update_add_htlc<F>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_state: PendingHTLCStatus, create_pending_htlc_status: F) -> Result<(), ChannelError>
 	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus {
-		if !self.is_usable() {
+		// We can't accept HTLCs sent after we've sent a shutdown.
+		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if local_sent_shutdown {
 			// TODO: Note that |20 is defined as "channel FROM the processing
 			// node has been disabled" (emphasis mine), which seems to imply
 			// that we can't return |20 for an inbound channel being disabled.
@@ -1813,6 +1815,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if !self.channel_outbound {
 			// `+1` for this HTLC, `2 *` and `+1` fee spike buffer we keep for the remote (this deviates from the spec
 			// but should help protect us from stuck channels).
+			// Note that when we eventually remove support for fee updates and switch to anchor output fees,
+			// we will drop the `2 *`, since we no longer be as sensitive to fee spikes. But, keep the extra +1
+			// as we should still be able to afford adding this HTLC plus one more future HTLC, regardless of
+			// being sensitive to fee spikes.
 			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(1 + 1);
 			if pending_remote_value_msat - msg.amount_msat - chan_reserve_msat < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_state is not updated here, then it's because we're already failing
