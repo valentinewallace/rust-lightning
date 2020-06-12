@@ -805,6 +805,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// sources are provided only for outbound HTLCs in the third return value.
 	#[inline]
 	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u64, logger: &L) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+		println!("VMW: in build_commitment_tx: tx creation keys: {:?}", keys);
 		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
@@ -960,6 +961,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let value_to_b = if local { value_to_remote } else { value_to_self };
 
 		if value_to_a >= (dust_limit_satoshis as i64) {
+			println!("VMW: in build_commit_tx: keys.revocation_key: {}, keys.a_delayed_payment_key: {}", keys.revocation_key, keys.a_delayed_payment_key);
 			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
@@ -1815,9 +1817,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// as we should still be able to afford adding this HTLC plus one more future HTLC, regardless of
 			// being sensitive to fee spikes.
 			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(1 + 1);
+			println!("VMW: remote_fee_cost_incl_stuck_buffer_msat: {}, lhs: {}, pending_remoet_value_msat: {}", remote_fee_cost_incl_stuck_buffer_msat, pending_remote_value_msat - msg.amount_msat - chan_reserve_msat, pending_remote_value_msat);
 			if pending_remote_value_msat - msg.amount_msat - chan_reserve_msat < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.
+				println!("VMW: here: the magic line");
 				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		} else {
@@ -1947,6 +1951,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut local_commitment_tx = {
 			let mut commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, feerate_per_kw, logger);
 			let htlcs_cloned: Vec<_> = commitment_tx.2.drain(..).map(|htlc| (htlc.0, htlc.1.map(|h| h.clone()))).collect();
+			println!("VMW: commitment_tx.0: {:?}", commitment_tx.0);
 			(commitment_tx.0, commitment_tx.1, htlcs_cloned)
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();

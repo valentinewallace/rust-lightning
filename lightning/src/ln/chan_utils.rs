@@ -266,7 +266,7 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 
 /// The set of public keys which are used in the creation of one commitment transaction.
 /// These are derived from the channel base keys and per-commitment data.
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct TxCreationKeys {
 	/// The per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
@@ -284,7 +284,7 @@ impl_writeable!(TxCreationKeys, 33*6,
 	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key });
 
 /// One counterparty's public keys which do not change over the life of a channel.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct ChannelPublicKeys {
 	/// The public key which is used to sign all commitment transactions, as it appears in the
 	/// on-chain channel lock-in 2-of-2 multisig output.
