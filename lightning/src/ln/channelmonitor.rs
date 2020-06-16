@@ -20,7 +20,7 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
@@ -202,19 +202,26 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	      L::Target: Logger,
         C::Target: ChainWatchInterface,
 {
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[usize]) {
-		let block_hash = header.bitcoin_hash();
-		{
-			let mut monitors = self.monitors.lock().unwrap();
-			for monitor in monitors.values_mut() {
-				let txn_outputs = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+	fn block_connected(&self, block: &Block, height: u32) {
+		let mut reentered = true;
+		while reentered {
+			let matched_indexes = self.chain_monitor.filter_block(block);
+			let matched_txn: Vec<&Transaction> = matched_indexes.iter().map(|index| &block.txdata[*index]).collect();
+			let last_seen = self.chain_monitor.reentered();
+			let block_hash = block.bitcoin_hash();
+			{
+				let mut monitors = self.monitors.lock().unwrap();
+				for monitor in monitors.values_mut() {
+					let txn_outputs = monitor.block_connected(&matched_txn, height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
-				for (ref txid, ref outputs) in txn_outputs {
-					for (idx, output) in outputs.iter().enumerate() {
-						self.chain_monitor.install_watch_outpoint((txid.clone(), idx as u32), &output.script_pubkey);
+					for (ref txid, ref outputs) in txn_outputs {
+						for (idx, output) in outputs.iter().enumerate() {
+							self.chain_monitor.install_watch_outpoint((txid.clone(), idx as u32), &output.script_pubkey);
+						}
 					}
 				}
 			}
+			reentered = last_seen != self.chain_monitor.reentered();
 		}
 	}
 

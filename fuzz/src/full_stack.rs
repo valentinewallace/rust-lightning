@@ -13,7 +13,7 @@
 //! or payments to send/ways to handle events generated.
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
@@ -184,30 +184,29 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 
 	fn connect_block(&mut self, all_txn: &[Transaction]) {
-		let mut txn = Vec::with_capacity(all_txn.len());
-		let mut txn_idxs = Vec::with_capacity(all_txn.len());
-		for (idx, tx) in all_txn.iter().enumerate() {
+		for tx in all_txn.iter() {
 			let txid = tx.txid();
 			match self.txids_confirmed.entry(txid) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(self.height);
-					txn.push(tx);
-					txn_idxs.push(idx + 1);
 				},
 				_ => {},
 			}
 		}
 
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
+		let block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 },
+			txdata: all_txn.to_vec(),
+		};
 		self.height += 1;
 		self.blocks_connected += 1;
-		self.manager.block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
-		(*self.monitor).block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
+		self.manager.block_connected(&block, self.height as u32);
+		(*self.monitor).block_connected(&block, self.height as u32);
 		if self.header_hashes.len() > self.height {
-			self.header_hashes[self.height] = header.bitcoin_hash();
+			self.header_hashes[self.height] = block.bitcoin_hash();
 		} else {
 			assert_eq!(self.header_hashes.len(), self.height);
-			self.header_hashes.push(header.bitcoin_hash());
+			self.header_hashes.push(block.bitcoin_hash());
 		}
 		self.max_height = cmp::max(self.height, self.max_height);
 	}

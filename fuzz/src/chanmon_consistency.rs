@@ -19,7 +19,7 @@
 //! channel being force-closed.
 
 use bitcoin::BitcoinHash;
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
@@ -308,17 +308,17 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	macro_rules! confirm_txn {
 		($node: expr) => { {
-			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			let mut txn = Vec::with_capacity(channel_txn.len());
-			let mut posn = Vec::with_capacity(channel_txn.len());
-			for i in 0..channel_txn.len() {
-				txn.push(&channel_txn[i]);
-				posn.push(i + 1);
-			}
-			$node.block_connected(&header, 1, &txn, &posn);
+			let mut block = Block {
+				header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+				txdata: channel_txn.clone(),
+			};
+			$node.block_connected(&block, 1);
 			for i in 2..100 {
-				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-				$node.block_connected(&header, i, &Vec::new(), &[0; 0]);
+				block = Block {
+					header: BlockHeader { version: 0x20000000, prev_blockhash: block.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+					txdata: vec![],
+				};
+				$node.block_connected(&block, i);
 			}
 		} }
 	}
