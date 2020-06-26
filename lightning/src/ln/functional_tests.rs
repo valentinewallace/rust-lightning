@@ -7631,15 +7631,12 @@ fn test_no_failure_dust_htlc_local_commitment() {
 		output: vec![outp]
 	};
 
-	let block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-		txdata: vec![dummy_tx],
-	};
-	nodes[0].chan_monitor.simple_monitor.block_connected(&block, 1);
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].chan_monitor.simple_monitor.block_connected(&header, &[(0, &dummy_tx)], 1);
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
 	// We broadcast a few more block to check everything is all right
-	connect_blocks(&nodes[0].block_notifier, 20, 1, true,  block.bitcoin_hash());
+	connect_blocks(&nodes[0].block_notifier, 20, 1, true, header.bitcoin_hash());
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
 
@@ -8764,11 +8761,8 @@ fn test_update_err_monitor_lockdown() {
 		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
 		watchtower
 	};
-	let block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-		txdata: vec![],
-	};
-	watchtower.simple_monitor.block_connected(&block, 200);
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	watchtower.simple_monitor.block_connected(&header, &[], 200);
 
 	// Try to update ChannelMonitor
 	assert!(nodes[1].node.claim_funds(preimage, &None, 9_000_000));

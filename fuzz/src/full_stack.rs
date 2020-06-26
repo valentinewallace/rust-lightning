@@ -13,7 +13,7 @@
 //! or payments to send/ways to handle events generated.
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
@@ -184,29 +184,28 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 
 	fn connect_block(&mut self, all_txn: &[Transaction]) {
-		for tx in all_txn.iter() {
+		let mut txdata = Vec::with_capacity(all_txn.len());
+		for (idx, tx) in all_txn.iter().enumerate() {
 			let txid = tx.txid();
 			match self.txids_confirmed.entry(txid) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(self.height);
+					txdata.push((idx + 1, tx));
 				},
 				_ => {},
 			}
 		}
 
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 },
-			txdata: all_txn.to_vec(),
-		};
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
 		self.height += 1;
 		self.blocks_connected += 1;
-		self.manager.block_connected(&block, self.height as u32);
-		(*self.monitor).block_connected(&block, self.height as u32);
+		self.manager.block_connected(&header, &txdata, self.height as u32);
+		(*self.monitor).block_connected(&header, &txdata, self.height as u32);
 		if self.header_hashes.len() > self.height {
-			self.header_hashes[self.height] = block.bitcoin_hash();
+			self.header_hashes[self.height] = header.bitcoin_hash();
 		} else {
 			assert_eq!(self.header_hashes.len(), self.height);
-			self.header_hashes.push(block.bitcoin_hash());
+			self.header_hashes.push(header.bitcoin_hash());
 		}
 		self.max_height = cmp::max(self.height, self.max_height);
 	}

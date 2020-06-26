@@ -17,8 +17,9 @@
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::BitcoinHash;
 
@@ -3058,8 +3059,8 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
-		let header_hash = block.bitcoin_hash();
+	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
+		let header_hash = header.bitcoin_hash();
 		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
@@ -3070,7 +3071,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let res = channel.block_connected(block, height);
+				let res = channel.block_connected(header, txdata, height);
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3103,7 +3104,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					return false;
 				}
 				if let Some(funding_txo) = channel.get_funding_txo() {
-					for tx in block.txdata.iter() {
+					for &(_, tx) in txdata.iter() {
 						for inp in tx.input.iter() {
 							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
 								log_trace!(self.logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
@@ -3162,8 +3163,8 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			// Just in case we end up in a race, we loop until we either successfully update
 			// last_node_announcement_serial or decide we don't need to.
 			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
-			if old_serial >= block.header.time as usize { break; }
-			if self.last_node_announcement_serial.compare_exchange(old_serial, block.header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+			if old_serial >= header.time as usize { break; }
+			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
 				break;
 			}
 		}

@@ -64,7 +64,7 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	/// Gets the list of transaction indices within a given block that the ChainWatchInterface is
 	/// watching for.
-	fn filter_block(&self, block: &Block) -> Vec<usize>;
+	fn filter_block(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)]) -> Vec<usize>;
 
 	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
 	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
@@ -80,8 +80,10 @@ pub trait BroadcasterInterface: Sync + Send {
 
 /// A trait indicating a desire to listen for events from the chain
 pub trait ChainListener: Sync + Send {
-	/// Notifies a listener that a block was connected.
-	fn block_connected(&self, block: &Block, height: u32);
+	/// Notifies a listener that a block was connected. Transactions may be filtered and are given
+	/// paired with their position within the block.
+	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32);
+
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
 	/// Height must be the one of the block which was disconnected (not new height of the best chain)
@@ -265,10 +267,11 @@ impl<'a, CL: Deref + 'a> BlockNotifier<'a, CL>
 	}
 
 	/// Notify listeners that a block was connected.
-	pub fn block_connected<'b>(&self, block: &'b Block, height: u32) {
+	pub fn block_connected(&self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		let listeners = self.listeners.lock().unwrap();
 		for listener in listeners.iter() {
-			listener.block_connected(block, height);
+			listener.block_connected(&block.header, &txdata, height);
 		}
 	}
 
@@ -331,13 +334,13 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		Err(ChainError::NotSupported)
 	}
 
-	fn filter_block(&self, block: &Block) -> Vec<usize> {
+	fn filter_block(&self, _header: &BlockHeader, txdata: &[(usize, &Transaction)]) -> Vec<usize> {
 		let mut matched_index = Vec::new();
 		{
 			let watched = self.watched.lock().unwrap();
-			for (index, transaction) in block.txdata.iter().enumerate() {
-				if self.does_match_tx_unguarded(transaction, &watched) {
-					matched_index.push(index);
+			for (i, transaction) in txdata.iter().enumerate() {
+				if self.does_match_tx_unguarded(transaction.1, &watched) {
+					matched_index.push(i);
 				}
 			}
 		}

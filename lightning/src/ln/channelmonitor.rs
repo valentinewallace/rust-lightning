@@ -20,7 +20,7 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
@@ -202,13 +202,13 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	      L::Target: Logger,
         C::Target: ChainWatchInterface,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
+	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let mut reentered = true;
 		while reentered {
-			let matched_indexes = self.chain_monitor.filter_block(block);
-			let matched_txn: Vec<&Transaction> = matched_indexes.iter().map(|index| &block.txdata[*index]).collect();
+			let matched_indexes = self.chain_monitor.filter_block(header, txdata);
+			let matched_txn: Vec<_> = matched_indexes.iter().map(|index| txdata[*index].1).collect();
 			let last_seen = self.chain_monitor.reentered();
-			let block_hash = block.bitcoin_hash();
+			let block_hash = header.bitcoin_hash();
 			{
 				let mut monitors = self.monitors.lock().unwrap();
 				for monitor in monitors.values_mut() {

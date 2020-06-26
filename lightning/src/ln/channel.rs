@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
@@ -3313,7 +3313,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn block_connected(&mut self, block: &Block, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
@@ -3327,13 +3327,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		});
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if block.bitcoin_hash() != self.last_block_connected {
+		if header.bitcoin_hash() != self.last_block_connected {
 			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
 			}
 		}
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
-			for (index_in_block, ref tx) in block.txdata.iter().enumerate() {
+			for &(index_in_block, tx) in txdata.iter() {
 				if tx.txid() == self.funding_txo.unwrap().txid {
 					let txo_idx = self.funding_txo.unwrap().index as usize;
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
@@ -3376,9 +3376,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				}
 			}
 		}
-		if block.bitcoin_hash() != self.last_block_connected {
-			self.last_block_connected = block.bitcoin_hash();
-			self.update_time_counter = cmp::max(self.update_time_counter, block.header.time);
+		if header.bitcoin_hash() != self.last_block_connected {
+			self.last_block_connected = header.bitcoin_hash();
+			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
 			if self.funding_tx_confirmations > 0 {
 				if self.funding_tx_confirmations == self.minimum_depth as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
@@ -3399,7 +3399,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						// funding_tx_confirmed_in and return.
 						false
 					};
-					self.funding_tx_confirmed_in = Some(block.bitcoin_hash());
+					self.funding_tx_confirmed_in = Some(header.bitcoin_hash());
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
