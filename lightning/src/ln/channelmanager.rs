@@ -35,10 +35,12 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
+use chain;
+use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -358,7 +360,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 ///
 /// Note that you can be a bit lazier about writing out ChannelManager than you can be with
 /// ChannelMonitors. With ChannelMonitors you MUST write each monitor update out to disk before
-/// returning from ManyChannelMonitor::add_/update_monitor, with ChannelManagers, writing updates
+/// returning from chain::Watch::watch_/update_channel, with ChannelManagers, writing updates
 /// happens out-of-band (and will prevent any other ChannelManager operations from occurring during
 /// the serialization process). If the deserialized version is out-of-date compared to the
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
@@ -382,7 +384,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
 pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -391,7 +393,7 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 	default_configuration: UserConfig,
 	genesis_hash: BlockHash,
 	fee_estimator: F,
-	monitor: M,
+	chain_monitor: M,
 	tx_broadcaster: T,
 
 	#[cfg(test)]
@@ -695,7 +697,7 @@ macro_rules! maybe_break_monitor_err {
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -719,14 +721,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
+	pub fn new(network: Network, fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
 		let secp_ctx = Secp256k1::new();
 
 		ChannelManager {
 			default_configuration: config.clone(),
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: fee_est,
-			monitor,
+			chain_monitor,
 			tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(current_blockchain_height),
@@ -901,7 +903,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
 			// ignore the result here.
-			let _ = self.monitor.update_monitor(funding_txo, monitor_update);
+			let _ = self.chain_monitor.update_channel(funding_txo, monitor_update);
 		}
 	}
 
@@ -1281,7 +1283,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					}, onion_packet, &self.logger), channel_state, chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
-						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+						if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
 							// Note that MonitorUpdateFailed here indicates (per function docs)
 							// that we will resend the commitment update once monitor updating
@@ -1677,7 +1679,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 									continue;
 								}
 							};
-							if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+							if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
@@ -2087,7 +2089,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
 				Ok((msgs, monitor_option)) => {
 					if let Some(monitor_update) = monitor_option {
-						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+						if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							if was_frozen_for_monitor {
 								assert!(msgs.is_none());
 							} else {
@@ -2171,7 +2173,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// exists largely only to prevent races between this and concurrent update_monitor calls.
 	///
 	/// Thus, the anticipated use is, at a high level:
-	///  1) You register a ManyChannelMonitor with this ChannelManager,
+	///  1) You register a chain::Watch with this ChannelManager,
 	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
 	///     said ChannelMonitors as it can, returning ChannelMonitorUpdateErr::TemporaryFailures
 	///     any time it cannot do so instantly,
@@ -2312,7 +2314,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 
 	fn internal_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
-		let ((funding_msg, monitor_update), mut chan) = {
+		let ((funding_msg, monitor), mut chan) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
@@ -2326,8 +2328,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
-		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().0, monitor_update) {
+		// lock before watch_channel
+		if let Err(e) = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the
@@ -2375,7 +2377,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
-					if let Err(e) = self.monitor.add_monitor(chan.get().get_funding_txo().unwrap(), monitor) {
+					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
@@ -2645,13 +2647,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
 						Err((Some(update), e)) => {
 							assert!(chan.get().is_awaiting_monitor_update());
-							let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), update);
+							let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), update);
 							try_chan_entry!(self, Err(e), channel_state, chan);
 							unreachable!();
 						},
 						Ok(res) => res
 					};
-				if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+				if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
@@ -2733,7 +2735,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update, htlcs_to_fail_in) =
 						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
 					htlcs_to_fail = htlcs_to_fail_in;
-					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
 							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
@@ -2858,7 +2860,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 				if let Some(monitor_update) = monitor_update_opt {
-					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						// channel_reestablish doesn't guarantee the order it returns is sensical
 						// for the messages it returns, but if we're setting what messages to
 						// re-transmit on monitor update success, we need to make sure it is sane.
@@ -2944,7 +2946,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					if let Some((update_fee, commitment_signed, monitor_update)) =
 							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw, &self.logger), channel_state, chan)
 					{
-						if let Err(_e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+						if let Err(_e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							unimplemented!();
 						}
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2970,11 +2972,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 	}
 
-	/// Process pending events from the ManyChannelMonitor.
+	/// Process pending events from the `chain::Watch`.
 	fn process_pending_monitor_events(&self) {
 		let mut failed_channels = Vec::new();
 		{
-			for monitor_event in self.monitor.get_and_clear_pending_monitor_events() {
+			for monitor_event in self.chain_monitor.release_pending_monitor_events() {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
@@ -3014,7 +3016,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3033,7 +3035,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3053,7 +3055,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
 	ChainListener for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3206,7 +3208,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 
 impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
 	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3649,7 +3651,7 @@ impl Readable for HTLCForwardInfo {
 }
 
 impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3729,10 +3731,10 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 /// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
 ///    ChannelMonitor::get_monitored_outpoints and ChannelMonitor::get_funding_txo().
 /// 4) Reconnect blocks on your ChannelMonitors.
-/// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
+/// 5) Move the ChannelMonitors into your local chain::Watch.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3747,12 +3749,12 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	///
 	/// No calls to the FeeEstimator will be made during deserialization.
 	pub fee_estimator: F,
-	/// The ManyChannelMonitor for use in the ChannelManager in the future.
+	/// The chain::Watch for use in the ChannelManager in the future.
 	///
-	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
+	/// No calls to the chain::Watch will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
-	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: M,
+	/// chain::Watch after deserializing this ChannelManager.
+	pub chain_monitor: M,
 
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
@@ -3780,7 +3782,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 
 impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
 		T::Target: BroadcasterInterface,
 		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
 		F::Target: FeeEstimator,
@@ -3789,10 +3791,10 @@ impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
-	pub fn new(keys_manager: K, fee_estimator: F, monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
+	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
 			mut channel_monitors: Vec<&'a mut ChannelMonitor<ChanSigner>>) -> Self {
 		Self {
-			keys_manager, fee_estimator, monitor, tx_broadcaster, logger, default_config,
+			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, logger, default_config,
 			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
 		}
 	}
@@ -3802,7 +3804,7 @@ impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L
 // SipmleArcChannelManager type:
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F, L>>)
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3816,7 +3818,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)
-	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3928,7 +3930,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
-			monitor: args.monitor,
+			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
