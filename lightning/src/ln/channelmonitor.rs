@@ -44,7 +44,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, Loca
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
-use chain::chaininterface::{ChainListener, ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
@@ -175,7 +175,7 @@ pub struct HTLCUpdate {
 }
 impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 
-/// An implementation of a [`chain::Watch`] and ChainListener.
+/// An implementation of [`chain::Watch`].
 ///
 /// May be used in conjunction with [`ChannelManager`] to monitor channels locally or used
 /// independently to monitor channels remotely.
@@ -237,13 +237,17 @@ impl WatchEventQueue {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
-	ChainListener for ChainMonitor<ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> ChainMonitor<Key, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
+	/// Delegates to [`ChannelMonitor::block_connected`] for each watched channel. Any HTLCs that
+	/// were resolved on chain will be retuned by [`chain::Watch::release_pending_htlc_updates`].
+	///
+	/// [`ChannelMonitor::block_connected`]: struct.ChannelMonitor.html#method.block_connected
+	/// [`chain::Watch::release_pending_htlc_updates`]: ../../chain/trait.Watch.html#tymethod.release_pending_htlc_updates
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let mut watch_events = self.watch_events.lock().unwrap();
 		let matched_txn: Vec<_> = txdata.iter().filter(|&&(_, tx)| watch_events.watched.does_match_tx(tx)).map(|e| *e).collect();
 		{
@@ -260,7 +264,10 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 		}
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
+	/// Delegates to [`ChannelMonitor::block_disconnected`] for each watched channel.
+	///
+	/// [`ChannelMonitor::block_disconnected`]: struct.ChannelMonitor.html#method.block_disconnected
+	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
 			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);

@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 
 use chain;
 use chain::Watch;
-use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
@@ -3049,15 +3049,15 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
-	ChainListener for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
-				L::Target: Logger,
+        L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
+	///
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3169,7 +3169,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
-	fn block_disconnected(&self, header: &BlockHeader, _: u32) {
+	pub fn block_disconnected(&self, header: &BlockHeader, _: u32) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{

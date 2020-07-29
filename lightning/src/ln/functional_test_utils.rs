@@ -12,7 +12,6 @@
 
 use chain;
 use chain::Watch;
-use chain::chaininterface::ChainListener;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::ChannelMonitor;
