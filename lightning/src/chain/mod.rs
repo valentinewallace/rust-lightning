@@ -88,32 +88,22 @@ pub trait Watch: Send + Sync {
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
 }
 
-/// An interface for providing [`WatchEvent`]s.
+/// The `Notify` trait defines behavior for indicating chain activity of interest pertaining to
+/// channels.
 ///
-/// [`WatchEvent`]: enum.WatchEvent.html
-pub trait WatchEventProvider {
-	/// Releases events produced since the last call. Subsequent calls must only return new events.
-	fn release_pending_watch_events(&self) -> Vec<WatchEvent>;
-}
+/// This is useful in order to have a [`Watch`] implementation convey to a chain source which
+/// transactions to be notified of. This may take the form of pre-filtering blocks or, in the case
+/// of [BIP 157]/[BIP 158], only fetching a block if the compact filter matches.
+///
+/// [`Watch`]: trait.Watch.html
+/// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
+/// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
+pub trait Notify: Send + Sync {
+	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
+	/// a spending condition.
+	fn register_tx(&self, txid: Txid, script_pubkey: Script);
 
-/// An event indicating on-chain activity to watch for pertaining to a channel.
-pub enum WatchEvent {
-	/// Watch for a transaction with `txid` and having an output with `script_pubkey` as a spending
-	/// condition.
-	WatchTransaction {
-		/// Identifier of the transaction.
-		txid: Txid,
-
-		/// Spending condition for an output of the transaction.
-		script_pubkey: Script,
-	},
-	/// Watch for spends of a transaction output identified by `outpoint` having `script_pubkey` as
-	/// the spending condition.
-	WatchOutput {
-		/// Identifier for the output.
-		outpoint: OutPoint,
-
-		/// Spending condition for the output.
-		script_pubkey: Script,
-	}
+	/// Registers interest in spends of a transaction output identified by `outpoint` having
+	/// `script_pubkey` as the spending condition.
+	fn register_output(&self, outpoint: OutPoint, script_pubkey: Script);
 }
