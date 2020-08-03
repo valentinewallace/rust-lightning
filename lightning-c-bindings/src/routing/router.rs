@@ -345,13 +345,15 @@ pub extern "C" fn RouteHint_set_htlc_minimum_msat(this_ptr: &mut RouteHint, mut 
 }
 #[must_use]
 #[no_mangle]
-pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, mut short_channel_id_arg: u64, mut fees_arg: crate::routing::network_graph::RoutingFees, mut cltv_expiry_delta_arg: u16, mut htlc_minimum_msat_arg: u64) -> RouteHint {
+pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, mut short_channel_id_arg: u64, mut fees_arg: crate::routing::network_graph::RoutingFees, mut cltv_expiry_delta_arg: u16,
+	   mut htlc_minimum_msat_arg: u64, mut htlc_maximum_msat_arg: Option<u64>) -> RouteHint {
 	RouteHint { inner: Box::into_raw(Box::new(nativeRouteHint {
 		src_node_id: src_node_id_arg.into_rust(),
 		short_channel_id: short_channel_id_arg,
 		fees: *unsafe { Box::from_raw(fees_arg.take_ptr()) },
 		cltv_expiry_delta: cltv_expiry_delta_arg,
 		htlc_minimum_msat: htlc_minimum_msat_arg,
+		htlc_maximum_msat: htlc_maximum_msat_arg,
 	})), is_owned: true }
 }
 /// Gets a route from us to the given target node.
