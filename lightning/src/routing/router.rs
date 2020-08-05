@@ -26,7 +26,7 @@ use std::collections::{HashMap,BinaryHeap};
 use std::ops::Deref;
 
 /// A hop in a route
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
@@ -44,6 +44,13 @@ pub struct RouteHop {
 	/// expected at the destination, in excess of the current block height.
 	pub cltv_expiry_delta: u32,
 }
+
+impl PartialEq for RouteHop {
+    fn eq(&self, other: &Self) -> bool {
+        self.short_channel_id == other.short_channel_id && self.pubkey == other.pubkey
+    }
+}
+
 
 impl Writeable for Vec<RouteHop> {
 	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
