@@ -420,6 +420,6 @@ impl chain::Access for TestChainSource {
 }
 
 impl chain::Notify for TestChainSource {
-	fn register_tx(&self, _txid: Txid, _script_pubkey: Script) {}
-	fn register_output(&self, _outpoint: OutPoint, _script_pubkey: Script) {}
+	fn register_tx(&self, _txid: &Txid, _script_pubkey: &Script) {}
+	fn register_output(&self, _outpoint: &OutPoint, _script_pubkey: &Script) {}
 }

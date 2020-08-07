@@ -45,7 +45,7 @@ use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
 use chain::Notify;
-use chain::chaininterface::{ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
@@ -190,89 +190,10 @@ pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L
 {
 	/// The monitors
 	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
-	watch_events: Mutex<WatchEventCache>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
 	fee_estimator: F
-}
-
-struct WatchEventCache {
-	watched: ChainWatchedUtil,
-	events: Vec<WatchEvent>,
-}
-
-/// An event indicating on-chain activity to watch for pertaining to a channel.
-enum WatchEvent {
-	/// Watch for a transaction with `txid` and having an output with `script_pubkey` as a spending
-	/// condition.
-	WatchTransaction {
-		/// Identifier of the transaction.
-		txid: Txid,
-
-		/// Spending condition for an output of the transaction.
-		script_pubkey: Script,
-	},
-	/// Watch for spends of a transaction output identified by `outpoint` having `script_pubkey` as
-	/// the spending condition.
-	WatchOutput {
-		/// Identifier for the output.
-		outpoint: OutPoint,
-
-		/// Spending condition for the output.
-		script_pubkey: Script,
-	}
-}
-
-impl WatchEventCache {
-	fn new() -> Self {
-		Self {
-			watched: ChainWatchedUtil::new(),
-			events: Vec::new(),
-		}
-	}
-
-	fn watch_tx(&mut self, txid: &Txid, script_pubkey: &Script) {
-		if self.watched.register_tx(txid, script_pubkey) {
-			self.events.push(WatchEvent::WatchTransaction {
-				txid: *txid,
-				script_pubkey: script_pubkey.clone()
-			});
-		}
-	}
-
-	fn watch_output(&mut self, outpoint: (&Txid, usize), script_pubkey: &Script) {
-		let (txid, index) = outpoint;
-		if self.watched.register_outpoint((*txid, index as u32), script_pubkey) {
-			self.events.push(WatchEvent::WatchOutput {
-				outpoint: OutPoint {
-					txid: *txid,
-					index: index as u16,
-				},
-				script_pubkey: script_pubkey.clone(),
-			});
-		}
-	}
-
-	fn flush_events<C: Deref>(&mut self, chain_source: &Option<C>) -> bool where C::Target: chain::Notify {
-		let num_events = self.events.len();
-		match chain_source {
-			&None => self.events.clear(),
-			&Some(ref chain_source) => {
-				for event in self.events.drain(..) {
-					match event {
-						WatchEvent::WatchTransaction { txid, script_pubkey } => {
-							chain_source.register_tx(txid, script_pubkey)
-						},
-						WatchEvent::WatchOutput { outpoint, script_pubkey } => {
-							chain_source.register_output(outpoint, script_pubkey)
-						},
-					}
-				}
-			}
-		}
-		num_events > 0
-	}
 }
 
 impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
@@ -293,21 +214,23 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// [`chain::Watch::release_pending_htlc_updates`]: ../../chain/trait.Watch.html#tymethod.release_pending_htlc_updates
 	/// [`chain::Notify`]: ../../chain/trait.Notify.html
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) -> bool {
-		let mut watch_events = self.watch_events.lock().unwrap();
-		let matched_txn: Vec<_> = txdata.iter().filter(|&&(_, tx)| watch_events.watched.does_match_tx(tx)).map(|e| *e).collect();
+		let mut new_outputs = false;
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
-				let txn_outputs = monitor.block_connected(header, &matched_txn, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+				let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+				new_outputs |= !txn_outputs.is_empty();
 
-				for (ref txid, ref outputs) in txn_outputs {
-					for (idx, output) in outputs.iter().enumerate() {
-						watch_events.watch_output((txid, idx), &output.script_pubkey);
+				if let Some(ref chain_source) = self.chain_source {
+					for (txid, outputs) in txn_outputs.drain(..) {
+						for (idx, output) in outputs.iter().enumerate() {
+							chain_source.register_output(&OutPoint { txid, index: idx as u16 }, &output.script_pubkey);
+						}
 					}
 				}
 			}
 		}
-		watch_events.flush_events(&self.chain_source)
+		new_outputs
 	}
 
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
@@ -334,7 +257,6 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F) -> Self {
 		Self {
 			monitors: Mutex::new(HashMap::new()),
-			watch_events: Mutex::new(WatchEventCache::new()),
 			chain_source,
 			broadcaster,
 			logger,
@@ -348,7 +270,6 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	///
 	/// [`chain::Notify`]: ../../chain/trait.Notify.html
 	pub fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
-		let mut watch_events = self.watch_events.lock().unwrap();
 		let mut monitors = self.monitors.lock().unwrap();
 		let entry = match monitors.entry(outpoint) {
 			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given outpoint is already present")),
@@ -357,16 +278,17 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 		{
 			let funding_txo = monitor.get_funding_txo();
 			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
-			watch_events.watch_tx(&funding_txo.0.txid, &funding_txo.1);
-			watch_events.watch_output((&funding_txo.0.txid, funding_txo.0.index as usize), &funding_txo.1);
-			for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-				for (idx, script) in outputs.iter().enumerate() {
-					watch_events.watch_output((txid, idx), script);
+
+			if let Some(ref chain_source) = self.chain_source {
+				chain_source.register_tx(&funding_txo.0.txid, &funding_txo.1);
+				for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
+					for (idx, script_pubkey) in outputs.iter().enumerate() {
+						chain_source.register_output(&OutPoint { txid: *txid, index: idx as u16 }, &script_pubkey);
+					}
 				}
 			}
 		}
 		entry.insert(monitor);
-		watch_events.flush_events(&self.chain_source);
 		Ok(())
 	}
 
@@ -2014,12 +1936,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 
 		self.onchain_tx_handler.block_connected(txn_matched, claimable_outpoints, height, &*broadcaster, &*fee_estimator, &*logger);
-
 		self.last_block_hash = block_hash;
-		for &(ref txid, ref output_scripts) in watch_outputs.iter() {
-			self.outputs_to_watch.insert(txid.clone(), output_scripts.iter().map(|o| o.script_pubkey.clone()).collect());
-		}
 
+		watch_outputs.retain(|&(ref txid, ref txouts)| {
+			let output_scripts = txouts.iter().map(|o| o.script_pubkey.clone()).collect();
+			self.outputs_to_watch.insert(txid.clone(), output_scripts).is_none()
+		});
 		watch_outputs
 	}
 

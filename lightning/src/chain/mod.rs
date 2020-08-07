@@ -102,9 +102,9 @@ pub trait Watch: Send + Sync {
 pub trait Notify: Send + Sync {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
-	fn register_tx(&self, txid: Txid, script_pubkey: Script);
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
 	/// Registers interest in spends of a transaction output identified by `outpoint` having
 	/// `script_pubkey` as the spending condition.
-	fn register_output(&self, outpoint: OutPoint, script_pubkey: Script);
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script);
 }
