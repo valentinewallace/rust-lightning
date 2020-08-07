@@ -22,11 +22,11 @@ use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
-use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, LocalCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
 use util::ser::{Readable, Writer, Writeable};
@@ -405,7 +405,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, on_local_tx_csv: u16) -> Self {
+	pub(crate) fn new(destination_script: Script, keys: ChanSigner, on_local_tx_csv: u16) -> Self {
 
 		let key_storage = keys;
 
@@ -425,7 +425,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
+	pub(crate) fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
 		let mut tx_weight = 2; // count segwit flags
 		for inp in inputs {
 			// We use expected weight (and not actual) as signatures and time lock delays may vary
@@ -657,7 +657,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		None
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[(usize, &Transaction)], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub(crate) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[(usize, &Transaction)], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -829,7 +829,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -877,7 +877,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
+	pub(crate) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
 		// To prevent any unsafe state discrepancy between offchain and onchain, once local
 		// commitment transaction has been signed due to an event (either block height for
 		// HTLC-timeout or channel force-closure), don't allow any further update of local
@@ -928,7 +928,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// have empty local commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(super) fn get_fully_signed_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
+	pub(crate) fn get_fully_signed_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			match self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx) {
 				Ok(sig) => Some(local_commitment.add_local_sig(funding_redeemscript, sig)),
@@ -940,7 +940,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
-	pub(super) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
+	pub(crate) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			let local_commitment = local_commitment.clone();
 			match self.key_storage.sign_local_commitment(&local_commitment, &self.secp_ctx) {
@@ -952,7 +952,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
+	pub(crate) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let mut htlc_tx = None;
 		if self.local_commitment.is_some() {
 			let commitment_txid = self.local_commitment.as_ref().unwrap().txid();
@@ -979,8 +979,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		htlc_tx
 	}
 
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	pub(super) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
+	#[cfg(test)]
+	pub(crate) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let latest_had_sigs = self.local_htlc_sigs.is_some();
 		let prev_had_sigs = self.prev_local_htlc_sigs.is_some();
 		let ret = self.get_fully_signed_htlc_tx(outp, preimage);
