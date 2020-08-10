@@ -22,7 +22,7 @@ use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
 use std::cmp;
-use std::collections::{HashMap,BinaryHeap};
+use std::collections::{HashMap, BinaryHeap};
 use std::ops::Deref;
 
 /// A hop in a route
@@ -38,7 +38,8 @@ pub struct RouteHop {
 	/// The channel_announcement features of the channel that should be used from the previous hop
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
-	/// The fee taken on this hop. For the last hop, this should be the full value of the payment.
+	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+	/// For the last hop, this should be the full value of the payment.
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
 	/// expected at the destination, in excess of the current block height.
@@ -163,16 +164,133 @@ struct DummyDirectionalChannelInfo {
 	fees: RoutingFees,
 }
 
+/// It's useful to keep track of the hops associated with the fees required to use them,
+/// so that we can choose cheaper paths (as per Dijkstra's algorithm).
+/// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
+/// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
+#[derive(Clone)]
+struct PathBuildingHop {
+	route_hop: RouteHop,
+	/// Liquidity available considering the following limitations:
+	/// - UTXO capacity
+	/// - htlc_maximum_msat (direction-dependent)
+	/// - use of the same channel by other paths per MPP (including fees paid there)
+	/// It does not take into account fees to be paid on the current hop, so
+	/// this amount *should* cover transferring a value AND paying fees (on this channel).
+	available_liquidity_msat: u64,
+	/// Minimal fees required to route to the source node of the current hop via any of its inbound channels.
+	src_lowest_inbound_fees: RoutingFees,
+	/// Fees of the channel used in this hop.
+	channel_fees: RoutingFees,
+	/// All the fees paid *after* this channel on the way to the destination
+	next_hops_fee_msat: u64,
+	/// Fee paid for the use of the current channel (see channel_fees).
+	/// The value will be actually paid on the previous hop.
+	hop_use_fee_msat: u64,
+	/// A fee to be paid for the use of the potential previous hop, which is the cheapest way
+	/// to transfer over the source node of the current hop.
+	/// It's an estimate, see src_lowest_inbound_fees, but applied to the exact amount we're transferring,
+	/// including further fees.
+	prev_hop_use_estimate_fee_msat: u64,
+}
 
-/// Gets a route from us to the given target node.
+impl PathBuildingHop {
+	/// How attractive this channel is in terms of the paid fees.
+	fn get_fee_weight_msat(&self) -> u64 {
+		let at_current_hop_fee_msat =
+		   self.hop_use_fee_msat.checked_add(self.prev_hop_use_estimate_fee_msat);
+		if let Some(fee_msat) = at_current_hop_fee_msat {
+			if let Some(total_fee_msat) = fee_msat.checked_add(self.next_hops_fee_msat) {
+				return total_fee_msat;
+			}
+		}
+		return u64::max_value();
+	}
+
+	// What we are paying for the use of this channels and the following channels.
+	fn get_fee_paid_msat(&self) -> u64 {
+		if let Some(fee_paid_msat) =
+		   self.next_hops_fee_msat.checked_add(self.hop_use_fee_msat) {
+			return fee_paid_msat;
+		} else {
+			return u64::max_value();
+		}
+	}
+}
+
+// Instantiated with a list of hops with correct data in them collected during path finding,
+// an instance of this struct should be further modified only via given methods.
+#[derive(Clone)]
+struct PaymentPath {
+	hops: Vec<PathBuildingHop>,
+}
+
+impl PaymentPath {
+	fn get_value_msat(&self) -> u64 {
+		return self.hops.last().unwrap().route_hop.fee_msat;
+	}
+
+	fn get_total_fee_paid_msat(&self) -> u64 {
+		if self.hops.len() < 1 {
+			return 0;
+		} else {
+			return self.hops.first().unwrap().next_hops_fee_msat;
+		}
+	}
+
+	// If an amount transferred by the path is updated, the fees should be adjusted.
+	// Any other way to change fees may result in an inconsistency.
+	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
+		let mut total_fee_paid_msat = 0 as u64;
+		for i in (1..self.hops.len()).rev() {
+			let cur_hop_amount_msat = total_fee_paid_msat + value_msat;
+			let mut cur_hop = self.hops.get_mut(i).unwrap();
+			cur_hop.next_hops_fee_msat = total_fee_paid_msat;
+			if let Some(new_fee) = compute_fees(cur_hop_amount_msat, cur_hop.channel_fees) {
+				cur_hop.hop_use_fee_msat = new_fee;
+				total_fee_paid_msat += new_fee;
+			} else {
+				// It should not be possible, because this function is called only to
+				// reduce the value. In that case, compute_fee was already called with the same
+				// fees for larger amount and there was no overflow.
+				unreachable!();
+			}
+		}
+
+		// Propagate updated fees for the use of the channels to one hop back,
+		// where they will be actually paid (fee_msat).
+		// For the last hop it will represent the value being transferred over this path.
+		for i in 0..self.hops.len() - 1 {
+			let next_hop_use_fee_msat = self.hops.get(i + 1).unwrap().hop_use_fee_msat;
+			self.hops.get_mut(i).unwrap().route_hop.fee_msat = next_hop_use_fee_msat;
+		}
+		self.hops.last_mut().unwrap().route_hop.fee_msat = value_msat;
+	}
+}
+
+fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
+	let proportional_fee_millions =
+		amount_msat.checked_mul(channel_fees.proportional_millionths as u64);
+	if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
+			(channel_fees.base_msat as u64).checked_add(part / 1_000_000) }) {
+
+		Some(new_fee)
+	} else {
+		// This function may be (indirectly) called without any verification,
+		// with channel_fees provided by a caller. We should handle it gracefully.
+		None
+	}
+}
+
+/// Gets a route from us (payer) to the given target node (payee).
 ///
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
 ///
 /// If some channels aren't announced, it may be useful to fill in a first_hops with the
 /// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
-/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those in first_hops
-/// will be used.
+/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those
+/// in first_hops will be used.
 ///
 /// Panics if first_hops contains channels without short_channel_ids
 /// (ChannelManager::list_usable_channels will never include such channels).
@@ -180,11 +298,11 @@ struct DummyDirectionalChannelInfo {
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 /// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 /// *is* checked as they may change based on the receiving node.
-pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, target: &PublicKey, first_hops: Option<&[&ChannelDetails]>,
+pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee: &PublicKey, first_hops: Option<&[&ChannelDetails]>,
 	last_hops: &[&RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
-	if *target == *our_node_id {
+	if *payee == *our_node_id {
 		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
@@ -192,7 +310,26 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
+	// The general routing idea is the following:
+	// 1. Fill first/last hops communicated by the caller.
+	// 2. Attempt to construct a path from payer to payee for transferring
+	//    any ~sufficient (described later) value.
+	//    If succeed, remember which channels were used and how much liquidity they have available,
+	//    so that future paths don't rely on the same liquidity.
+	// 3. Prooceed to the next step if:
+	//    - we hit the recommended target value;
+	//    - OR if we could not construct a new path. Any next attempt will fail too.
+	//    Otherwise, repeat step 2.
+	// 4. See if we managed to collect paths which aggregately are able to transfer target value
+	//    (not recommended value). If yes, proceed. If not, fail routing.
+	// 5. Randomly combine paths into routes having enough to fulfill the payment. (TODO: knapsack)
+	// 6. Of all the found paths, select only those with the lowest total fee.
+	// 7. The last path in every selected route is likely to be more than we need.
+	//    Reduce its value-to-transfer and recompute fees.
+	// 8. Choose the best route by the lowest total fee.
+
+	// As for the actual search algorithm,
+	// we do a payee-to-payer Dijkstra's sorting by each node's distance from the payee
 	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
 	// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
 	// to use as the A* heuristic beyond just the cost to get one node further than the current
@@ -211,11 +348,23 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 	let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
 	let mut dist = HashMap::with_capacity(network.get_nodes().len());
 
+	// When arranging a route, we select multiple paths so that we can make a multi-path payment.
+	// Don't stop searching for paths when we think they're
+	// sufficient to transfer a givenvalue aggregately.
+	// Search for higher value, so that we collect many more paths,
+	// and then select the best combination among them.
+	const ROUTE_CAPACITY_PROVISION_FACTOR: u64 = 4;
+	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
+
+	// Step (1).
+	// Prepare the data we'll use for payee-to-payer search by
+	// inserting first hops suggested by the caller as targets.
+	// Our search will then attempt to reach them while traversing from the payee node.
 	let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
 		for chan in hops {
 			let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
-			if chan.remote_network_id == *target {
+			if chan.remote_network_id == *payee {
 				return Ok(Route {
 					paths: vec![vec![RouteHop {
 						pubkey: chan.remote_network_id,
@@ -234,84 +383,188 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		}
 	}
 
+	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
+	// This map allows paths to be aware of the channel use by other paths in the same call.
+	// This would help to make a better path finding decisions and not "overbook" channels.
+	// It is unaware of the directions.
+	// TODO: we could let a caller specify this. Definitely useful when considering our own channels.
+	let mut bookkeeped_channels_liquidity_available_msat = HashMap::new();
+
+	// Keeping track of how much value we already collected across other paths. Helps to decide:
+	// - how much a new path should be transferring (upper bound);
+	// - whether a channel should be disregarded because
+	//   it's available liquidity is too small comparing to how much more we need to collect;
+	// - when we want to stop looking for new paths.
+	let mut already_collected_value_msat = 0;
+
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id
 		// over the channel with id $chan_id with fees described in
 		// $directional_info.
-		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
+		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
+		// since that value has to be transferred over this channel.
+		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr ) => {
+			let available_liquidity_msat = bookkeeped_channels_liquidity_available_msat.entry($chan_id.clone()).or_insert_with(|| {
+				let mut initial_liquidity_available_msat = None;
+				if let Some(capacity_sats) = $capacity_sats {
+					initial_liquidity_available_msat = Some(capacity_sats * 1000);
+				}
+
+				if let Some(htlc_maximum_msat) = $directional_info.htlc_maximum_msat {
+					if let Some(available_msat) = initial_liquidity_available_msat {
+						initial_liquidity_available_msat = Some(cmp::min(available_msat, htlc_maximum_msat));
+					} else {
+						initial_liquidity_available_msat = Some(htlc_maximum_msat);
+					}
+				}
+
+				match initial_liquidity_available_msat {
+					Some(available_msat) => available_msat,
+					// We assume channels with unknown balance have
+					// a capacity of 0.0001 BTC (or 10_000 sats).
+					None => 10_000 * 1000
+				}
+			});
+
+			// Routing Fragmentation Mitigation heuristic:
+			//
+			// Routing fragmentation across many payment paths increases the overall routing
+			// fees as you have irreducible routing fees per-link used (`fee_base_msat`).
+			// Taking too many smaller paths also increases the chance of payment failure.
+			// Thus to avoid this effect, we require from our collected links to provide
+			// at least a minimal contribution to the recommended value yet-to-be-fulfilled.
+			//
+			// This requirement is currently 5% of the remaining-to-be-collected value.
+			// This means as we successfully advance in our collection,
+			// the absolute liquidity contribution is lowered,
+			// thus increasing the number of potential channels to be selected.
+
+			// Update the absolute liquidity left to collect from previously built paths.
+			let value_left_to_collect_msat = cmp::min(recommended_value_msat - already_collected_value_msat, final_value_msat);
+			// Derive the minimal liquidity contribution with a ratio of 20 (5%).
+			let minimal_liquidity_contribution_msat: u64 = value_left_to_collect_msat / 20;
+			// Verify the liquidity offered by this channel complies to the minimal contribution.
+			let has_sufficient_liquidity = *available_liquidity_msat >= minimal_liquidity_contribution_msat;
+
+			// It is tricky to compare available liquidity to $next_hops_fee_msat here
+			// to see if this channel is capable of paying for the use of the following channels.
+			// It may be misleading because we might later choose to reduce the value transferred
+			// over these channels, and the channel which was insufficient might become sufficient.
+			// Worst case: we drop a good channel here because it can't cover the high following
+			// fees caused by one expensive channel, but then this channel could have been used
+			// if the amount being transferred over this path is lower.
+			// We do this for now, but this check is a subject for removal.
+			let can_cover_following_hops = *available_liquidity_msat > $next_hops_fee_msat;
+
+			// Includes paying fees for the use of the following channels.
+			let amount_to_transfer_over_msat: u64 = cmp::min(*available_liquidity_msat, value_left_to_collect_msat);
+
 			//TODO: Explore simply adding fee to hit htlc_minimum_msat
-			if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat {
-				let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fees.proportional_millionths as u64);
-				if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
-						($directional_info.fees.base_msat as u64).checked_add(part / 1000000) })
-				{
-					let mut total_fee = $starting_fee_msat as u64;
-
-					let mut available_msat = $capacity_sats;
-					if let Some(htlc_maximum_msat) = $directional_info.htlc_maximum_msat {
-						if let Some(capacity_sats) = $capacity_sats {
-							available_msat = Some(cmp::min(capacity_sats * 1000, htlc_maximum_msat));
-						} else {
-							available_msat = Some(htlc_maximum_msat);
-						}
+			if has_sufficient_liquidity && can_cover_following_hops && amount_to_transfer_over_msat >= $directional_info.htlc_minimum_msat {
+				let hm_entry = dist.entry(&$src_node_id);
+				let old_entry = hm_entry.or_insert_with(|| {
+					// If there was previously no known way to access
+					// the source node (recall it goes payee-to-payer) of $chan_id, first add
+					// a semi-dummy record just to compute the fees to reach the source node.
+					// This will affect our decision on selecting $chan_id
+					// as a way to reach the $dest_node_id.
+					let mut fee_base_msat = u32::max_value();
+					let mut fee_proportional_millionths = u32::max_value();
+					if let Some(Some(fees)) = network.get_nodes().get(&$src_node_id).map(|node| node.lowest_inbound_channel_fees) {
+						fee_base_msat = fees.base_msat;
+						fee_proportional_millionths = fees.proportional_millionths;
 					}
-
-					let hm_entry = dist.entry(&$src_node_id);
-					let old_entry = hm_entry.or_insert_with(|| {
-						let mut fee_base_msat = u32::max_value();
-						let mut fee_proportional_millionths = u32::max_value();
-						if let Some(fees) = network.get_nodes().get(&$src_node_id).and_then(|node| node.lowest_inbound_channel_fees) {
-							fee_base_msat = fees.base_msat;
-							fee_proportional_millionths = fees.proportional_millionths;
-						}
-						(u64::max_value(),
-							fee_base_msat,
-							fee_proportional_millionths,
-							RouteHop {
-								pubkey: $dest_node_id.clone(),
-								node_features: NodeFeatures::empty(),
-								short_channel_id: 0,
-								channel_features: $chan_features.clone(),
-								fee_msat: 0,
-								cltv_expiry_delta: 0,
-							},
-							None,
-						)
-					});
-					if $src_node_id != *our_node_id {
-						// Ignore new_fee for channel-from-us as we assume all channels-from-us
-						// will have the same effective-fee
-						total_fee += new_fee;
-						if let Some(fee_inc) = final_value_msat.checked_add(total_fee).and_then(|inc| { (old_entry.2 as u64).checked_mul(inc) }) {
-							total_fee += fee_inc / 1000000 + (old_entry.1 as u64);
-						} else {
-							// max_value means we'll always fail the old_entry.0 > total_fee check
-							total_fee = u64::max_value();
-						}
-					}
-					let new_graph_node = RouteGraphNode {
-						pubkey: $src_node_id,
-						lowest_fee_to_peer_through_node: total_fee,
-						lowest_fee_to_node: $starting_fee_msat as u64 + new_fee,
-					};
-					if old_entry.0 > total_fee {
-						targets.push(new_graph_node);
-						old_entry.0 = total_fee;
-						old_entry.3 = RouteHop {
+					PathBuildingHop {
+						route_hop: RouteHop {
 							pubkey: $dest_node_id.clone(),
 							node_features: NodeFeatures::empty(),
-							short_channel_id: $chan_id.clone(),
+							short_channel_id: 0,
 							channel_features: $chan_features.clone(),
-							fee_msat: new_fee, // This field is ignored on the last-hop anyway
-							cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
-						};
-						old_entry.4 = available_msat;
+							fee_msat: 0,
+							cltv_expiry_delta: 0,
+						},
+						available_liquidity_msat: 0,
+						src_lowest_inbound_fees: RoutingFees {
+							base_msat: fee_base_msat,
+							proportional_millionths: fee_proportional_millionths,
+						},
+						channel_fees: $directional_info.fees,
+						next_hops_fee_msat: u64::max_value(),
+						hop_use_fee_msat: u64::max_value(),
+						prev_hop_use_estimate_fee_msat: u64::max_value(),
 					}
+				});
+
+				let mut hop_use_fee_msat = 0;
+				let mut prev_hop_use_estimate_fee_msat = 0;
+				let mut total_fee_msat = $next_hops_fee_msat;
+
+				// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
+				// will have the same effective-fee
+				if $src_node_id != *our_node_id {
+					match compute_fees(amount_to_transfer_over_msat, $directional_info.fees) {
+						// max_value means we'll always fail
+						// the old_entry.get_fee_weight_msat() > total_fee_msat check
+						None => total_fee_msat = u64::max_value(),
+						Some(fee_msat) => {
+							hop_use_fee_msat = fee_msat;
+							total_fee_msat += hop_use_fee_msat;
+							if let Some(prev_hop_fee_msat) = compute_fees(total_fee_msat + amount_to_transfer_over_msat,
+																		  old_entry.src_lowest_inbound_fees) {
+								prev_hop_use_estimate_fee_msat = prev_hop_fee_msat;
+								if let Some(incremented_total_fee_msat) = total_fee_msat.checked_add(prev_hop_fee_msat) {
+									total_fee_msat = incremented_total_fee_msat;
+								}
+								else {
+									// max_value means we'll always fail
+									// the old_entry.get_fee_weight_msat() > total_fee_msat check
+									total_fee_msat = u64::max_value();
+								}
+							} else {
+								prev_hop_use_estimate_fee_msat = u64::max_value();
+								// max_value means we'll always fail
+								// the old_entry.get_fee_weight_msat() > total_fee_msat check
+								total_fee_msat = u64::max_value();
+							}		
+						}
+					}
+				}
+
+				let new_graph_node = RouteGraphNode {
+					pubkey: $src_node_id,
+					lowest_fee_to_peer_through_node: total_fee_msat,
+					lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
+				};
+				// Update the way of reaching $dest_node_id with the given $chan_id,
+				// if this way is cheaper than the already known
+				// (considering the cost to "reach" this channel from the route destination,
+				// the cost of using this channel,
+				// and the cost of routing to the source node of this channel).
+				if old_entry.get_fee_weight_msat() > total_fee_msat {
+					targets.push(new_graph_node);
+					old_entry.next_hops_fee_msat = $next_hops_fee_msat;
+					old_entry.hop_use_fee_msat = hop_use_fee_msat;
+					old_entry.prev_hop_use_estimate_fee_msat = prev_hop_use_estimate_fee_msat;
+					old_entry.route_hop = RouteHop {
+						pubkey: $dest_node_id.clone(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $chan_id.clone(),
+						channel_features: $chan_features.clone(),
+						fee_msat: 0, // This value will be later filled with hop_use_fee_msat of the following channel
+						cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
+					};
+					old_entry.available_liquidity_msat = available_liquidity_msat.clone();
+					old_entry.channel_fees = $directional_info.fees;
 				}
 			}
 		};
 	}
 
+	// Find ways (channels with destimation) to reach a given node and store them
+	// in the corresponding data structures (routing graph etc).
+	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
+	// meaning how much will be paid in fees after this node (to the best of our knowledge).
+	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 			if first_hops.is_some() {
@@ -356,84 +609,281 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		};
 	}
 
-	match network.get_nodes().get(target) {
-		None => {},
-		Some(node) => {
-			add_entries_to_cheapest_to_target_node!(node, target, 0);
-		},
-	}
+	let mut payment_paths = Vec::<PaymentPath>::new();
 
-	for hop in last_hops.iter() {
-		let have_hop_src_in_graph =
-			if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&hop.src_node_id) {
-				// If this hop connects to a node with which we have a direct channel, ignore the
-				// network graph and add both the hop and our direct channel to the candidate set:
-				//
-				// Currently there are no channel-context features defined, so we are a
-				// bit lazy here. In the future, we should pull them out via our
-				// ChannelManager, but there's no reason to waste the space until we
-				// need them.
-				add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, None::<u64>, features.to_context(), 0);
-				true
-			} else {
-				// In any other case, only add the hop if the source is in the regular network
-				// graph:
-				network.get_nodes().get(&hop.src_node_id).is_some()
-			};
-		if have_hop_src_in_graph {
-			// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
-			// really sucks, cause we're gonna need that eventually.
-			add_entry!(hop.short_channel_id, hop.src_node_id, target, hop, None::<u64>, ChannelFeatures::empty(), 0);
+	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
+	'paths_collection: loop {
+		// For every new path, start from scratch, except
+		// bookkeeped_channels_liquidity_available_msat, which will improve
+		// the further iterations of path finding. Also don't erase first_hop_targets.
+		targets.clear();
+		dist.clear();
+
+		// Add the payee as a target, so that the payee-to-payer
+		// search algorithm knows what to start with.
+		match network.get_nodes().get(payee) {
+			// The payee is not in our network graph, so nothing to add here.
+			// There is still a chance of reaching them via last_hops though,
+			// so don't yet fail the payment here.
+			// If not, targets.pop() will not even let us enter the loop in step 2.			
+			None => {},
+			Some(node) => {
+				add_entries_to_cheapest_to_target_node!(node, payee, 0);
+			},
+		}
+
+		// Step (1).
+		// If a caller provided us with last hops, add them to routing targets.
+		// Since this happens earlier than general path finding, they will be somewhat prioritized,
+		// although currently it matters only if the fees are exactly the same.
+		for hop in last_hops.iter() {
+			let have_hop_src_in_graph =
+				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&hop.src_node_id) {
+					// If this hop connects to a node with which we have a direct channel,
+					// ignore the network graph and add both the hop and
+					// our direct channel to the candidate set:
+					//
+					// Currently there are no channel-context features defined, so we are a
+					// bit lazy here. In the future, we should pull them out via our
+					// ChannelManager, but there's no reason to waste the space until we
+					// need them.
+					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, None::<u64>, features.to_context(), 0);
+					true
+				} else {
+					// In any other case, only add the hop if the source is in the regular network
+					// graph:
+					network.get_nodes().get(&hop.src_node_id).is_some()
+				};
+			if have_hop_src_in_graph {
+				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
+				// really sucks, cause we're gonna need that eventually.
+				add_entry!(hop.short_channel_id, hop.src_node_id, payee, hop, None::<u64>, ChannelFeatures::empty(), 0);
+			}
+		}
+
+		// At this point, targets are filled with the data from first and
+		// last hops communicated by the caller, and the payment receiver.
+		let mut found_new_path = false;
+
+		// Step (2).
+		'path_construction: while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
+
+			// Since we're going payee-to-payer, hitting our node as a target means
+			// that we should stop traversing the graph and arrange the path out of what we found.
+			if pubkey == *our_node_id {
+				let mut new_entry = dist.remove(&our_node_id).unwrap();
+				let mut ordered_hops = vec!(new_entry.clone());
+				// At most, we may need the value to be transferred and fees for that transfer.
+				// Assume 900% fees as the highest possible amount we may need,
+				// keep in mind fees may be charged on every hop.
+				let mut path_bottleneck_msat = final_value_msat * 10;
+
+				'path_walk: loop {
+					if new_entry.route_hop.short_channel_id == 0 {
+						// Means that the only way to proceed was via a dummy channel
+						// we stored for the internal algorithm.
+						// Terminate path finding, because the dummy channel is not usable,
+						// and further iterations would only face the exact same issue.
+						break 'path_construction;
+					}
+
+					if let Some(&(_, ref features)) = first_hop_targets.get(&ordered_hops.last().unwrap().route_hop.pubkey) {
+						ordered_hops.last_mut().unwrap().route_hop.node_features = features.to_context();
+					} else if let Some(node) = network.get_nodes().get(&ordered_hops.last().unwrap().route_hop.pubkey) {
+						if let Some(node_info) = node.announcement_info.as_ref() {
+							ordered_hops.last_mut().unwrap().route_hop.node_features = node_info.features.clone();
+						} else {
+							ordered_hops.last_mut().unwrap().route_hop.node_features = NodeFeatures::empty();
+						}
+					} else {
+						// We should be able to fill in features for everything except the last
+						// hop, if the last hop was provided via a BOLT 11 invoice (though we
+						// should be able to extend it further as BOLT 11 does have feature
+						// flags for the last hop node itself).
+						assert!(ordered_hops.last().unwrap().route_hop.pubkey == *payee);
+					}
+
+					// How much value a path can transfer is how much the weakest link can transfer
+					// after paying for the use of the following channels and the channel itself.
+					let cur_channel_paid_fees = new_entry.get_fee_paid_msat();
+					if new_entry.available_liquidity_msat > cur_channel_paid_fees {
+						path_bottleneck_msat = cmp::min(path_bottleneck_msat, new_entry.available_liquidity_msat - cur_channel_paid_fees);
+					} else {
+						// This might happen only if one of the further channels requires passing
+						// along too much value to pay for the use of it, so much the current channel
+						// can't accommodate it at all. In that case, just use 1/10 of the
+						// current channel liquidity as a path bottleneck.
+						// The idea here is that we leave 9/10 of the current channel
+						// to use for paying for the use of the further channels,
+						// assuming they are transferring *at most* the 1/10 value.
+						// So, unless further channels will cumulatively charge 900% in fees,
+						// this should work.
+						path_bottleneck_msat = cmp::min(path_bottleneck_msat, new_entry.available_liquidity_msat / 10);
+					}
+
+					if ordered_hops.last().unwrap().route_hop.pubkey == *payee {
+						break 'path_walk;
+					}
+
+					new_entry = match dist.remove(&ordered_hops.last().unwrap().route_hop.pubkey) {
+						Some(payment_hop) => payment_hop,
+						None => {
+							// If we can't reach a given node, something wen't wrong
+							// during path traverse.
+							// Stop looking for more paths here because next iterations
+							// will face the exact same issue.
+							break 'paths_collection;
+						}
+					};
+					// We "propagate" the fees one hop backward (topologically) here,
+					// so that fees paid on the current channels are associated with
+					// the previous channel (where they will be paid).
+					ordered_hops.last_mut().unwrap().route_hop.fee_msat = new_entry.hop_use_fee_msat;
+					ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = new_entry.route_hop.cltv_expiry_delta;
+					ordered_hops.push(new_entry.clone());
+				}
+				ordered_hops.last_mut().unwrap().route_hop.fee_msat = final_value_msat;
+				ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = final_cltv;
+
+				let mut payment_path = PaymentPath {hops: ordered_hops};
+				// Since a path allows to transfer as much value as
+				// the smallest channel it has ("bottleneck"), we should recompute
+				// the fees so sender HTLC don't overpay fees when traversing
+				// larger channels than the bottleneck. This may happen because
+				// when we were selecting those channels we were not aware how much value
+				// this path will transfer, and the relative fee for them
+				// might have been computed considering a larger value.
+				payment_path.update_value_and_recompute_fees(path_bottleneck_msat);
+
+				// Remember that we used these channels so that we don't rely
+				// on the same liquidity in future paths.
+				for (_, payment_hop) in payment_path.hops.iter().enumerate() {
+					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.route_hop.short_channel_id).unwrap();
+					let spent_on_hop_msat = path_bottleneck_msat + payment_hop.get_fee_paid_msat();
+					if *channel_liquidity_available_msat < spent_on_hop_msat {
+						// This should not happen because we do recompute fees right before,
+						// trying to avoid cases when a hop is not usable due to the fee situation.
+						break 'path_construction;
+					}
+					*channel_liquidity_available_msat -= spent_on_hop_msat;
+				}
+				// Track the total amount all our collected paths allow to send so that we:
+				// - know when to stop looking for more paths
+				// - know which of the hops are useless considering how much more sats we need
+				already_collected_value_msat += payment_path.get_value_msat();
+
+				payment_paths.push(payment_path);
+				found_new_path = true;
+				break 'path_construction;
+			}
+
+			// Otherwise, since the current target node is not us,
+			// keep "unrolling" the payment graph from payee to payer by
+			// finding a way to reach the current target from the payer side.
+			match network.get_nodes().get(&pubkey) {
+				None => {},
+				Some(node) => {
+					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node);
+				},
+			}
+		}
+
+		// Step (3).
+		// Stop either when recommended value is reached,
+		// or if during last iteration no new path was found.
+		// In the latter case, making another path finding attempt could not help,
+		// because we deterministically terminate the search due to low liquidity.
+		if already_collected_value_msat >= recommended_value_msat || !found_new_path {
+			break 'paths_collection;
 		}
 	}
 
-	while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
-		if pubkey == *our_node_id {
-			let mut res = vec!(dist.remove(&our_node_id).unwrap().3);
-			loop {
-				if let Some(&(_, ref features)) = first_hop_targets.get(&res.last().unwrap().pubkey) {
-					res.last_mut().unwrap().node_features = features.to_context();
-				} else if let Some(node) = network.get_nodes().get(&res.last().unwrap().pubkey) {
-					if let Some(node_info) = node.announcement_info.as_ref() {
-						res.last_mut().unwrap().node_features = node_info.features.clone();
-					} else {
-						res.last_mut().unwrap().node_features = NodeFeatures::empty();
+	// Step (4).
+	if payment_paths.len() == 0 {
+		return Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError});
+	}
+
+	if already_collected_value_msat < final_value_msat {
+		return Err(LightningError{err: "Failed to find a sufficient route to the given destination".to_owned(), action: ErrorAction::IgnoreError});
+	}
+
+	// Sort by total fees and take the best paths.
+	payment_paths.sort_by_key(|path| path.get_total_fee_paid_msat());
+	if payment_paths.len() > 50 {
+		payment_paths.truncate(50);
+	}
+
+	// Draw multiple sufficient routes by randomly combining the selected paths.
+	let mut drawn_routes = Vec::new();
+	for i in 0..payment_paths.len() {
+		let mut cur_route = Vec::<PaymentPath>::new();
+		let mut aggregate_route_value_msat = 0;
+
+		// Step (5).
+		// TODO: real random shuffle
+		// Currently just starts with i_th and goes up to i-1_th in a looped way.
+		let cur_payment_paths = [&payment_paths[i..], &payment_paths[..i]].concat();
+
+		// Step (6).
+		for payment_path in cur_payment_paths {
+			cur_route.push(payment_path.clone());
+			aggregate_route_value_msat += payment_path.get_value_msat();
+			if aggregate_route_value_msat >= final_value_msat {
+				// Last path likely overpaid. Substract it from the most expensive
+				// (in terms of proportional fee) path in this route and recompute fees.
+				// This might be not the most economically efficient way, but fewer paths
+				// also makes routing more reliable.
+				let mut overpaid_value_msat = aggregate_route_value_msat - final_value_msat;
+
+				// First, drop some expensive low-value paths entirely if possible.
+				// Sort by value so that we drop many really-low values first.
+				cur_route.sort_by_key(|path| path.get_value_msat());
+				// We should make sure that at least 1 path left.
+				let mut paths_left = cur_route.len();
+				cur_route.retain(|path| {
+					if paths_left == 1 {
+						return true
 					}
-				} else {
-					// We should be able to fill in features for everything except the last
-					// hop, if the last hop was provided via a BOLT 11 invoice (though we
-					// should be able to extend it further as BOLT 11 does have feature
-					// flags for the last hop node itself).
-					assert!(res.last().unwrap().pubkey == *target);
-				}
-				if res.last().unwrap().pubkey == *target {
+					let mut keep = true;
+					let path_value_msat = path.get_value_msat();
+					if path_value_msat <= overpaid_value_msat {
+						keep = false;
+						overpaid_value_msat -= path_value_msat;
+						paths_left -= 1;
+					}
+					keep
+				});
+
+				if overpaid_value_msat == 0 {
 					break;
 				}
 
-				let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
-					Some(hop) => hop.3,
-					None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination".to_owned(), action: ErrorAction::IgnoreError}),
-				};
-				res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
-				res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
-				res.push(new_entry);
-			}
-			res.last_mut().unwrap().fee_msat = final_value_msat;
-			res.last_mut().unwrap().cltv_expiry_delta = final_cltv;
-			let route = Route { paths: vec![res] };
-			log_trace!(logger, "Got route: {}", log_route!(route));
-			return Ok(route);
-		}
+				assert!(cur_route.len() > 0);
 
-		match network.get_nodes().get(&pubkey) {
-			None => {},
-			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node);
-			},
+				// Step (7).
+				// Now, substract from the most-expensive path the remaining value.
+				cur_route.sort_by_key(|path| { path.hops.iter().map(|hop| hop.channel_fees.proportional_millionths).sum::<u32>() });
+				let expensive_payment_path = cur_route.last_mut().unwrap();
+				let expensive_path_new_value_msat = expensive_payment_path.get_value_msat() - overpaid_value_msat;
+				expensive_payment_path.update_value_and_recompute_fees(expensive_path_new_value_msat);
+				break;
+			}
 		}
+		drawn_routes.push(cur_route);
 	}
 
-	Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError})
+
+	// Step (8).
+	// Select the best route by lowest total fee.
+	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
+	let mut selected_paths = Vec::<Vec::<RouteHop>>::new();
+	for payment_path in drawn_routes.first().unwrap() {
+		selected_paths.push(payment_path.hops.iter().map(|payment_hop| payment_hop.route_hop.clone()).collect());
+	}
+
+	let route = Route { paths: selected_paths };
+	log_trace!(logger, "Got route: {}", log_route!(route));
+	return Ok(route);
 }
 
 #[cfg(test)]
@@ -451,6 +901,9 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::script::Builder;
+	use bitcoin::blockdata::opcodes;
+	use bitcoin::blockdata::transaction::TxOut;
 
 	use hex;
 
@@ -499,8 +952,7 @@ mod tests {
 
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
-			// Err(_) => panic!()
-			Err(e) => println!("{:?}", e.err)
+			Err(_) => panic!()
 		};
 	}
 
@@ -558,9 +1010,10 @@ mod tests {
 		}
 	}
 
-	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<std::sync::Arc<crate::util::test_utils::TestChainSource>, std::sync::Arc<crate::util::test_utils::TestLogger>>, std::sync::Arc<test_utils::TestLogger>) {
+	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<std::sync::Arc<test_utils::TestChainSource>, std::sync::Arc<crate::util::test_utils::TestLogger>>, std::sync::Arc<test_utils::TestChainSource>, std::sync::Arc<test_utils::TestLogger>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
 		// Build network from our_id to node7:
 		//
@@ -857,12 +1310,12 @@ mod tests {
 
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[5], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
 
-		(secp_ctx, net_graph_msg_handler, logger)
+		(secp_ctx, net_graph_msg_handler, chain_monitor, logger)
 	}
 
 	#[test]
 	fn simple_route_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple route to 3 via 2
@@ -886,7 +1339,7 @@ mod tests {
 
 	#[test]
 	fn disable_channels_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
 		// // Disable channels 4 and 12 by flags=2
@@ -952,7 +1405,7 @@ mod tests {
 
 	#[test]
 	fn disable_node_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
@@ -1003,7 +1456,7 @@ mod tests {
 
 	#[test]
 	fn our_chans_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
@@ -1095,7 +1548,7 @@ mod tests {
 
 	#[test]
 	fn last_hops_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
@@ -1142,7 +1595,7 @@ mod tests {
 
 	#[test]
 	fn our_chans_last_hop_connect_test() {
-		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
@@ -1303,4 +1756,977 @@ mod tests {
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &[0; 0]); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 	}
+
+	#[test]
+	fn available_amount_while_routing_test() {
+		// Tests whether we choose the correct available channel amount while routing.
+		
+		let (secp_ctx, mut net_graph_msg_handler, chain_monitor, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We will use a simple single-path route from
+		// our node to node2 via node0: channels {1, 3}.
+
+		// First disable all other paths.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Make the first channel (#1) is very permissive,
+		// and we will be testing all limits on the second channel.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// First, let's see if routing works if we have absolutely no idea about the available amount.
+		// In this case, it should be set to 10_000 sats.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 10_000_001, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route an exact amount we have should be fine.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 10_000_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let path = route.paths.last().unwrap();
+			assert_eq!(path.len(), 2);
+			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.last().unwrap().fee_msat, 10_000_000);
+		}
+
+
+		// Now let's see if routing works if we know only htlc_maximum_msat.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 3,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(15_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 15_001, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route an exact amount we have should be fine.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 15_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let path = route.paths.last().unwrap();
+			assert_eq!(path.len(), 2);
+			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+		}
+
+		// Now let's see if routing works if we know only capacity from the UTXO.
+
+		// We can't change UTXO capacity on the fly, so we'll disable
+		// the existing channel and add another one with the capacity we need.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 4,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
+		.push_slice(&PublicKey::from_secret_key(&secp_ctx, &privkeys[0]).serialize())
+		.push_slice(&PublicKey::from_secret_key(&secp_ctx, &privkeys[2]).serialize())
+		.push_opcode(opcodes::all::OP_PUSHNUM_2)
+		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+
+		*chain_monitor.utxo_ret.lock().unwrap() = Ok(TxOut { value: 15, script_pubkey: good_script.clone() });
+		net_graph_msg_handler.add_chain_access(Some(chain_monitor));
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 333,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (3 << 8) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 333,
+			timestamp: 1,
+			flags: 1,
+			cltv_expiry_delta: (3 << 8) | 2,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 15_001, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route an exact amount we have should be fine.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 15_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let path = route.paths.last().unwrap();
+			assert_eq!(path.len(), 2);
+			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+		}
+
+		// Now let's see if routing chooses htlc_maximum_msat over UTXO capacity.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 333,
+			timestamp: 6,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(10_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 10_001, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route an exact amount we have should be fine.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 10_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let path = route.paths.last().unwrap();
+			assert_eq!(path.len(), 2);
+			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.last().unwrap().fee_msat, 10_000);
+		}
+	}
+
+
+	#[test]
+	fn available_liquidity_last_hop_test() {
+		// Check that available liquidity properly limits the path even when only
+		// one of the latter hops is limited.
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
+		// {12, 13, 11} have the capacities of 100, {6} has a capacity of 50.
+		// Total capacity: 50 sats.
+
+		// Disable oter potential paths.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 7,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Limit capacities
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(50_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 11,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 60_000, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route 49 sats (just a bit below the capacity).
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 49_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 4);
+				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 49_000);
+		}
+
+		{
+			// Attempt to route an exact amount is also fine
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 50_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 4);
+				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 50_000);
+		}
+	}
+
+	#[test]
+	fn ignore_fee_first_hop_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 1_000_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(50_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 50_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 2);
+				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 50_000);
+		}
+	}
+
+
+	#[test]
+	fn simple_mpp_route_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We need a route consisting of 3 paths:
+		// From our node to node2 via node0, node7, node1 (three paths one hop each).
+		// To achieve this, the amount being transferred should be around
+		// the total capacity of these 3 paths.
+
+		// First, we set limits on these (previously unlimited) channels.
+		// Their aggregate capacity will be 50 + 60 + 180 = 290 sats.
+
+		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(50_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats
+		// (total limit 60).
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(60_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(60_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via node1 is channels {2, 4}. Limit them to 200 and 180 sats
+		// (total capacity 180 sats).
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(180_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 300_000, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route 250 sats (just a bit below the capacity).
+			// Our algorithm should provide us with these 3 paths.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 250_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 3);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 2);
+				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 250_000);
+		}
+
+		{
+			// Attempt to route an exact amount is also fine
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 290_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 3);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 2);
+				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 290_000);
+		}
+	}
+
+
+	#[test]
+	fn long_mpp_route_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We need a route consisting of 35 paths:
+		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
+		// Note that these paths overlap (channels 5, 12, 13).
+		// We will route 300 sats.
+		// Each path will have 100 sats capacity, those channels which
+		// are used twice will have 200 sats capacity.
+
+		// Disable oter potential paths.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 7,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via {node0, node2} is channels {1, 3, 5}.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Capacity of 200 sats because this channel will be used by 3rd path as well.
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 5,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+
+		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
+		// Add 100 sats to the capacities of {12, 13}, because these channels
+		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 11,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+
+		// Path via {node7, node2} is channels {12, 13, 5}.
+		// We already limited them to 200 sats (they are used twice for 100 sats).
+		// Nothing to do here.
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 350_000, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route 300 sats (exact amount we can route).
+			// Our algorithm should provide us with these 3 paths, 100 sats each.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 300_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 3);
+
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 300_000);
+		}
+
+	}
+
+	#[test]
+	fn fees_on_mpp_route_test() {
+		// This test makes sure that MPP algorithm properly takes into account
+		// fees charged on the channels, by making the fees impactful:
+		// if the fee is not properly accounted for, the behavior is different.
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We need a route consisting of 2 paths:
+		// From our node to node3 via {node0, node2} and {node7, node2, node4}.
+		// We will route 200 sats, Each path will have 100 sats capacity.
+
+		// This test is not particularly stable: e.g.,
+		// there's a way to route via {node0, node2, node4}.
+		// It works while pathfinding is deterministic, but can be broken otherwise.
+		// It's fine to ignore this concern for now.
+
+		// Disable other potential paths.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 7,
+			timestamp: 2,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via {node0, node2} is channels {1, 3, 5}.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 5,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+
+		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
+		// All channels should be 100 sats capacity. But for the fee experiment,
+		// we'll add absolute fee of 150 sats paid for the use channel 6 (paid to node2 on channel 13).
+		// Since channel 12 allows to deliver only 250 sats to channel 13, channel 13 can transfer only
+		// 100 sats (and pay 150 sats in fees for the use of channel 6),
+		// so no matter how large are other channels,
+		// the whole path will be limited by 100 sats with just these 2 conditions:
+		// - channel 12 capacity is 250 sats
+		// - fee for channel 6 is 150 sats
+		// Let's test this by enforcing these 2 conditions and removing other limits.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(250_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 150_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 11,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 210_000, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route 300 sats (exact amount we can route).
+			// Our algorithm should provide us with these 3 paths, 100 sats each.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3], None, &Vec::new(), 200_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 2);
+
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 200_000);
+		}
+
+	}
+
+	#[test]
+	fn drop_lowest_channel_mpp_route_test() {
+		// This test checks that low-capacity channel is dropped when after
+		// path finding we realize that we found more capacity than we need.
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We need a route consisting of 3 paths:
+		// From our node to node2 via node0, node7, node1 (three paths one hop each).
+
+		// The first and the second paths should be sufficient, but the third should be
+		// cheaper, so that we select it but drop later.
+
+		// First, we set limits on these (previously unlimited) channels.
+		// Their aggregate capacity will be 50 + 60 + 10 = 120 sats.
+
+		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(100_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(50_000),
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats (total limit 60);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(60_000),
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(60_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via node1 is channels {2, 4}. Limit them to 10 and 10 sats (total capacity 10 sats).
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(10_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(10_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Attempt to route more than is available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 150_000, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route 115 sats (just a bit below the capacity of 3 channels).
+			// Our algorithm should provide us with these 3 paths.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 115_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 3);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 2);
+				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 115_000);
+		}
+
+		{
+			// Attempt to route without the last small cheap channel
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 90_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 2);
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.len(), 2);
+				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.last().unwrap().fee_msat;
+			}
+			assert_eq!(total_amount_paid_msat, 90_000);
+		}
+	}
+
 }
