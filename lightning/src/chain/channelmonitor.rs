@@ -1203,6 +1203,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw: initial_local_commitment_tx.feerate_per_kw,
 			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
 		};
+
+		let mut outputs_to_watch = HashMap::new();
+		outputs_to_watch.insert(funding_info.0.txid, vec![funding_info.1.clone()]);
+
 		// Returning a monitor error before updating tracking points means in case of using
 		// a concurrent watchtower implementation for same channel, if this one doesn't
 		// reject update as we do, you MAY have the latest local valid commitment tx onchain
@@ -1246,7 +1250,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			pending_events: Vec::new(),
 
 			onchain_events_waiting_threshold_conf: HashMap::new(),
-			outputs_to_watch: HashMap::new(),
+			outputs_to_watch,
 
 			onchain_tx_handler,
 
