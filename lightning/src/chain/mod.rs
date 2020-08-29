@@ -67,8 +67,7 @@ pub trait Watch: Send + Sync {
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
-	/// calling [`block_connected`] and [`block_disconnected`] on the monitor and including all such
-	/// transactions that meet this criteria.
+	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
 	/// [`get_outputs_to_watch`]: ../ln/channelmonitor/struct.ChannelMonitor.html#method.get_outputs_to_watch
 	/// [`block_connected`]: ../ln/channelmonitor/struct.ChannelMonitor.html#method.block_connected

@@ -1835,17 +1835,42 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		Vec::new()
 	}
 
+	/// Checks if a given transaction matches the funding transaction or spends any watched outputs.
+	fn does_tx_match(&self, tx: &Transaction) -> bool {
+		let funding_txo = self.get_funding_txo();
+		if tx.txid() == funding_txo.0.txid {
+			for output in tx.output.iter() {
+				if output.script_pubkey == funding_txo.1 {
+					return true;
+				}
+			}
+		}
+
+		for input in tx.input.iter() {
+			for (txid, outputs) in self.get_outputs_to_watch().iter() {
+				for (idx, _script_pubkey) in outputs.iter().enumerate() {
+					if txid == &input.previous_output.txid && idx == input.previous_output.vout as usize {
+						return true;
+					}
+				}
+			}
+		}
+
+		false
+	}
+
 	/// Determines if any HTLCs have been resolved on chain in the connected block.
 	///
-	/// Returns any transaction outputs from `txn_matched` that spends of should be watched for.
-	/// After called these are also available via [`get_outputs_to_watch`].
+	/// Returns any new outputs to watch from `txdata`. After called, these are also included in
+	/// [`get_outputs_to_watch`].
 	///
 	/// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txn_matched: &[(usize, &Transaction)], height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
+		let txn_matched = &txdata.iter().filter(|&&(_, tx)| self.does_tx_match(tx)).map(|e| *e).collect::<Vec<_>>();
 		for &(_, tx) in txn_matched {
 			let mut output_val = 0;
 			for out in tx.output.iter() {
