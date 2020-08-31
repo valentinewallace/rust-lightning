@@ -214,12 +214,12 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// [`chain::Watch::release_pending_htlc_updates`]: ../../chain/trait.Watch.html#tymethod.release_pending_htlc_updates
 	/// [`chain::Notify`]: ../../chain/trait.Notify.html
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) -> bool {
-		let mut new_outputs = false;
+		let mut has_new_outputs_to_watch = false;
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
 				let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-				new_outputs |= !txn_outputs.is_empty();
+				has_new_outputs_to_watch |= !txn_outputs.is_empty();
 
 				if let Some(ref chain_source) = self.chain_source {
 					for (txid, outputs) in txn_outputs.drain(..) {
@@ -230,7 +230,7 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 				}
 			}
 		}
-		new_outputs
+		has_new_outputs_to_watch
 	}
 
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
