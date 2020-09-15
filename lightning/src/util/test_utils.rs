@@ -17,6 +17,7 @@ use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
+use ln::data_persister::ChannelDataPersister;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
@@ -63,18 +64,18 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: channelmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
+	pub chain_monitor: channelmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a ChannelDataPersister<Keys = EnforcingChannelKeys>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, data_persister: &'a ChannelDataPersister<Keys = EnforcingChannelKeys>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			chain_monitor: channelmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
+			chain_monitor: channelmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, data_persister).unwrap(),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}
@@ -131,6 +132,24 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+}
+
+pub struct TestChanDataPersister {}
+
+impl ChannelDataPersister for TestChanDataPersister {
+	type Keys = EnforcingChannelKeys;
+
+	fn persist_channel_data(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		Ok(())
+	}
+
+	fn update_channel_data(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		Ok(())
+	}
+
+	fn load_channel_data(&self) -> Result<HashMap<OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>>, channelmonitor::ChannelMonitorUpdateErr> {
+		Ok(HashMap::new())
 	}
 }
 

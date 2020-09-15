@@ -35,6 +35,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
+use lightning::ln::data_persister::ChannelDataPersister;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
@@ -48,6 +49,7 @@ use lightning::routing::router::{Route, RouteHop};
 
 
 use utils::test_logger;
+use utils::test_data_persister::TestChanDataPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::Secp256k1;
@@ -84,7 +86,7 @@ impl Writer for VecWriter {
 
 struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub chain_monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	pub chain_monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<dyn ChannelDataPersister<Keys=EnforcingChannelKeys>>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
@@ -95,9 +97,9 @@ struct TestChainMonitor {
 	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChainMonitor {
-	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
+	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>, data_persister: Arc<dyn ChannelDataPersister<Keys=EnforcingChannelKeys>>) -> Self {
 		Self {
-			chain_monitor: Arc::new(channelmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest)),
+			chain_monitor: Arc::new(channelmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest, data_persister).unwrap()),
 			logger,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
@@ -127,7 +129,7 @@ impl chain::Watch for TestChainMonitor {
 		};
 		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
 			read(&mut Cursor::new(&map_entry.get().1)).unwrap().1;
-		deserialized_monitor.update_monitor(update.clone(), &&TestBroadcaster {}, &self.logger).unwrap();
+		deserialized_monitor.update_monitor(&update, &&TestBroadcaster {}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write_for_disk(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
@@ -192,7 +194,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! make_node {
 		($node_id: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
+			let data_persister = Arc::new(TestChanDataPersister{});
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), data_persister.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -207,7 +210,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
+			let data_persister = Arc::new(TestChanDataPersister{});
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), data_persister.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();

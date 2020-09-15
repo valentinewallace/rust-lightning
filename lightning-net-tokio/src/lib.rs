@@ -36,7 +36,8 @@
 //! type Logger = dyn lightning::util::logger::Logger;
 //! type ChainAccess = dyn lightning::chain::Access;
 //! type ChainNotify = dyn lightning::chain::Notify;
-//! type ChainMonitor = lightning::chain::channelmonitor::ChainMonitor<lightning::chain::keysinterface::InMemoryChannelKeys, Arc<ChainNotify>, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>>;
+//! type DataPersister = dyn lightning::ln::data_persister::ChannelDataPersister<Keys = lightning::chain::keysinterface::InMemoryChannelKeys>;
+//! type ChainMonitor = lightning::chain::channelmonitor::ChainMonitor<lightning::chain::keysinterface::InMemoryChannelKeys, Arc<ChainNotify>, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<DataPersister>>;
 //! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor, TxBroadcaster, FeeEstimator, Logger>;
 //! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>;
 //!

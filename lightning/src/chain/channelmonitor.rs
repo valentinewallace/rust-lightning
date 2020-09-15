@@ -43,6 +43,7 @@ use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
+use ln::data_persister::ChannelDataPersister;
 use chain;
 use chain::Notify;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -99,7 +100,7 @@ impl Readable for ChannelMonitorUpdate {
 }
 
 /// An error enum representing a failure to persist a channel monitor update.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
 	/// our state failed, but is expected to succeed at some point in the future).
@@ -152,7 +153,12 @@ pub enum ChannelMonitorUpdateErr {
 /// corrupted.
 /// Contains a human-readable error message.
 #[derive(Debug)]
-pub struct MonitorUpdateError(pub &'static str);
+pub struct MonitorUpdateError {
+	/// The human-readable error message string.
+	pub msg: &'static str,
+	/// A monitor update may have an error but still need to be persisted to disk.
+	pub persist_updated_monitor: bool
+}
 
 /// An event to be processed by the ChannelManager.
 #[derive(PartialEq)]
@@ -182,25 +188,28 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 /// independently to monitor channels remotely.
 ///
 /// [`chain::Watch`]: ../../chain/trait.Watch.html
-pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref>
+pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, D: Deref>
 	where C::Target: chain::Notify,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
+        D::Target: ChannelDataPersister<Keys=ChanSigner>,
 {
 	/// The monitors
 	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
-	fee_estimator: F
+	fee_estimator: F,
+	data_persister: D,
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
+impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, D: Deref> ChainMonitor<ChanSigner, C, T, F, L, D>
 	where C::Target: chain::Notify,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
+	      D::Target: ChannelDataPersister<Keys=ChanSigner>,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the connected block. See
@@ -246,22 +255,29 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
+impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, D: Deref> ChainMonitor<ChanSigner, C, T, F, L, D>
 	where C::Target: chain::Notify,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
+	      D::Target: ChannelDataPersister<Keys=ChanSigner>,
 {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F) -> Self {
-		Self {
-			monitors: Mutex::new(HashMap::new()),
+	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, data_persister: D) -> Result<Self, ChannelMonitorUpdateErr> {
+		let monitors = match data_persister.load_channel_data() {
+			Ok(mons) => mons,
+			Err(e) => return Err(e)
+		};
+
+		Ok(Self {
+			monitors: Mutex::new(monitors),
 			chain_source,
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
-		}
+			data_persister,
+		})
 	}
 
 	/// Adds or updates the monitor which monitors the channel referred to by the given outpoint.
@@ -269,12 +285,24 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// Calls back to [`chain::Notify`] with the funding transaction and outputs to watch.
 	///
 	/// [`chain::Notify`]: ../../chain/trait.Notify.html
-	pub fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
+	pub fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let mut monitors = self.monitors.lock().unwrap();
 		let entry = match monitors.entry(outpoint) {
-			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given outpoint is already present")),
+			hash_map::Entry::Occupied(_) => {
+				log_error!(self.logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
+				return Err(ChannelMonitorUpdateErr::PermanentFailure);
+			},
 			hash_map::Entry::Vacant(e) => e,
 		};
+		{
+			match self.data_persister.persist_channel_data(outpoint, &monitor) {
+				Err(e) => {
+					log_error!(self.logger, "Failed to persist new channel data");
+					return Err(e);
+				},
+				_ => {}
+			}
+		}
 		{
 			let funding_txo = monitor.get_funding_txo();
 			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
@@ -293,38 +321,47 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	}
 
 	/// Updates the monitor which monitors the channel referred to by the given outpoint.
-	pub fn update_monitor(&self, outpoint: OutPoint, update: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
+	pub fn update_monitor(&self, outpoint: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
 		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&outpoint) {
-			Some(orig_monitor) => {
-				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-				orig_monitor.update_monitor(update, &self.broadcaster, &self.logger)
-			},
-			None => Err(MonitorUpdateError("No such monitor registered"))
+		if let Some(orig_monitor) = monitors.get_mut(&outpoint) {
+			log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
+			let mut should_persist = true;
+			let res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.logger);
+			if let Err(MonitorUpdateError{ msg, persist_updated_monitor }) = res {
+				log_error!(self.logger, "{}", msg);
+				should_persist = persist_updated_monitor;
+			}
+			if should_persist {
+					match self.data_persister.update_channel_data(outpoint, &update, orig_monitor) {
+						Err(e) => return Err(e),
+						_ => {}
+					}
+			}
+			if res.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+		} else {
+			log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
+			return Err(ChannelMonitorUpdateErr::PermanentFailure);
 		}
+
+		Ok(())
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L>
+impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, D: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L, D>
 	where C::Target: chain::Notify,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
+	      D::Target: ChannelDataPersister<Keys=ChanSigner>,
 {
 	type Keys = ChanSigner;
 
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.add_monitor(funding_txo, monitor) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
-		}
+		self.add_monitor(funding_txo, monitor)
 	}
 
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.update_monitor(funding_txo, update) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
-		}
+		self.update_monitor(funding_txo, update)
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
@@ -336,11 +373,12 @@ impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F:
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L>
+impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, D: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L, D>
 	where C::Target: chain::Notify,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
+	      D::Target: ChannelDataPersister<Keys=ChanSigner>,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();
@@ -1189,7 +1227,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
 	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
 		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
-			return Err(MonitorUpdateError("Previous secret did not match new one"));
+			return Err(MonitorUpdateError{
+				msg: "Previous secret did not match new one",
+				persist_updated_monitor: false
+			});
 		}
 
 		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
@@ -1290,7 +1331,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Panics if set_on_local_tx_csv has never been called.
 	fn provide_latest_local_commitment_tx_info(&mut self, commitment_tx: LocalCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
 		if self.local_tx_signed {
-			return Err(MonitorUpdateError("A local commitment tx has already been signed, no new local commitment txn can be sent to our counterparty"));
+			return Err(MonitorUpdateError{
+				msg: "A local commitment tx has already been signed, no new local commitment txn can be sent to our counterparty",
+				persist_updated_monitor: false
+			});
 		}
 		let txid = commitment_tx.txid();
 		let sequence = commitment_tx.unsigned_tx.input[0].sequence as u64;
@@ -1311,7 +1355,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// for which you want to spend outputs. We're NOT robust again this scenario right
 		// now but we should consider it later.
 		if let Err(_) = self.onchain_tx_handler.provide_latest_local_tx(commitment_tx) {
-			return Err(MonitorUpdateError("Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
+			return Err(MonitorUpdateError{
+				msg: "Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed",
+				persist_updated_monitor: false
+			});
 		}
 		self.current_local_commitment_number = 0xffff_ffff_ffff - ((((sequence & 0xffffff) << 3*8) | (locktime as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		mem::swap(&mut new_local_commitment_tx, &mut self.current_local_commitment_tx);
@@ -1339,30 +1386,29 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: Deref, L: Deref>(&mut self, mut updates: ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
+	pub fn update_monitor<B: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
 		if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
-		for update in updates.updates.drain(..) {
+		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, htlc_outputs } => {
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_local_commitment_tx_info(commitment_tx, htlc_outputs)?
+					self.provide_latest_local_commitment_tx_info(commitment_tx.clone(), htlc_outputs.clone())?
 				},
 				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
-					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point, logger),
+					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger),
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(idx, secret)?,
+					self.provide_secret(*idx, *secret)?,
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					self.lockdown_from_offchain = true;
-					if should_broadcast {
-						self.broadcast_latest_local_commitment_txn(broadcaster, logger);
-					} else {
+					if *should_broadcast {
+						self.broadcast_latest_local_commitment_txn(broadcaster, logger);} else {
 						log_error!(logger, "You have a toxic local commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_local_commitment_txn to be informed of manual action to take");
 					}
 				}

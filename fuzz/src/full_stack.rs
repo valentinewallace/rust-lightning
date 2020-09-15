@@ -31,6 +31,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::channelmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
+use lightning::ln::data_persister::ChannelDataPersister;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::routing::router::get_route;
@@ -41,6 +42,7 @@ use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 
 use utils::test_logger;
+use utils::test_data_persister::TestChanDataPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::Secp256k1;
@@ -146,13 +148,13 @@ impl<'a> std::hash::Hash for Peer<'a> {
 
 type ChannelMan = ChannelManager<
 	EnforcingChannelKeys,
-	Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<dyn ChannelDataPersister<Keys=EnforcingChannelKeys>>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
 type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
-	monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<dyn ChannelDataPersister<Keys=EnforcingChannelKeys>>>>,
 	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
@@ -166,7 +168,7 @@ struct MoneyLossDetector<'a> {
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
 	           manager: Arc<ChannelMan>,
-	           monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	           monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Notify>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<dyn ChannelDataPersister<Keys=EnforcingChannelKeys>>>>,
 	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
 			manager,
@@ -334,7 +336,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 
 	let broadcast = Arc::new(TestBroadcaster{});
-	let monitor = Arc::new(channelmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone()));
+	let data_persister: Arc<dyn ChannelDataPersister<Keys = EnforcingChannelKeys>> = Arc::new(TestChanDataPersister{});
+	let monitor = Arc::new(channelmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(), data_persister.clone()).unwrap());
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();
