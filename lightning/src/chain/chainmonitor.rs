@@ -35,6 +35,8 @@ use chain;
 use chain::Filter;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, MonitorUpdateError};
+use chain::channelmonitor;
+use chain::channelmonitor::Persist;
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -55,25 +57,28 @@ use std::ops::Deref;
 /// [`chain::Watch`]: ../trait.Watch.html
 /// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
 /// [module-level documentation]: index.html
-pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref>
+pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
+        P::Target: channelmonitor::Persist<ChanSigner>,
 {
 	/// The monitors
 	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
-	fee_estimator: F
+	fee_estimator: F,
+	persister: P,
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
+impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChanSigner, C, T, F, L, P>
+where C::Target: chain::Filter,
+	    T::Target: BroadcasterInterface,
+	    F::Target: FeeEstimator,
+	    L::Target: Logger,
+	    P::Target: channelmonitor::Persist<ChanSigner>,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the connected block. See
@@ -129,25 +134,38 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// transactions relevant to the watched channels.
 	///
 	/// [`chain::Filter`]: ../trait.Filter.html
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F) -> Self {
+	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
 			monitors: Mutex::new(HashMap::new()),
 			chain_source,
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
+			persister,
 		}
 	}
+}
+
+impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L, P>
+where C::Target: chain::Filter,
+	    T::Target: BroadcasterInterface,
+	    F::Target: FeeEstimator,
+	    L::Target: Logger,
+	    P::Target: channelmonitor::Persist<ChanSigner>,
+{
+	type Keys = ChanSigner;
 
 	/// Adds the monitor that watches the channel referred to by the given outpoint.
 	///
 	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
 	///
 	/// [`chain::Filter`]: ../trait.Filter.html
-	fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
+	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let mut monitors = self.monitors.lock().unwrap();
-		let entry = match monitors.entry(outpoint) {
-			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given outpoint is already present")),
+		let entry = match monitors.entry(funding_outpoint) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(self.logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
+				return Err(ChannelMonitorUpdateErr::PermanentFailure)},
 			hash_map::Entry::Vacant(e) => e,
 		};
 		{
@@ -163,43 +181,50 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 				}
 			}
 		}
+		match self.persister.persist_new_channel(funding_outpoint, &monitor) {
+			Err(e) => {
+				log_error!(self.logger, "Failed to persist new channel data");
+				return Err(e);
+			},
+			_ => {}
+		}
 		entry.insert(monitor);
 		Ok(())
 	}
 
-	/// Updates the monitor that watches the channel referred to by the given outpoint.
-	fn update_monitor(&self, outpoint: OutPoint, update: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
-		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&outpoint) {
-			Some(orig_monitor) => {
-				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-				orig_monitor.update_monitor(update, &self.broadcaster, &self.logger)
-			},
-			None => Err(MonitorUpdateError("No such monitor registered"))
-		}
-	}
-}
-
-impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
-	type Keys = ChanSigner;
-
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.add_monitor(funding_txo, monitor) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
-		}
-	}
-
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.update_monitor(funding_txo, update) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
+		// Update the monitor that watches the channel referred to by the given outpoint.
+		let mut monitors = self.monitors.lock().unwrap();
+		if let Some(orig_monitor) = monitors.get_mut(&funding_txo) {
+			log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
+			let mut should_persist = true;
+			let res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.logger);
+			match res {
+				Err(MonitorUpdateError::PersistMonitor(msg)) => {
+					log_error!(self.logger, "{}", msg);
+				},
+				Err(MonitorUpdateError::NoPersistMonitor(msg)) => {
+					log_error!(self.logger, "{}", msg);
+					should_persist = false;
+				},
+				Ok(()) => {},
+			}
+			if should_persist {
+				match self.persister.update_persisted_channel(funding_txo, &update, orig_monitor) {
+					Err(e) => {
+						if !res.is_err() {
+							return Err(e);
+						}
+					},
+					_ => {}
+				}
+			}
+			if res.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+		} else {
+			log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
+			return Err(ChannelMonitorUpdateErr::PermanentFailure);
 		}
+		Ok(())
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
@@ -211,11 +236,12 @@ impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F:
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L>
+impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
+	      P::Target: channelmonitor::Persist<ChanSigner>,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();

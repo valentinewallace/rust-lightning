@@ -95,7 +95,7 @@ impl Readable for ChannelMonitorUpdate {
 }
 
 /// An error enum representing a failure to persist a channel monitor update.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
 	/// our state failed, but is expected to succeed at some point in the future).
@@ -161,7 +161,14 @@ pub enum ChannelMonitorUpdateErr {
 /// corrupted.
 /// Contains a human-readable error message.
 #[derive(Debug)]
-pub struct MonitorUpdateError(pub &'static str);
+pub enum MonitorUpdateError {
+	/// While updating the monitor generated an error, still persist the monitor as it has changed
+	/// and needs to be updated on-disk. Contains a developer-readable error message.
+	PersistMonitor(&'static str),
+	/// Updating the monitor generated an error, no need to persist the updated monitor. Contains
+	/// a human-readable error message.
+	NoPersistMonitor(&'static str)
+}
 
 /// An event to be processed by the ChannelManager.
 #[derive(PartialEq)]
@@ -1022,7 +1029,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
 	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
 		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
-			return Err(MonitorUpdateError("Previous secret did not match new one"));
+			return Err(MonitorUpdateError::NoPersistMonitor("Previous secret did not match new one"));
 		}
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
@@ -1140,7 +1147,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		if self.holder_tx_signed {
-			return Err(MonitorUpdateError("Latest holder commitment signed has already been signed, update is rejected"));
+			return Err(MonitorUpdateError::NoPersistMonitor("Latest holder commitment signed has already been signed, update is rejected"));
 		}
 		Ok(())
 	}
@@ -1165,28 +1172,28 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: Deref, L: Deref>(&mut self, mut updates: ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
+	pub fn update_monitor<B: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
 		if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
-		for update in updates.updates.drain(..) {
+		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx_info(commitment_tx, htlc_outputs)?
+					self.provide_latest_holder_commitment_tx_info(commitment_tx.clone(), htlc_outputs.clone())?
 				},
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
-					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point, logger),
+					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger),
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(idx, secret)?,
+					self.provide_secret(*idx, *secret)?,
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					self.lockdown_from_offchain = true;
-					if should_broadcast {
+					if *should_broadcast {
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
 					} else {
 						log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
