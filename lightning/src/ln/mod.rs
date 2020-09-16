@@ -34,9 +34,9 @@ mod channel;
 mod onion_utils;
 mod wire;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test-utils"))]
 #[macro_use]
-pub(crate) mod functional_test_utils;
+pub mod functional_test_utils;
 #[cfg(test)]
 mod functional_tests;
 #[cfg(test)]
