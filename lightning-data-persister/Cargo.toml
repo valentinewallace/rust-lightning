@@ -1,0 +1,19 @@
+[package]
+name = "lightning-data-persister"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+license = "Apache-2.0"
+description = """
+Utilities to manage channel data persistence and retrieval.
+"""
+
+[dependencies]
+bitcoin = "0.23"
+lightning = { version = "0.0.11", path = "../lightning" }
+
+[dev-dependencies.bitcoin]
+version = "0.23"
+features = ["bitcoinconsensus"]
+
+[dev-dependencies]
+lightning = { version = "0.0.11", path = "../lightning", features = ["_test-utils"] }
