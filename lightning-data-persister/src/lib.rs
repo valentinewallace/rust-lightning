@@ -16,6 +16,16 @@ use std::marker::PhantomData;
 
 /// FilesystemPersister can persist channel data on disk on Linux machines, where
 /// each channel's data is stored in a file named after its funding outpoint.
+///
+/// Warning: this module does the best it can with calls to persist data, but it
+/// can only guarantee that the data is passed to the drive. It is up to the
+/// drive manufacturers to do the actual persistence properly, which they often
+/// don't (especially on consumer-grade hardware). Therefore, it is up to the
+/// user to validate their entire storage stack, to ensure the writes are
+/// persistent.
+/// Corollary: especially when dealing with larger amounts of money, it is best
+/// practice to have multiple channel data backups and not rely only on the
+/// FilesystemPersister.
 pub struct FilesystemPersister<ChanSigner: ChannelKeys + Readable + Writeable> {
 	path_to_channel_data: String,
 	phantom: PhantomData<ChanSigner>, // TODO: is there a way around this?
