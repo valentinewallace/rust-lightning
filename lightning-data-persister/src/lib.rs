@@ -69,13 +69,13 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		if need_bk {
 			fs::copy(&filename, &bk_filename)?;
 			{
-				let f = fs::OpenOptions::new().read(true).create(true).open(&bk_filename)?;
+				let f = fs::OpenOptions::new().read(true).write(true).open(&bk_filename)?;
 				f.sync_all()?;
 			}
 		}
 		fs::rename(&tmp_filename, &filename)?;
 		{
-			let f = fs::OpenOptions::new().read(true).create(true).open(&filename)?;
+			let f = fs::OpenOptions::new().read(true).write(true).open(&filename)?;
 			f.sync_all()?;
 		}
 		if need_bk {
