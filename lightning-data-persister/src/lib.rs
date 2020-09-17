@@ -87,7 +87,7 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		{
 			println!("VMW: about to open 2");
 			// let f = fs::File::open(&filename)?;
-			let f = fs::OpenOptions::new().read(true).write(true).create(true).open(&filename)?;
+			let f = fs::OpenOptions::new().create(true).open(&filename)?;
 			println!("VMW: about to sync_all 3");
 			f.sync_all()?;
 		}
