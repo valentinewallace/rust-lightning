@@ -32,6 +32,7 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 	}
 
 	fn get_full_filepath(&self, funding_txo: OutPoint) -> String {
+		println!("VMW: in get_full_filepath");
 		let path = Path::new(&self.path_to_channel_data);
 		let mut path_buf = path.to_path_buf();
 		path_buf.push(format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index));
@@ -47,10 +48,14 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		// the libc crate!
 		let filename = self.get_full_filepath(funding_txo);
 		let tmp_filename = filename.clone() + ".tmp";
+		println!("VMW: filename: {}", filename);
 
 		{
+			println!("VMW: about to File::create..");
 			let mut f = fs::File::create(&tmp_filename)?;
+			println!("VMW: about to write_for_disk");
 			monitor.write_for_disk(&mut f)?;
+			println!("VMW: about to sync_all");
 			f.sync_all()?;
 		}
 		// We don't need to create a backup if didn't already have the file, but in any other case
@@ -67,18 +72,25 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		};
 		let bk_filename = filename.clone() + ".bk";
 		if need_bk {
+			println!("VMW: about to fs::copy");
 			fs::copy(&filename, &bk_filename)?;
 			{
+				println!("VMW: about to fs::File::open");
 				let f = fs::File::open(&bk_filename)?;
+				println!("VMW: about to sync_all 2");
 				f.sync_all()?;
 			}
 		}
+		println!("VMW: about to rename");
 		fs::rename(&tmp_filename, &filename)?;
 		{
+			println!("VMW: about to open 2");
 			let f = fs::File::open(&filename)?;
+			println!("VMW: about to sync_all 3");
 			f.sync_all()?;
 		}
 		if need_bk {
+			println!("VMW: about to remove_file");
 			fs::remove_file(&bk_filename)?;
 		}
 		Ok(())
@@ -91,7 +103,9 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> ChannelDataPe
 	fn persist_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.write_channel_data(funding_txo, monitor) {
 			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::TemporaryFailure)
+			Err(e) => {
+				println!("VMW: writing channel data errored with {}", e);
+				return Err(ChannelMonitorUpdateErr::TemporaryFailure); }
 		}
 	}
 
