@@ -6,6 +6,7 @@ jobs:
   build:
     strategy:
       matrix:
+        platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
                      # 1.30.0 is MSRV for Rust-Lightning
@@ -17,12 +18,18 @@ jobs:
         include:
           - toolchain: stable
             build-net-tokio: true
+          - toolchain: stable
+            platform: macos-latest
+            build-net-tokio: true
+          - toolchain: stable
+            platform: windows-latest
+            build-net-tokio: true
           - toolchain: beta
             build-net-tokio: true
           - toolchain: 1.39.0
             build-net-tokio: true
             coverage: true
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2
@@ -33,7 +40,8 @@ jobs:
           override: true
           profile: minimal
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && matrix.toolchain != '1.39.0'"
+        if: "matrix.build-net-tokio && matrix.toolchain != '1.39.0'
+            || matrix.platform == 'macos-latest' || matrix.platform == 'windows-latest'"
         run: cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: "matrix.toolchain == '1.39.0'"
@@ -42,7 +50,8 @@ jobs:
         if: "! matrix.build-net-tokio"
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && matrix.toolchain != '1.39.0'"
+        if: "matrix.build-net-tokio && matrix.toolchain != '1.39.0'
+            || matrix.platform == 'macos-latest' || matrix.platform == 'windows-latest'"
         run: cargo test --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: "matrix.toolchain == '1.39.0'"
