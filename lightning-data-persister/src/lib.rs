@@ -69,13 +69,13 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		if need_bk {
 			fs::copy(&filename, &bk_filename)?;
 			{
-				let f = fs::OpenOptions::new().read(true).write(true).open(&bk_filename)?;
+				let f = fs::OpenOptions::new().write(true).open(&bk_filename)?;
 				f.sync_all()?;
 			}
 		}
 		fs::rename(&tmp_filename, &filename)?;
 		{
-			let f = fs::OpenOptions::new().read(true).write(true).open(&filename)?;
+			let f = fs::OpenOptions::new().write(true).open(&filename)?;
 			f.sync_all()?;
 		}
 		if need_bk {
@@ -91,7 +91,7 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> ChannelDataPe
 	fn persist_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.write_channel_data(funding_txo, monitor) {
 			Ok(_) => Ok(()),
-			Err(e) => Err(ChannelMonitorUpdateErr::TemporaryFailure)
+			Err(_) => Err(ChannelMonitorUpdateErr::TemporaryFailure)
 		}
 	}
 
