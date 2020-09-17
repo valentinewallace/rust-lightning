@@ -38,6 +38,10 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		path_buf.to_str().unwrap().to_string()
 	}
 
+	// Utility to write a file to disk.
+	// Note: we may eventually want to change this model to a queue-based system, such that
+	// writes are queued to a separate writer thread. This would improve performance
+	// since syncing to disk can sometimes take 100s of milliseconds.
 	fn write_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> std::io::Result<()> {
 		// Do a crazy dance with lots of fsync()s to be overly cautious here...
 		// We never want to end up in a state where we've lost the old data, or end up using the
