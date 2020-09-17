@@ -152,8 +152,8 @@ mod tests {
 	#[test]
 	fn test_filesystem_data_persister() {
 		// Create the nodes, giving them FilesystemPersisters for data persisters.
-		let data_persister_0: FilesystemPersister<EnforcingChannelKeys> = FilesystemPersister::new("./persister0".to_string());
-		let data_persister_1: FilesystemPersister<EnforcingChannelKeys> = FilesystemPersister::new("./persister1".to_string());
+		let data_persister_0: FilesystemPersister<EnforcingChannelKeys> = FilesystemPersister::new("persister0".to_string());
+		let data_persister_1: FilesystemPersister<EnforcingChannelKeys> = FilesystemPersister::new("persister1".to_string());
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &data_persister_0);
