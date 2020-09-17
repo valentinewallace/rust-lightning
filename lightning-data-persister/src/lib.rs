@@ -9,6 +9,7 @@ use lightning::util::ser::{Writeable, Readable};
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::{ToHex, FromHex};
 use std::fs;
+use std::path::Path;
 use std::io::{Error, ErrorKind, Cursor};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -31,7 +32,10 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 	}
 
 	fn get_full_filepath(&self, funding_txo: OutPoint) -> String {
-		format!("{}/{}_{}", self.path_to_channel_data, funding_txo.txid.to_hex(), funding_txo.index)
+		let path = Path::new(&self.path_to_channel_data);
+		let mut path_buf = path.to_path_buf();
+		path_buf.push(format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index));
+		path_buf.to_str().unwrap().to_string()
 	}
 
 	fn write_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> std::io::Result<()> {
