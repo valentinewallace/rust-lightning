@@ -76,7 +76,8 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 			fs::copy(&filename, &bk_filename)?;
 			{
 				println!("VMW: about to fs::File::open");
-				let f = fs::File::open(&bk_filename)?;
+				// let f = fs::File::open(&bk_filename)?;
+				let f = fs::OpenOptions::new().read(true).write(true).create(true).open(&bk_filename)?;
 				println!("VMW: about to sync_all 2");
 				f.sync_all()?;
 			}
@@ -85,7 +86,8 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		fs::rename(&tmp_filename, &filename)?;
 		{
 			println!("VMW: about to open 2");
-			let f = fs::File::open(&filename)?;
+			// let f = fs::File::open(&filename)?;
+			let f = fs::OpenOptions::new().read(true).write(true).create(true).open(&filename)?;
 			println!("VMW: about to sync_all 3");
 			f.sync_all()?;
 		}
