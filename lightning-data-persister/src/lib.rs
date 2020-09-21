@@ -64,22 +64,12 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		// open(tmpname), write(tmpfile), fsync(tmpfile), close(tmpfile), fsync(dir), rename(), fsync(dir)
 		let filename = self.get_full_filepath(funding_txo);
 		let tmp_filename = filename.clone() + ".tmp";
-		macro_rules! sync_parent_dir {
-			() => {
-				let path_str = filename.clone();
-				let path = Path::new(&path_str).parent().unwrap();
-				let dir_file = fs::File::open(path)?;
-				#[cfg(not(target_os = "windows"))]
-				unsafe { libc::fsync(dir_file.as_raw_fd()); }
-			}
-		}
 
 		{
 			let mut f = fs::File::create(&tmp_filename)?;
 			monitor.write_for_disk(&mut f)?;
 			f.sync_all()?;
 		}
-		sync_parent_dir!();
 		// We don't need to create a backup if didn't already have the file, but in any other case
 		// try to create the backup and expect failure on fs::copy() if eg there's a perms issue.
 		let need_bk = match fs::metadata(&filename) {
@@ -101,10 +91,16 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 			}
 		}
 		fs::rename(&tmp_filename, &filename)?;
-		sync_parent_dir!();
 		if need_bk {
 			fs::remove_file(&bk_filename)?;
 		}
+
+		// Fsync the parent directory on Unix.
+		let path_str = filename.clone();
+		let path = Path::new(&path_str).parent().unwrap();
+		let dir_file = fs::File::open(path)?;
+		#[cfg(not(target_os = "windows"))]
+		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 		Ok(())
 	}
 }
