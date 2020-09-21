@@ -1,5 +1,6 @@
 extern crate lightning;
 extern crate bitcoin;
+extern crate libc;
 
 use lightning::ln::data_persister::ChannelDataPersister;
 use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr};
@@ -13,6 +14,9 @@ use std::path::Path;
 use std::io::{Error, ErrorKind, Cursor};
 use std::collections::HashMap;
 use std::marker::PhantomData;
+
+#[cfg(not(target_os = "windows"))]
+use std::os::unix::io::AsRawFd;
 
 /// FilesystemPersister can persist channel data on disk on Linux machines, where
 /// each channel's data is stored in a file named after its funding outpoint.
@@ -42,8 +46,8 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 	}
 
 	fn get_full_filepath(&self, funding_txo: OutPoint) -> String {
-		let path = Path::new(&self.path_to_channel_data);
-		let mut path_buf = path.to_path_buf();
+		let dir_path = Path::new(&self.path_to_channel_data);
+		let mut path_buf = dir_path.to_path_buf();
 		path_buf.push(format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index));
 		path_buf.to_str().unwrap().to_string()
 	}
@@ -55,18 +59,27 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 	fn write_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> std::io::Result<()> {
 		// Do a crazy dance with lots of fsync()s to be overly cautious here...
 		// We never want to end up in a state where we've lost the old data, or end up using the
-		// old data on power loss after we've returned
-		// Note that this actually *isn't* enough (at least on Linux)! We need to fsync an fd with
-		// the containing dir, but Rust doesn't let us do that directly, sadly. TODO: Fix this with
-		// the libc crate!
+		// old data on power loss after we've returned.
+		// The way to atomically write a file on Unix platforms is:
+		// open(tmpname), write(tmpfile), fsync(tmpfile), close(tmpfile), fsync(dir), rename(), fsync(dir)
 		let filename = self.get_full_filepath(funding_txo);
 		let tmp_filename = filename.clone() + ".tmp";
+		macro_rules! sync_parent_dir {
+			() => {
+				let path_str = filename.clone();
+				let path = Path::new(&path_str).parent().unwrap();
+				let dir_file = fs::File::open(path)?;
+				#[cfg(not(target_os = "windows"))]
+				unsafe { libc::fsync(dir_file.as_raw_fd()); }
+			}
+		}
 
 		{
 			let mut f = fs::File::create(&tmp_filename)?;
 			monitor.write_for_disk(&mut f)?;
 			f.sync_all()?;
 		}
+		sync_parent_dir!();
 		// We don't need to create a backup if didn't already have the file, but in any other case
 		// try to create the backup and expect failure on fs::copy() if eg there's a perms issue.
 		let need_bk = match fs::metadata(&filename) {
@@ -88,10 +101,7 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 			}
 		}
 		fs::rename(&tmp_filename, &filename)?;
-		{
-			let f = fs::OpenOptions::new().write(true).open(&filename)?;
-			f.sync_all()?;
-		}
+		sync_parent_dir!();
 		if need_bk {
 			fs::remove_file(&bk_filename)?;
 		}
