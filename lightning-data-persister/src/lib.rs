@@ -97,8 +97,11 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 
 		// Fsync the parent directory on Unix.
 		let path_str = filename.clone();
+		println!("VMW: at the end, about to get path");
 		let path = Path::new(&path_str).parent().unwrap();
+		println!("VMW: about to open path");
 		let dir_file = fs::File::open(path)?;
+		// let dir_file = fs::OpenOptions::new().write(true).open(path)?;
 		#[cfg(not(target_os = "windows"))]
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 		Ok(())
@@ -111,7 +114,9 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> ChannelDataPe
 	fn persist_channel_data(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.write_channel_data(funding_txo, monitor) {
 			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::TemporaryFailure)
+			Err(e) => {
+				println!("VMW: err: {}", e);
+				return Err(ChannelMonitorUpdateErr::TemporaryFailure); }
 		}
 	}
 
