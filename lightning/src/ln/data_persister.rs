@@ -65,8 +65,8 @@ pub trait ChannelDataPersister: Send + Sync {
 	/// and [`ChannelMonitorUpdate::write`] for writing out an update.
 	///
 	/// [`load_channel_data`]: trait.ChannelDataPersister.html#tymethod.load_channel_data
-	/// [`ChannelMonitor::write_for_disk`]: struct.ChannelMonitor.html#method.write_for_disk
-	/// [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
+	/// [`ChannelMonitor::write_for_disk`]: ../../chain/channelmonitor/struct.ChannelMonitor.html#method.write_for_disk
+	/// [`ChannelMonitorUpdate::write`]: ../../chain/channelmonitor/struct.ChannelMonitorUpdate.html#method.write
 	fn update_channel_data(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Load the data for all channels. Generally only called on startup. You must
@@ -78,8 +78,8 @@ pub trait ChannelDataPersister: Send + Sync {
 	///
 	/// See [`ChannelMonitor::read`] for deserializing a ChannelMonitor.
 	///
-	/// [`update_id`]: struct.ChannelMonitorUpdate.html#structfield.update_id
+	/// [`update_id`]: ../../chain/channelmonitor/struct.ChannelMonitorUpdate.html#structfield.update_id
 	/// [`update_channel_data`]: trait.ChannelDataPersister.html#tymethod.update_channel_data
-	/// [`ChannelMonitor::read`]: trait.Readable.html
+	/// [`ChannelMonitor::read`]: ../../util/ser/trait.Readable.html#impl-Readable-for-(BlockHash,ChannelMonitor<ChanSigner>)
 	fn load_channel_data(&self) -> Result<HashMap<OutPoint, ChannelMonitor<Self::Keys>>, ChannelMonitorUpdateErr>;
 }
