@@ -100,8 +100,8 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable> FilesystemPersister<ChanSig
 		println!("VMW: at the end, about to get path");
 		let path = Path::new(&path_str).parent().unwrap();
 		println!("VMW: about to open path");
-		let dir_file = fs::File::open(path)?;
-		// let dir_file = fs::OpenOptions::new().write(true).open(path)?;
+		// let dir_file = fs::File::open(path)?;
+		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		#[cfg(not(target_os = "windows"))]
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 		Ok(())
