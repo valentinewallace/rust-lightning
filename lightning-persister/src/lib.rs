@@ -59,7 +59,10 @@ impl FilesystemPersister {
 	}
 
 	fn get_full_filepath(&self, funding_txo: OutPoint) -> String {
-		format!("{}/{}_{}", self.path_to_channel_data, funding_txo.txid.to_hex(), funding_txo.index)
+		let path = Path::new(&self.path_to_channel_data);
+		let mut path_buf = path.to_path_buf();
+		path_buf.push(format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index));
+		path_buf.to_str().unwrap().to_string()
 	}
 
 	// Utility to write a file to disk.
