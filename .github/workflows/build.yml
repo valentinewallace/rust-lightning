@@ -50,7 +50,7 @@ jobs:
         run: cargo build --verbose  --color always -p lightning
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
-        run: cargo test --verbose --color always
+        run: cargo test --verbose --color always fail_on_open
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
