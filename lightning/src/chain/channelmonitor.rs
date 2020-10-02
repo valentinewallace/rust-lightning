@@ -2124,19 +2124,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 /// transaction and losing money. This is a risk because previous channel states
 /// are toxic, so it's important that whatever channel state is persisted is
 /// kept up-to-date.
-///
-/// There are several different strategies for persistence, with different
-/// requirements. While not exhaustive, here are a few. You could:
-///   * have multiple redundant backups where you want to ensure that every
-///     backup is always accessible. In this case, you need to ensure that every
-///     copy is updated at each step before moving forward, with none falling
-///     out of sync,
-///   * have backups where you're OK with relying on only M of N backups
-///     temporarily, in which you don't care about consensus between backups and
-///     only needs to ensure that you read from the backup(s) with the highest
-///     [`ChannelMonitorUpdate::update_id`].
-///
-/// [`ChannelMonitorUpdate::update_id`]: struct.ChannelMonitorUpdate.html#structfield.update_id
 pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 	/// Persist a new channel's data. The data can be stored with any file
 	/// name/path, but the identifier provided is the channel's outpoint. Note
