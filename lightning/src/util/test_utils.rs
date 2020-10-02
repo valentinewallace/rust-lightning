@@ -100,6 +100,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 			*self.update_ret.lock().unwrap() = Some(next_ret);
 		}
 		if ret.is_some() {
+			assert!(watch_res.is_ok());
 			return ret.clone().unwrap();
 		}
 		watch_res
@@ -117,13 +118,17 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let monitors = self.chain_monitor.monitors.lock().unwrap();
-		let monitor = monitors.get(&funding_txo).unwrap();
-		w.0.clear();
-		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
-		assert!(new_monitor == *monitor);
-		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+		match monitors.get(&funding_txo) {
+			Some(monitor) => {
+				w.0.clear();
+				monitor.write_for_disk(&mut w).unwrap();
+				let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+					&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+				assert!(new_monitor == *monitor);
+				self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+			},
+			_ => {}
+		}
 
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {

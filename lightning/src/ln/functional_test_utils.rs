@@ -249,6 +249,8 @@ macro_rules! get_revoke_commit_msgs {
 	}
 }
 
+/// Get an specific event message from the pending events queue.
+#[macro_export]
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {
 		{

@@ -99,28 +99,31 @@ impl FilesystemPersister {
 	fn load_channel_data<ChanSigner: ChannelKeys + Readable + Writeable>(&self) ->
 		Result<HashMap<OutPoint, ChannelMonitor<ChanSigner>>, ChannelMonitorUpdateErr> {
 		if let Err(_) = fs::create_dir_all(&self.path_to_channel_data) {
-			return Err(ChannelMonitorUpdateErr::TemporaryFailure);
+			return Err(ChannelMonitorUpdateErr::PermanentFailure);
 		}
 		let mut res = HashMap::new();
 		for file_option in fs::read_dir(&self.path_to_channel_data).unwrap() {
-			let mut loaded = false;
 			let file = file_option.unwrap();
-			if let Some(filename) = file.file_name().to_str() {
-				if filename.is_ascii() && filename.len() > 65 {
-					if let Ok(txid) = Txid::from_hex(filename.split_at(64).0) {
-						if let Ok(index) = filename.split_at(65).1.split('.').next().unwrap().parse() {
-							if let Ok(contents) = fs::read(&file.path()) {
-								if let Ok((_, loaded_monitor)) = <(BlockHash, ChannelMonitor<ChanSigner>)>::read(&mut Cursor::new(&contents)) {
-									res.insert(OutPoint { txid, index }, loaded_monitor);
-									loaded = true;
-								}
-							}
-						}
-					}
-				}
+			let file_name = file.file_name();
+			let filename = file_name.to_str();
+			if !filename.is_some() || !filename.unwrap().is_ascii() || filename.unwrap().len() < 65 {
+				return Err(ChannelMonitorUpdateErr::PermanentFailure);
 			}
-			if !loaded {
-				println!("WARNING: Failed to read one of the channel monitor storage files! Check perms!");
+
+			let txid = Txid::from_hex(filename.unwrap().split_at(64).0);
+			if txid.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+
+			let index = filename.unwrap().split_at(65).1.split('.').next().unwrap().parse();
+			if index.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+
+			let contents = fs::read(&file.path());
+			if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+
+			if let Ok((_, loaded_monitor)) =
+				<(BlockHash, ChannelMonitor<ChanSigner>)>::read(&mut Cursor::new(&contents.unwrap())) {
+				res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
+			} else {
+				return Err(ChannelMonitorUpdateErr::PermanentFailure);
 			}
 		}
 		Ok(res)
@@ -137,7 +140,6 @@ impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> channelmonito
 		self.write_channel_data(funding_txo, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
-
 }
 
 #[cfg(test)]
@@ -145,27 +147,36 @@ mod tests {
 	extern crate lightning;
 	extern crate bitcoin;
 	use crate::FilesystemPersister;
-	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::Hash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
-	use bitcoin::Txid;
 	use DiskWriteable;
 	use Error;
-	use lightning::{check_closed_broadcast, check_added_monitors, unwrap_send_err, get_payment_preimage_hash};
-	use lightning::chain::transaction::OutPoint;
-	use lightning::ln::channelmanager::{PaymentSendFailure, PaymentPreimage, PaymentHash};
+	use lightning::{check_closed_broadcast, check_added_monitors};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ErrorAction;
-	use lightning::routing::router::get_route;
 	use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
-	use lightning::util::errors::APIError;
 	use lightning::util::events::{MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writer;
 	use lightning::util::test_utils;
 	use std::fs;
-	use std::io;
+	#[cfg(not(target_os = "windows"))]
+	use {
+		bitcoin::hashes::hex::FromHex,
+		bitcoin::hashes::sha256::Hash as Sha256,
+		bitcoin::hashes::Hash,
+		bitcoin::Txid,
+		lightning::{unwrap_send_err, get_payment_preimage_hash},
+		lightning::chain::transaction::OutPoint,
+		lightning::ln::channelmanager::{PaymentSendFailure, PaymentPreimage, PaymentHash},
+		lightning::routing::router::get_route,
+		lightning::util::errors::APIError,
+		std::io,
+	};
+	#[cfg(target_os = "windows")]
+	use {
+		lightning::get_event_msg,
+		lightning::ln::msgs::ChannelMessageHandler,
+	};
 
 	struct TestWriteable{}
 	impl DiskWriteable for TestWriteable{
@@ -266,6 +277,8 @@ mod tests {
 		fs::remove_dir_all("persister").unwrap();
 	}
 
+	// Windows ignores the read-only flag for folders.
+	#[cfg(not(target_os = "windows"))]
 	#[test]
 	fn test_perm_failure_force_close() {
 		// Create the nodes, giving them FilesystemPersisters for data persisters.
@@ -316,5 +329,41 @@ mod tests {
 		fs::set_permissions(path, perms).unwrap();
 		fs::remove_dir_all("persister2").unwrap();
 		fs::remove_dir_all("persister3").unwrap();
+	}
+
+	#[cfg(target_os = "windows")]
+	#[test]
+	fn test_fail_on_open() {
+		// Create the nodes, giving them FilesystemPersisters for data persisters.
+		// But, give them invalid directory names and test that the channel fails
+		// to open because the directories fail to be created. There don't seem to
+		// be invalid filename characters on Unix that Rust doesn't handle, hence
+		// why the test is Windows-only.
+		let persister_0 = FilesystemPersister::new(":<>/".to_string());
+		let persister_1 = FilesystemPersister::new(":<>>/".to_string());
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister_0);
+		let chain_mon_1 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[1].chain_source), &chanmon_cfgs[1].tx_broadcaster, &chanmon_cfgs[1].logger, &chanmon_cfgs[1].fee_estimator, &persister_1);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		node_cfgs[1].chain_monitor = chain_mon_1;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// Manually exchange the messages and check that no monitor is added.
+		let channel_value = 800_000;
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value, 0, 42, None).unwrap();
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
+		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+		let (temporary_channel_id, _, funding_output) = create_funding_transaction(&nodes[0], channel_value, 42);
+
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+		check_added_monitors!(nodes[0], 0);
+
+		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
+		check_added_monitors!(nodes[0], 0);
+		check_added_monitors!(nodes[1], 0);
+		nodes[1].logger.assert_log_contains("lightning::chain::chainmonitor".to_string(), "Failed to persist new channel data".to_string(), 1);
 	}
 }

@@ -197,18 +197,18 @@ where C::Target: chain::Filter,
 		let mut monitors = self.monitors.lock().unwrap();
 		if let Some(orig_monitor) = monitors.get_mut(&funding_txo) {
 			log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-			let mut should_persist = true;
 			let res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.logger);
-			match res {
-				Err(MonitorUpdateError::PersistMonitor(msg)) => {
-					log_error!(self.logger, "{}", msg);
+			let should_persist = match res {
+				Ok(()) => true,
+				Err(MonitorUpdateError::PersistMonitor(e)) => {
+					log_error!(self.logger, "{}", e);
+					true
 				},
-				Err(MonitorUpdateError::NoPersistMonitor(msg)) => {
-					log_error!(self.logger, "{}", msg);
-					should_persist = false;
+				Err(MonitorUpdateError::NoPersistMonitor(e)) => {
+					log_error!(self.logger, "{}", e);
+					false
 				},
-				Ok(()) => {},
-			}
+			};
 			if should_persist {
 				match self.persister.update_persisted_channel(funding_txo, &update, orig_monitor) {
 					Err(e) => {
