@@ -146,16 +146,21 @@ mod tests {
 	extern crate bitcoin;
 	use crate::FilesystemPersister;
 	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::Hash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::Txid;
 	use DiskWriteable;
 	use Error;
-	use lightning::{check_closed_broadcast, check_added_monitors};
+	use lightning::{check_closed_broadcast, check_added_monitors, unwrap_send_err, get_payment_preimage_hash};
 	use lightning::chain::transaction::OutPoint;
+	use lightning::ln::channelmanager::{PaymentSendFailure, PaymentPreimage, PaymentHash};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ErrorAction;
+	use lightning::routing::router::get_route;
 	use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+	use lightning::util::errors::APIError;
 	use lightning::util::events::{MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writer;
 	use lightning::util::test_utils;
@@ -236,6 +241,8 @@ mod tests {
 		fs::remove_dir_all("persister1").unwrap();
 	}
 
+	// Windows ignores the read-only flag for folders.
+	#[cfg(not(target_os = "windows"))]
 	#[test]
 	fn test_readonly_dir() {
 		let persister = FilesystemPersister::new("persister".to_string());
@@ -244,7 +251,7 @@ mod tests {
 			txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
-		// Create the data persister's directory and set it to read-only.
+		// Create the persister's directory and set it to read-only.
 		let path = &persister.path_to_channel_data;
 		fs::create_dir_all(path).unwrap();
 		let mut perms = fs::metadata(path).unwrap().permissions();
@@ -257,5 +264,57 @@ mod tests {
 			_ => panic!("Unexpected error message")
 		}
 		fs::remove_dir_all("persister").unwrap();
+	}
+
+	#[test]
+	fn test_perm_failure_force_close() {
+		// Create the nodes, giving them FilesystemPersisters for data persisters.
+		// The persisters need different directory names to not conflict with the
+		// other FilesystemPersister tests, hence suffixing them with 2 and 3
+		// instead of 0 and 1.
+		let persister_0 = FilesystemPersister::new("persister2".to_string());
+		let persister_1 = FilesystemPersister::new("persister3".to_string());
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister_0);
+		let chain_mon_1 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[1].chain_source), &chanmon_cfgs[1].tx_broadcaster, &chanmon_cfgs[1].logger, &chanmon_cfgs[1].fee_estimator, &persister_1);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		node_cfgs[1].chain_monitor = chain_mon_1;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		// Set the persister's directory to read-only, which should result in
+		// returning a permanent failure on the next attempted update.
+		let path = &persister_0.path_to_channel_data;
+		let mut perms = fs::metadata(path).unwrap().permissions();
+		perms.set_readonly(true);
+		fs::set_permissions(path, perms).unwrap();
+
+		// Attempt an update, then check that the channel is force closed in
+		// response to the permanent failure.
+		let logger = test_utils::TestLogger::new();
+		let (_, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &None), true, APIError::ChannelUnavailable {..}, {});
+		check_added_monitors!(nodes[0], 2);
+		let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events_1.len(), 2);
+		match events_1[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		};
+		match events_1[1] {
+			MessageSendEvent::HandleError { node_id, .. } => assert_eq!(node_id, nodes[1].node.get_our_node_id()),
+			_ => panic!("Unexpected event"),
+		};
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+
+		let mut perms = fs::metadata(path).unwrap().permissions();
+		perms.set_readonly(false);
+		fs::set_permissions(path, perms).unwrap();
+		fs::remove_dir_all("persister2").unwrap();
+		fs::remove_dir_all("persister3").unwrap();
 	}
 }
