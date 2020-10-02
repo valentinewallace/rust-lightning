@@ -1147,7 +1147,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		if self.holder_tx_signed {
-			return Err(MonitorUpdateError::NoPersistMonitor("Latest holder commitment signed has already been signed, update is rejected"));
+			return Err(MonitorUpdateError::PersistMonitor("Latest holder commitment signed has already been signed, update is rejected"));
 		}
 		Ok(())
 	}
