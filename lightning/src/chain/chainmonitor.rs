@@ -168,6 +168,13 @@ where C::Target: chain::Filter,
 				return Err(ChannelMonitorUpdateErr::PermanentFailure)},
 			hash_map::Entry::Vacant(e) => e,
 		};
+		match self.persister.persist_new_channel(funding_outpoint, &monitor) {
+			Err(e) => {
+				log_error!(self.logger, "Failed to persist new channel data");
+				return Err(e);
+			},
+			_ => {}
+		}
 		{
 			let funding_txo = monitor.get_funding_txo();
 			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
@@ -180,13 +187,6 @@ where C::Target: chain::Filter,
 					}
 				}
 			}
-		}
-		match self.persister.persist_new_channel(funding_outpoint, &monitor) {
-			Err(e) => {
-				log_error!(self.logger, "Failed to persist new channel data");
-				return Err(e);
-			},
-			_ => {}
 		}
 		entry.insert(monitor);
 		Ok(())
