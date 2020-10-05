@@ -365,7 +365,7 @@ mod tests {
 		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
 		check_added_monitors!(nodes[0], 0);
 		nodes[1].logger.assert_log_contains("lightning::chain::chainmonitor".to_string(), "Failed to persist new channel data".to_string(), 1);
-		let events = nodes[1].node.get_and_clear_pending_events();
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 	}
 }
