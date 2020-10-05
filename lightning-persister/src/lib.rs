@@ -367,5 +367,6 @@ mod tests {
 		nodes[1].logger.assert_log_contains("lightning::chain::chainmonitor".to_string(), "Failed to persist new channel data".to_string(), 1);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
+		check_added_monitors!(nodes[1], 1);
 	}
 }
