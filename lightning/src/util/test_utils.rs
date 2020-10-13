@@ -118,20 +118,13 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let monitors = self.chain_monitor.monitors.lock().unwrap();
-		match monitors.get(&funding_txo) {
-			Some(monitor) => {
-				w.0.clear();
-				monitor.serialize_for_disk(&mut w).unwrap();
-				let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-					&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
-				assert!(new_monitor == *monitor);
-				self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
-			},
-			// This case can be hit if a channel fails to be persisted after receipt
-			// of a funding_created or funding_signed message, and then a call into
-			// our force-close logic triggers a call to `update_channel`.
-			_ => {}
-		}
+		let monitor = monitors.get(&funding_txo).unwrap();
+		w.0.clear();
+		monitor.serialize_for_disk(&mut w).unwrap();
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+		assert!(new_monitor == *monitor);
+		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
