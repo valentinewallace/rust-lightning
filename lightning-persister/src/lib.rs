@@ -375,9 +375,9 @@ mod tests {
 
 		nodes[1].node.get_and_clear_pending_msg_events();
 		added_monitors.clear();
-		let mut perms = fs::metadata(path).unwrap().permissions();
-		perms.set_readonly(false);
-		fs::set_permissions(path, perms).unwrap();
+		// let mut perms = fs::metadata(path).unwrap().permissions();
+		// perms.set_readonly(false);
+		// fs::set_permissions(path, perms).unwrap();
 	}
 
 	// Test that if a persister's directory name is invalid, monitor persistence
