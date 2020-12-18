@@ -52,7 +52,6 @@ impl PartialEq for RouteHop {
     }
 }
 
-
 impl Writeable for Vec<RouteHop> {
 	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		(self.len() as u8).write(writer)?;
@@ -164,10 +163,11 @@ struct DummyDirectionalChannelInfo {
 	fees: RoutingFees,
 }
 
-/// It's useful to keep track of the hops associated with the fees required to use them,
-/// so that we can choose cheaper paths (as per Dijkstra's algorithm).
-/// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
-/// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
+/// It's useful to keep track of the hops associated with the fees required to use them, so that we
+/// can choose cheaper paths (as per Dijkstra's algorithm).
+/// Fee values should be updated only in the context of the whole path, see
+/// update_value_and_recompute_fees. These fee values are useful to choose hops as we traverse the
+/// graph "payee-to-payer".
 #[derive(Clone)]
 struct PathBuildingHop {
 	route_hop: RouteHop,
@@ -175,22 +175,23 @@ struct PathBuildingHop {
 	/// - UTXO capacity
 	/// - htlc_maximum_msat (direction-dependent)
 	/// - use of the same channel by other paths per MPP (including fees paid there)
-	/// It does not take into account fees to be paid on the current hop, so
-	/// this amount *should* cover transferring a value AND paying fees (on this channel).
+	/// It does not take into account fees to be paid on the current hop, so this amount *should*
+	/// cover transferring a value AND paying fees (on this channel).
 	available_liquidity_msat: u64,
-	/// Minimal fees required to route to the source node of the current hop via any of its inbound channels.
+	/// Minimal fees required to route to the source node of the current hop via any of its inbound
+	/// channels.
 	src_lowest_inbound_fees: RoutingFees,
 	/// Fees of the channel used in this hop.
 	channel_fees: RoutingFees,
 	/// All the fees paid *after* this channel on the way to the destination
 	next_hops_fee_msat: u64,
-	/// Fee paid for the use of the current channel (see channel_fees).
-	/// The value will be actually paid on the previous hop.
+	/// Fee paid for the use of the current channel (see channel_fees). The value will be actually
+	/// paid on the previous hop.
 	hop_use_fee_msat: u64,
-	/// A fee to be paid for the use of the potential previous hop, which is the cheapest way
-	/// to transfer over the source node of the current hop.
-	/// It's an estimate, see src_lowest_inbound_fees, but applied to the exact amount we're transferring,
-	/// including further fees.
+	/// A fee to be paid for the use of the potential previous hop, which is the cheapest way to
+	/// transfer over the source node of the current hop.
+	/// It's an estimate, see src_lowest_inbound_fees, but applied to the exact amount we're
+	/// transferring, including further fees.
 	prev_hop_use_estimate_fee_msat: u64,
 }
 
@@ -218,8 +219,8 @@ impl PathBuildingHop {
 	}
 }
 
-// Instantiated with a list of hops with correct data in them collected during path finding,
-// an instance of this struct should be further modified only via given methods.
+// Instantiated with a list of hops with correct data in them collected during path finding, an
+// instance of this struct should be further modified only via given methods.
 #[derive(Clone)]
 struct PaymentPath {
 	hops: Vec<PathBuildingHop>,
@@ -238,8 +239,8 @@ impl PaymentPath {
 		}
 	}
 
-	// If an amount transferred by the path is updated, the fees should be adjusted.
-	// Any other way to change fees may result in an inconsistency.
+	// If an amount transferred by the path is updated, the fees should be adjusted. Any other way to
+	// change fees may result in an inconsistency.
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (1..self.hops.len()).rev() {
@@ -250,16 +251,16 @@ impl PaymentPath {
 				cur_hop.hop_use_fee_msat = new_fee;
 				total_fee_paid_msat += new_fee;
 			} else {
-				// It should not be possible, because this function is called only to
-				// reduce the value. In that case, compute_fee was already called with the same
-				// fees for larger amount and there was no overflow.
+				// It should not be possible, because this function is called only to reduce the value. In
+				// that case, compute_fee was already called with the same fees for larger amount and there
+				// was no overflow.
 				unreachable!();
 			}
 		}
 
-		// Propagate updated fees for the use of the channels to one hop back,
-		// where they will be actually paid (fee_msat).
-		// For the last hop it will represent the value being transferred over this path.
+		// Propagate updated fees for the use of the channels to one hop back, where they will be
+		// actually paid (fee_msat). For the last hop it will represent the value being transferred over
+		// this path.
 		for i in 0..self.hops.len() - 1 {
 			let next_hop_use_fee_msat = self.hops.get(i + 1).unwrap().hop_use_fee_msat;
 			self.hops.get_mut(i).unwrap().route_hop.fee_msat = next_hop_use_fee_msat;
@@ -276,8 +277,8 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 
 		Some(new_fee)
 	} else {
-		// This function may be (indirectly) called without any verification,
-		// with channel_fees provided by a caller. We should handle it gracefully.
+		// This function may be (indirectly) called without any verification, with channel_fees provided
+		// by a caller. We should handle it gracefully.
 		None
 	}
 }
@@ -287,17 +288,17 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
 ///
-/// If some channels aren't announced, it may be useful to fill in a first_hops with the
-/// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
-/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those
-/// in first_hops will be used.
+/// If some channels aren't announced, it may be useful to fill in a first_hops with the results
+/// from a local ChannelManager::list_usable_channels() call. If it is filled in, our view of our
+/// local channels (from net_graph_msg_handler) will be ignored, and only those in first_hops will
+/// be used.
 ///
 /// Panics if first_hops contains channels without short_channel_ids
 /// (ChannelManager::list_usable_channels will never include such channels).
 ///
-/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
-/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
-/// *is* checked as they may change based on the receiving node.
+/// The fees on channels from us to next-hops are ignored (as they are assumed to all be equal),
+/// however the enabled/disabled bit on such channels as well as the htlc_minimum_msat *is* checked
+/// as they may change based on the receiving node.
 pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee: &PublicKey, first_hops: Option<&[&ChannelDetails]>,
 	last_hops: &[&RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
@@ -312,25 +313,25 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 	// The general routing idea is the following:
 	// 1. Fill first/last hops communicated by the caller.
-	// 2. Attempt to construct a path from payer to payee for transferring
-	//    any ~sufficient (described later) value.
-	//    If succeed, remember which channels were used and how much liquidity they have available,
-	//    so that future paths don't rely on the same liquidity.
-	// 3. Prooceed to the next step if:
+	// 2. Attempt to construct a path from payer to payee for transferring any ~sufficient (described
+	//    later) value.
+	//    If construction succeeds, remember which channels were used and how much liquidity they have
+	//    available, so that future paths don't rely on the same liquidity.
+	// 3. Proceed to the next step if:
 	//    - we hit the recommended target value;
 	//    - OR if we could not construct a new path. Any next attempt will fail too.
 	//    Otherwise, repeat step 2.
-	// 4. See if we managed to collect paths which aggregately are able to transfer target value
-	//    (not recommended value). If yes, proceed. If not, fail routing.
+	// 4. See if we managed to collect paths which aggregately are able to transfer target value (not
+	//    recommended value). If yes, proceed. If not, fail routing.
 	// 5. Randomly combine paths into routes having enough to fulfill the payment. (TODO: knapsack)
 	// 6. Of all the found paths, select only those with the lowest total fee.
 	// 7. The last path in every selected route is likely to be more than we need.
 	//    Reduce its value-to-transfer and recompute fees.
 	// 8. Choose the best route by the lowest total fee.
 
-	// As for the actual search algorithm,
-	// we do a payee-to-payer Dijkstra's sorting by each node's distance from the payee
-	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
+	// As for the actual search algorithm, we do a payee-to-payer Dijkstra's sorting by each node's
+	// distance from the payee plus the minimum per-HTLC fee to get from it to another node (aka
+	// "shitty A*").
 	// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
 	// to use as the A* heuristic beyond just the cost to get one node further than the current
 	// one.
@@ -349,16 +350,15 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	let mut dist = HashMap::with_capacity(network.get_nodes().len());
 
 	// When arranging a route, we select multiple paths so that we can make a multi-path payment.
-	// Don't stop searching for paths when we think they're
-	// sufficient to transfer a givenvalue aggregately.
-	// Search for higher value, so that we collect many more paths,
-	// and then select the best combination among them.
+	// Don't stop searching for paths when we think they're sufficient to transfer a given value
+	// aggregately. Search for higher value, so that we collect many more paths, and then select the
+	// best combination among them.
 	const ROUTE_CAPACITY_PROVISION_FACTOR: u64 = 4;
 	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
 
 	// Step (1).
-	// Prepare the data we'll use for payee-to-payer search by
-	// inserting first hops suggested by the caller as targets.
+	// Prepare the data we'll use for payee-to-payer search by inserting first hops suggested by the
+	// caller as targets.
 	// Our search will then attempt to reach them while traversing from the payee node.
 	let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
@@ -390,17 +390,16 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// TODO: we could let a caller specify this. Definitely useful when considering our own channels.
 	let mut bookkeeped_channels_liquidity_available_msat = HashMap::new();
 
-	// Keeping track of how much value we already collected across other paths. Helps to decide:
+	// Keeping track of how much value we already collected across other paths helps to decide:
 	// - how much a new path should be transferring (upper bound);
-	// - whether a channel should be disregarded because
-	//   it's available liquidity is too small comparing to how much more we need to collect;
+	// - whether a channel should be disregarded because its available liquidity is too small
+	//   compared to how much more we need to collect;
 	// - when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
 
 	macro_rules! add_entry {
-		// Adds entry which goes from $src_node_id to $dest_node_id
-		// over the channel with id $chan_id with fees described in
-		// $directional_info.
+		// Adds entry which goes from $src_node_id to $dest_node_id over the channel with id $chan_id
+		// with fees described in $directional_info.
 		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
 		// since that value has to be transferred over this channel.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr ) => {
@@ -420,24 +419,22 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 				match initial_liquidity_available_msat {
 					Some(available_msat) => available_msat,
-					// We assume channels with unknown balance have
-					// a capacity of 0.0001 BTC (or 10_000 sats).
+					// We assume channels with unknown balance have a capacity of 0.0001 BTC (or 10_000 sats).
 					None => 10_000 * 1000
 				}
 			});
 
 			// Routing Fragmentation Mitigation heuristic:
 			//
-			// Routing fragmentation across many payment paths increases the overall routing
-			// fees as you have irreducible routing fees per-link used (`fee_base_msat`).
+			// Routing fragmentation across many payment paths increases the overall routing fees, as you
+			// have irreducible routing fees per-link used (`fee_base_msat`).
 			// Taking too many smaller paths also increases the chance of payment failure.
-			// Thus to avoid this effect, we require from our collected links to provide
-			// at least a minimal contribution to the recommended value yet-to-be-fulfilled.
+			// Thus to avoid this effect, we require from our collected links to provide at least a
+			// minimal contribution to the recommended value yet-to-be-fulfilled.
 			//
 			// This requirement is currently 5% of the remaining-to-be-collected value.
-			// This means as we successfully advance in our collection,
-			// the absolute liquidity contribution is lowered,
-			// thus increasing the number of potential channels to be selected.
+			// This means as we successfully advance in our collection, the absolute required liquidity
+			// contribution is lowered, thus increasing the number of potential channels to be selected.
 
 			// Update the absolute liquidity left to collect from previously built paths.
 			let value_left_to_collect_msat = cmp::min(recommended_value_msat - already_collected_value_msat, final_value_msat);
@@ -446,10 +443,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// Verify the liquidity offered by this channel complies to the minimal contribution.
 			let has_sufficient_liquidity = *available_liquidity_msat >= minimal_liquidity_contribution_msat;
 
-			// It is tricky to compare available liquidity to $next_hops_fee_msat here
-			// to see if this channel is capable of paying for the use of the following channels.
-			// It may be misleading because we might later choose to reduce the value transferred
-			// over these channels, and the channel which was insufficient might become sufficient.
+			// It is tricky to compare available liquidity to $next_hops_fee_msat here to see if this
+			// channel is capable of paying for the use of the following channels. It may be misleading
+			// because we might later choose to reduce the value transferred over these channels, and a
+			// channel which was insufficient might become sufficient.
 			// Worst case: we drop a good channel here because it can't cover the high following
 			// fees caused by one expensive channel, but then this channel could have been used
 			// if the amount being transferred over this path is lower.
@@ -463,11 +460,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			if has_sufficient_liquidity && can_cover_following_hops && amount_to_transfer_over_msat >= $directional_info.htlc_minimum_msat {
 				let hm_entry = dist.entry(&$src_node_id);
 				let old_entry = hm_entry.or_insert_with(|| {
-					// If there was previously no known way to access
-					// the source node (recall it goes payee-to-payer) of $chan_id, first add
-					// a semi-dummy record just to compute the fees to reach the source node.
-					// This will affect our decision on selecting $chan_id
-					// as a way to reach the $dest_node_id.
+					// If there was previously no known way to access the source node (recall it goes
+					// payee-to-payer) of $chan_id, first add a semi-dummy record just to compute the fees to
+					// reach the source node. This will affect our decision on selecting $chan_id as a way to
+					// reach the $dest_node_id.
 					let mut fee_base_msat = u32::max_value();
 					let mut fee_proportional_millionths = u32::max_value();
 					if let Some(Some(fees)) = network.get_nodes().get(&$src_node_id).map(|node| node.lowest_inbound_channel_fees) {
@@ -499,12 +495,12 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				let mut prev_hop_use_estimate_fee_msat = 0;
 				let mut total_fee_msat = $next_hops_fee_msat;
 
-				// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
-				// will have the same effective-fee
+				// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us will have
+				// the same effective-fee
 				if $src_node_id != *our_node_id {
 					match compute_fees(amount_to_transfer_over_msat, $directional_info.fees) {
-						// max_value means we'll always fail
-						// the old_entry.get_fee_weight_msat() > total_fee_msat check
+						// max_value means we'll always fail the old_entry.get_fee_weight_msat() >
+						// total_fee_msat check
 						None => total_fee_msat = u64::max_value(),
 						Some(fee_msat) => {
 							hop_use_fee_msat = fee_msat;
@@ -516,16 +512,16 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 									total_fee_msat = incremented_total_fee_msat;
 								}
 								else {
-									// max_value means we'll always fail
-									// the old_entry.get_fee_weight_msat() > total_fee_msat check
+									// max_value means we'll always fail the old_entry.get_fee_weight_msat() >
+									// total_fee_msat check
 									total_fee_msat = u64::max_value();
 								}
 							} else {
 								prev_hop_use_estimate_fee_msat = u64::max_value();
-								// max_value means we'll always fail
-								// the old_entry.get_fee_weight_msat() > total_fee_msat check
+								// max_value means we'll always fail the old_entry.get_fee_weight_msat() >
+								// total_fee_msat check
 								total_fee_msat = u64::max_value();
-							}		
+							}
 						}
 					}
 				}
@@ -535,11 +531,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					lowest_fee_to_peer_through_node: total_fee_msat,
 					lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
 				};
-				// Update the way of reaching $dest_node_id with the given $chan_id,
-				// if this way is cheaper than the already known
-				// (considering the cost to "reach" this channel from the route destination,
-				// the cost of using this channel,
-				// and the cost of routing to the source node of this channel).
+				// Update the way of reaching $dest_node_id with the given $chan_id, if this way is cheaper
+				// than the already known (considering the cost to "reach" this channel from the route
+				// destination, the cost of using this channel, and the cost of routing to the source node
+				// of this channel).
 				if old_entry.get_fee_weight_msat() > total_fee_msat {
 					targets.push(new_graph_node);
 					old_entry.next_hops_fee_msat = $next_hops_fee_msat;
@@ -560,11 +555,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		};
 	}
 
-	// Find ways (channels with destimation) to reach a given node and store them
-	// in the corresponding data structures (routing graph etc).
-	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
-	// meaning how much will be paid in fees after this node (to the best of our knowledge).
-	// This data can later be helpful to optimize routing (pay lower fees).
+	// Find ways (channels with destination) to reach a given node and store them in the corresponding
+	// data structures (routing graph etc). $fee_to_target_msat represents how much it costs to reach
+	// to this node from the payee, meaning how much will be paid in fees after this node (to the best
+	// of our knowledge). This data can later be helpful to optimize routing (i.e. to help pay lower
+	// fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 			if first_hops.is_some() {
@@ -613,19 +608,18 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
-		// For every new path, start from scratch, except
-		// bookkeeped_channels_liquidity_available_msat, which will improve
-		// the further iterations of path finding. Also don't erase first_hop_targets.
+		// For every new path, start from scratch, except bookkeeped_channels_liquidity_available_msat,
+		// which will improve the further iterations of path finding. Also don't erase
+		// first_hop_targets.
 		targets.clear();
 		dist.clear();
 
-		// Add the payee as a target, so that the payee-to-payer
-		// search algorithm knows what to start with.
+		// Add the payee as a target, so that the payee-to-payer search algorithm knows what to start
+		// with.
 		match network.get_nodes().get(payee) {
-			// The payee is not in our network graph, so nothing to add here.
-			// There is still a chance of reaching them via last_hops though,
-			// so don't yet fail the payment here.
-			// If not, targets.pop() will not even let us enter the loop in step 2.			
+			// The payee is not in our network graph, so nothing to add here. There is still a chance of
+			// reaching them via last_hops though, so don't yet fail the payment here.
+			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
 				add_entries_to_cheapest_to_target_node!(node, payee, 0);
@@ -639,51 +633,47 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		for hop in last_hops.iter() {
 			let have_hop_src_in_graph =
 				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&hop.src_node_id) {
-					// If this hop connects to a node with which we have a direct channel,
-					// ignore the network graph and add both the hop and
-					// our direct channel to the candidate set:
+					// If this hop connects to a node with which we have a direct channel, ignore the network
+					// graph and add both the hop and our direct channel to the candidate set.
 					//
-					// Currently there are no channel-context features defined, so we are a
-					// bit lazy here. In the future, we should pull them out via our
-					// ChannelManager, but there's no reason to waste the space until we
-					// need them.
+					// Currently there are no channel-context features defined, so we are a bit lazy here. In
+					// the future, we should pull them out via our ChannelManager, but there's no reason to
+					// waste the space until we need them.
 					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, None::<u64>, features.to_context(), 0);
 					true
 				} else {
-					// In any other case, only add the hop if the source is in the regular network
-					// graph:
+					// In any other case, only add the hop if the source is in the regular network graph:
 					network.get_nodes().get(&hop.src_node_id).is_some()
 				};
 			if have_hop_src_in_graph {
-				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
-				// really sucks, cause we're gonna need that eventually.
+				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which really sucks,
+				// cause we're gonna need that eventually.
 				add_entry!(hop.short_channel_id, hop.src_node_id, payee, hop, None::<u64>, ChannelFeatures::empty(), 0);
 			}
 		}
 
-		// At this point, targets are filled with the data from first and
-		// last hops communicated by the caller, and the payment receiver.
+		// At this point, targets are filled with the data from first and last hops communicated by the
+		// caller, and the payment receiver.
 		let mut found_new_path = false;
 
 		// Step (2).
 		'path_construction: while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
 
-			// Since we're going payee-to-payer, hitting our node as a target means
-			// that we should stop traversing the graph and arrange the path out of what we found.
+			// Since we're going payee-to-payer, hitting our node as a target means that we should stop
+			// traversing the graph and arrange the path out of what we found.
 			if pubkey == *our_node_id {
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
 				let mut ordered_hops = vec!(new_entry.clone());
 				// At most, we may need the value to be transferred and fees for that transfer.
-				// Assume 900% fees as the highest possible amount we may need,
-				// keep in mind fees may be charged on every hop.
+				// Assume 900% fees as the highest possible amount we may need, keep in mind fees may be
+				// charged on every hop.
 				let mut path_bottleneck_msat = final_value_msat * 10;
 
 				'path_walk: loop {
 					if new_entry.route_hop.short_channel_id == 0 {
-						// Means that the only way to proceed was via a dummy channel
-						// we stored for the internal algorithm.
-						// Terminate path finding, because the dummy channel is not usable,
-						// and further iterations would only face the exact same issue.
+						// Means that the only way to proceed was via a dummy channel we stored for the internal
+						// algorithm. Terminate path finding, because the dummy channel is not usable, and
+						// further iterations would only face the exact same issue.
 						break 'path_construction;
 					}
 
@@ -696,27 +686,24 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							ordered_hops.last_mut().unwrap().route_hop.node_features = NodeFeatures::empty();
 						}
 					} else {
-						// We should be able to fill in features for everything except the last
-						// hop, if the last hop was provided via a BOLT 11 invoice (though we
-						// should be able to extend it further as BOLT 11 does have feature
-						// flags for the last hop node itself).
+						// We should be able to fill in features for everything except the last hop, if the last
+						// hop was provided via a BOLT 11 invoice (though we should be able to extend it further
+						// as BOLT 11 does have feature flags for the last hop node itself).
 						assert!(ordered_hops.last().unwrap().route_hop.pubkey == *payee);
 					}
 
-					// How much value a path can transfer is how much the weakest link can transfer
-					// after paying for the use of the following channels and the channel itself.
+					// How much value a path can transfer is how much the weakest link can transfer after
+					// paying for the use of the following channels and the channel itself.
 					let cur_channel_paid_fees = new_entry.get_fee_paid_msat();
 					if new_entry.available_liquidity_msat > cur_channel_paid_fees {
 						path_bottleneck_msat = cmp::min(path_bottleneck_msat, new_entry.available_liquidity_msat - cur_channel_paid_fees);
 					} else {
-						// This might happen only if one of the further channels requires passing
-						// along too much value to pay for the use of it, so much the current channel
-						// can't accommodate it at all. In that case, just use 1/10 of the
-						// current channel liquidity as a path bottleneck.
-						// The idea here is that we leave 9/10 of the current channel
-						// to use for paying for the use of the further channels,
-						// assuming they are transferring *at most* the 1/10 value.
-						// So, unless further channels will cumulatively charge 900% in fees,
+						// This might happen only if one of the further channels requires passing along too much
+						// value to pay for the use of it, so much the current channel can't accommodate it at
+						// all. In that case, just use 1/10 of the current channel liquidity as a path
+						// bottleneck. The idea here is that we leave 9/10 of the current channel to use for
+						// paying for the use of the further channels, assuming they are transferring *at most*
+						// the 1/10 value. So, unless further channels will cumulatively charge 900% in fees,
 						// this should work.
 						path_bottleneck_msat = cmp::min(path_bottleneck_msat, new_entry.available_liquidity_msat / 10);
 					}
@@ -728,16 +715,13 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					new_entry = match dist.remove(&ordered_hops.last().unwrap().route_hop.pubkey) {
 						Some(payment_hop) => payment_hop,
 						None => {
-							// If we can't reach a given node, something wen't wrong
-							// during path traverse.
-							// Stop looking for more paths here because next iterations
-							// will face the exact same issue.
+							// If we can't reach a given node, something went wrong during path traversal. Stop
+							// looking for more paths here because next iterations will face the exact same issue.
 							break 'paths_collection;
 						}
 					};
-					// We "propagate" the fees one hop backward (topologically) here,
-					// so that fees paid on the current channels are associated with
-					// the previous channel (where they will be paid).
+					// We "propagate" the fees one hop backward (topologically) here, so that fees paid on the
+					// current channels are associated with the previous channel (where they will be paid).
 					ordered_hops.last_mut().unwrap().route_hop.fee_msat = new_entry.hop_use_fee_msat;
 					ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = new_entry.route_hop.cltv_expiry_delta;
 					ordered_hops.push(new_entry.clone());
@@ -746,23 +730,21 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = final_cltv;
 
 				let mut payment_path = PaymentPath {hops: ordered_hops};
-				// Since a path allows to transfer as much value as
-				// the smallest channel it has ("bottleneck"), we should recompute
-				// the fees so sender HTLC don't overpay fees when traversing
-				// larger channels than the bottleneck. This may happen because
-				// when we were selecting those channels we were not aware how much value
-				// this path will transfer, and the relative fee for them
-				// might have been computed considering a larger value.
+				// Since a path allows to transfer as much value as the smallest channel it has
+				// ("bottleneck"), we should recompute the fees so the sender's HTLC doesn't overpay fees
+				// when traversing larger channels than the bottleneck. This may happen because when we were
+				// selecting those channels we were not aware how much value this path will transfer, and
+				// the relative fee for them might have been computed considering a larger value.
 				payment_path.update_value_and_recompute_fees(path_bottleneck_msat);
 
-				// Remember that we used these channels so that we don't rely
-				// on the same liquidity in future paths.
+				// Remember that we used these channels so that we don't rely on the same liquidity in
+				// future paths.
 				for (_, payment_hop) in payment_path.hops.iter().enumerate() {
 					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.route_hop.short_channel_id).unwrap();
 					let spent_on_hop_msat = path_bottleneck_msat + payment_hop.get_fee_paid_msat();
 					if *channel_liquidity_available_msat < spent_on_hop_msat {
-						// This should not happen because we do recompute fees right before,
-						// trying to avoid cases when a hop is not usable due to the fee situation.
+						// This should not happen because we do recompute fees right before, trying to avoid
+						// cases when a hop is not usable due to the fee situation.
 						break 'path_construction;
 					}
 					*channel_liquidity_available_msat -= spent_on_hop_msat;
@@ -777,9 +759,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				break 'path_construction;
 			}
 
-			// Otherwise, since the current target node is not us,
-			// keep "unrolling" the payment graph from payee to payer by
-			// finding a way to reach the current target from the payer side.
+			// Otherwise, since the current target node is not us, keep "unrolling" the payment graph from
+			// payee to payer by finding a way to reach the current target from the payer side.
 			match network.get_nodes().get(&pubkey) {
 				None => {},
 				Some(node) => {
@@ -789,10 +770,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		}
 
 		// Step (3).
-		// Stop either when recommended value is reached,
-		// or if during last iteration no new path was found.
-		// In the latter case, making another path finding attempt could not help,
-		// because we deterministically terminate the search due to low liquidity.
+		// Stop either when recommended value is reached, or if during last iteration no new path was
+		// found. In the latter case, making another path finding attempt could not help, because we
+		// deterministically terminate the search due to low liquidity.
 		if already_collected_value_msat >= recommended_value_msat || !found_new_path {
 			break 'paths_collection;
 		}
@@ -829,10 +809,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			cur_route.push(payment_path.clone());
 			aggregate_route_value_msat += payment_path.get_value_msat();
 			if aggregate_route_value_msat >= final_value_msat {
-				// Last path likely overpaid. Substract it from the most expensive
-				// (in terms of proportional fee) path in this route and recompute fees.
-				// This might be not the most economically efficient way, but fewer paths
-				// also makes routing more reliable.
+				// Last path likely overpaid. Substract it from the most expensive (in terms of proportional
+				// fee) path in this route and recompute fees. This might be not the most economically
+				// efficient way, but fewer paths also makes routing more reliable.
 				let mut overpaid_value_msat = aggregate_route_value_msat - final_value_msat;
 
 				// First, drop some expensive low-value paths entirely if possible.
@@ -1760,12 +1739,11 @@ mod tests {
 	#[test]
 	fn available_amount_while_routing_test() {
 		// Tests whether we choose the correct available channel amount while routing.
-		
+
 		let (secp_ctx, mut net_graph_msg_handler, chain_monitor, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
-		// We will use a simple single-path route from
-		// our node to node2 via node0: channels {1, 3}.
+		// We will use a simple single-path route from our node to node2 via node0: channels {1, 3}.
 
 		// First disable all other paths.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
@@ -1793,8 +1771,8 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		// Make the first channel (#1) is very permissive,
-		// and we will be testing all limits on the second channel.
+		// Make the first channel (#1) is very permissive, and we will be testing all limits on the
+		// second channel.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 1,
@@ -1874,8 +1852,8 @@ mod tests {
 
 		// Now let's see if routing works if we know only capacity from the UTXO.
 
-		// We can't change UTXO capacity on the fly, so we'll disable
-		// the existing channel and add another one with the capacity we need.
+		// We can't change UTXO capacity on the fly, so we'll disable the existing channel and add
+		// another one with the capacity we need.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 3,
@@ -1973,19 +1951,17 @@ mod tests {
 		}
 	}
 
-
 	#[test]
 	fn available_liquidity_last_hop_test() {
-		// Check that available liquidity properly limits the path even when only
-		// one of the latter hops is limited.
+		// Check that available liquidity properly limits the path even when only one of the latter hops
+		// is limited.
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
-		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
-		// {12, 13, 11} have the capacities of 100, {6} has a capacity of 50.
-		// Total capacity: 50 sats.
+		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}. {12, 13, 11} have the capacities
+		// of 100, {6} has a capacity of 50. Total capacity: 50 sats.
 
-		// Disable oter potential paths.
+		// Disable other potential paths.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 2,
@@ -2269,7 +2245,6 @@ mod tests {
 		}
 	}
 
-
 	#[test]
 	fn long_mpp_route_test() {
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
@@ -2279,10 +2254,10 @@ mod tests {
 		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
 		// Note that these paths overlap (channels 5, 12, 13).
 		// We will route 300 sats.
-		// Each path will have 100 sats capacity, those channels which
-		// are used twice will have 200 sats capacity.
+		// Each path will have 100 sats capacity, those channels which are used twice will have 200 sats
+		// capacity.
 
-		// Disable oter potential paths.
+		// Disable other potential paths.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 2,
@@ -2351,8 +2326,8 @@ mod tests {
 
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
-		// Add 100 sats to the capacities of {12, 13}, because these channels
-		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
+		// Add 100 sats to the capacities of {12, 13}, because these channels are also used for 3rd
+		// path. 100 sats for the rest. Total capacity: 100 sats.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 12,
@@ -2433,9 +2408,9 @@ mod tests {
 
 	#[test]
 	fn fees_on_mpp_route_test() {
-		// This test makes sure that MPP algorithm properly takes into account
-		// fees charged on the channels, by making the fees impactful:
-		// if the fee is not properly accounted for, the behavior is different.
+		// This test makes sure that MPP algorithm properly takes into account fees charged on the
+		// channels, by making the fees impactful: if the fee is not properly accounted for, the
+		// behavior is different.
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
@@ -2443,8 +2418,7 @@ mod tests {
 		// From our node to node3 via {node0, node2} and {node7, node2, node4}.
 		// We will route 200 sats, Each path will have 100 sats capacity.
 
-		// This test is not particularly stable: e.g.,
-		// there's a way to route via {node0, node2, node4}.
+		// This test is not particularly stable: e.g., there's a way to route via {node0, node2, node4}.
 		// It works while pathfinding is deterministic, but can be broken otherwise.
 		// It's fine to ignore this concern for now.
 
@@ -2517,12 +2491,11 @@ mod tests {
 
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
-		// All channels should be 100 sats capacity. But for the fee experiment,
-		// we'll add absolute fee of 150 sats paid for the use channel 6 (paid to node2 on channel 13).
+		// All channels should be 100 sats capacity. But for the fee experiment, we'll add absolute fee
+		// of 150 sats paid for the use channel 6 (paid to node2 on channel 13).
 		// Since channel 12 allows to deliver only 250 sats to channel 13, channel 13 can transfer only
-		// 100 sats (and pay 150 sats in fees for the use of channel 6),
-		// so no matter how large are other channels,
-		// the whole path will be limited by 100 sats with just these 2 conditions:
+		// 100 sats (and pay 150 sats in fees for the use of channel 6), so no matter how large are
+		// other channels, the whole path will be limited by 100 sats with just these 2 conditions:
 		// - channel 12 capacity is 250 sats
 		// - fee for channel 6 is 150 sats
 		// Let's test this by enforcing these 2 conditions and removing other limits.
@@ -2602,8 +2575,8 @@ mod tests {
 
 	#[test]
 	fn drop_lowest_channel_mpp_route_test() {
-		// This test checks that low-capacity channel is dropped when after
-		// path finding we realize that we found more capacity than we need.
+		// This test checks that low-capacity channel is dropped when after path finding we realize that
+		// we found more capacity than we need.
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
