@@ -1,0 +1,18 @@
+[package]
+name = "testmpp"
+version = "0.0.1"
+authors = ["hi"]
+license = "Apache-2.0"
+edition = "2018"
+description = """
+hi
+"""
+
+[dependencies]
+bitcoin = "0.24"
+lightning = { version = "0.0.12", path = "../lightning" }
+lightning-net-tokio = { path = "../lightning-net-tokio" }
+time = "0.2"
+rand = "0.4"
+tokio = { version = "0.2", features = ["io-std", "io-util", "rt-threaded", "tcp", "time", "sync"] }
+hex = "0.3"

@@ -1569,10 +1569,11 @@ impl Readable for UnsignedNodeAnnouncement {
 			if addr_len <= addr_readpos { break; }
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
-					if addr.get_id() < highest_addr_type {
-						// Addresses must be sorted in increasing order
-						return Err(DecodeError::InvalidValue);
-					}
+					// if addr.get_id() < highest_addr_type {
+					// 	// Addresses must be sorted in increasing order
+					// 	println!("VMW: Addresses must be sorted in increasing order");
+					// 	return Err(DecodeError::InvalidValue);
+					// }
 					highest_addr_type = addr.get_id();
 					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
@@ -1732,6 +1733,7 @@ impl Readable for ReplyChannelRange {
 		// We expect the encoding_len to always includes the 1-byte
 		// encoding_type and that short_channel_ids are 8-bytes each
 		let encoding_len: u16 = Readable::read(r)?;
+		println!("VMW: encoding_len: {}", encoding_len);
 		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}

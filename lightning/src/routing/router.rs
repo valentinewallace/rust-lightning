@@ -26,7 +26,7 @@ use std::collections::{HashMap, BinaryHeap};
 use std::ops::Deref;
 
 /// A hop in a route
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
@@ -114,7 +114,7 @@ impl Readable for Route {
 }
 
 /// A channel descriptor which provides a last-hop route to get_route
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RouteHint {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
@@ -166,7 +166,7 @@ struct DummyDirectionalChannelInfo {
 /// so that we can choose cheaper paths (as per Dijkstra's algorithm).
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PathBuildingHop {
 	/// Hop-specific details unrelated to the path during the routing phase,
 	/// but rather relevant to the LN graph.
@@ -201,7 +201,7 @@ impl PathBuildingHop {
 
 // Instantiated with a list of hops with correct data in them collected during path finding,
 // an instance of this struct should be further modified only via given methods.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PaymentPath {
 	hops: Vec<PathBuildingHop>,
 }
@@ -292,6 +292,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	if final_value_msat > MAX_VALUE_MSAT {
 		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
 	}
+	println!("VMW: in get_route");
 
 	// The general routing idea is the following:
 	// 1. Fill first/last hops communicated by the caller.
@@ -664,6 +665,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// Since we're going payee-to-payer, hitting our node as a target means
 			// that we should stop traversing the graph and arrange the path out of what we found.
 			if pubkey == *our_node_id {
+				println!("VMW: pubkey == our node ID");
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
 				let mut ordered_hops = vec!(new_entry.clone());
 
@@ -685,6 +687,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					}
 
 					if ordered_hops.last().unwrap().route_hop.pubkey == *payee {
+						println!("VMW: breaking 'path_walk 1");
 						break 'path_walk;
 					}
 
@@ -695,6 +698,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							// during path traverse.
 							// Stop looking for more paths here because next iterations
 							// will face the exact same issue.
+							println!("VMW: breaking 'path_walk 2");
 							break 'paths_collection;
 						}
 					};
@@ -707,6 +711,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				}
 				ordered_hops.last_mut().unwrap().route_hop.fee_msat = value_contribution_msat;
 				ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = final_cltv;
+				println!("VMW: ordered hops found : len: {}", ordered_hops.len());
 
 				let payment_path = PaymentPath {hops: ordered_hops};
 				// Since a path allows to transfer as much value as
@@ -737,6 +742,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// - know which of the hops are useless considering how much more sats we need
 				already_collected_value_msat += value_contribution_msat;
 
+				println!("VMW: found path: {:?}", payment_path);
 				payment_paths.push(payment_path);
 				found_new_path = true;
 				break 'path_construction;

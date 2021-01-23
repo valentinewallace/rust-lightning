@@ -585,8 +585,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let features = InitFeatures::known();
-									let resp = msgs::Init { features };
-									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
+									let msg = msgs::Init { features };
+									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &msg);
 								},
 								NextNoiseStep::ActThree => {
 									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
@@ -614,6 +614,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 										let mut reader = ::std::io::Cursor::new(&msg_data[..]);
 										let message_result = wire::read(&mut reader);
+
 										let message = match message_result {
 											Ok(x) => x,
 											Err(e) => {

@@ -23,6 +23,7 @@ use ln::{chan_utils, onion_utils};
 use routing::router::{Route, RouteHop, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
+use ln::peer_handler;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::{byte_utils, test_utils};
@@ -30,7 +31,6 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs, Readable};
 use util::config::UserConfig;
-
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::HashEngine;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
