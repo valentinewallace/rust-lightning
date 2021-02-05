@@ -19,6 +19,7 @@
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http;
 
+pub mod init;
 pub mod poll;
 
 #[cfg(feature = "rest-client")]
@@ -154,10 +155,10 @@ pub struct BlockHeaderData {
 /// custom cache eviction policy. This offers flexibility to those sensitive to resource usage.
 /// Hence, there is a trade-off between a lower memory footprint and potentially increased network
 /// I/O as headers are re-fetched during fork detection.
-pub struct SpvClient<P: Poll, C: Cache, L: ChainListener> {
+pub struct SpvClient<'a, P: Poll, C: Cache, L: ChainListener> {
 	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
-	chain_notifier: ChainNotifier<C>,
+	chain_notifier: ChainNotifier<'a, C>,
 	chain_listener: L,
 }
 
@@ -214,7 +215,7 @@ impl Cache for UnboundedCache {
 	}
 }
 
-impl<P: Poll, C: Cache, L: ChainListener> SpvClient<P, C, L> {
+impl<'a, P: Poll, C: Cache, L: ChainListener> SpvClient<'a, P, C, L> {
 	/// Creates a new SPV client using `chain_tip` as the best known chain tip.
 	///
 	/// Subsequent calls to [`poll_best_tip`] will poll for the best chain tip using the given chain
@@ -228,7 +229,7 @@ impl<P: Poll, C: Cache, L: ChainListener> SpvClient<P, C, L> {
 	pub fn new(
 		chain_tip: ValidatedBlockHeader,
 		chain_poller: P,
-		header_cache: C,
+		header_cache: &'a mut C,
 		chain_listener: L,
 	) -> Self {
 		let chain_notifier = ChainNotifier { header_cache };
@@ -278,9 +279,9 @@ impl<P: Poll, C: Cache, L: ChainListener> SpvClient<P, C, L> {
 /// Notifies [listeners] of blocks that have been connected or disconnected from the chain.
 ///
 /// [listeners]: trait.ChainListener.html
-struct ChainNotifier<C: Cache> {
+pub struct ChainNotifier<'a, C: Cache> {
 	/// Cache for looking up headers before fetching from a block source.
-	header_cache: C,
+	header_cache: &'a mut C,
 }
 
 /// Changes made to the chain between subsequent polls that transformed it from having one chain tip
@@ -289,6 +290,11 @@ struct ChainNotifier<C: Cache> {
 /// Blocks are given in height-descending order. Therefore, blocks are first disconnected in order
 /// before new blocks are connected in reverse order.
 struct ChainDifference {
+	/// The most recent ancestor common between the chain tips.
+	///
+	/// If there are any disconnected blocks, this is where the chain forked.
+	common_ancestor: ValidatedBlockHeader,
+
 	/// Blocks that were disconnected from the chain since the last poll.
 	disconnected_blocks: Vec<ValidatedBlockHeader>,
 
@@ -296,9 +302,9 @@ struct ChainDifference {
 	connected_blocks: Vec<ValidatedBlockHeader>,
 }
 
-impl<C: Cache> ChainNotifier<C> {
-	/// Finds the fork point between `new_header` and `old_header`, disconnecting blocks from
-	/// `old_header` to get to that point and then connecting blocks until `new_header`.
+impl<'a, C: Cache> ChainNotifier<'a, C> {
+	/// Finds the first common ancestor between `new_header` and `old_header`, disconnecting blocks
+	/// from `old_header` to get to that point and then connecting blocks until `new_header`.
 	///
 	/// Validates headers along the transition path, but doesn't fetch blocks until the chain is
 	/// disconnected to the fork point. Thus, this may return an `Err` that includes where the tip
@@ -311,30 +317,15 @@ impl<C: Cache> ChainNotifier<C> {
 		chain_poller: &mut P,
 		chain_listener: &mut L,
 	) -> Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)> {
-		let mut difference = self.find_difference(new_header, old_header, chain_poller).await
+		let difference = self.find_difference(new_header, old_header, chain_poller).await
 			.map_err(|e| (e, None))?;
-
-		let mut new_tip = *old_header;
-		for header in difference.disconnected_blocks.drain(..) {
-			if let Some(cached_header) = self.header_cache.block_disconnected(&header.block_hash) {
-				assert_eq!(cached_header, header);
-			}
-			chain_listener.block_disconnected(&header.header, header.height);
-			new_tip = header;
-		}
-
-		for header in difference.connected_blocks.drain(..).rev() {
-			let block = chain_poller
-				.fetch_block(&header).await
-				.or_else(|e| Err((e, Some(new_tip))))?;
-			debug_assert_eq!(block.block_hash, header.block_hash);
-
-			self.header_cache.block_connected(header.block_hash, header);
-			chain_listener.block_connected(&block, header.height);
-			new_tip = header;
-		}
-
-		Ok(())
+		self.disconnect_blocks(difference.disconnected_blocks, chain_listener);
+		self.connect_blocks(
+			difference.common_ancestor,
+			difference.connected_blocks,
+			chain_poller,
+			chain_listener,
+		).await
 	}
 
 	/// Returns the changes needed to produce the chain with `current_header` as its tip from the
@@ -371,7 +362,8 @@ impl<C: Cache> ChainNotifier<C> {
 			}
 		}
 
-		Ok(ChainDifference { disconnected_blocks, connected_blocks })
+		let common_ancestor = current;
+		Ok(ChainDifference { common_ancestor, disconnected_blocks, connected_blocks })
 	}
 
 	/// Returns the previous header for the given header, either by looking it up in the cache or
@@ -385,6 +377,42 @@ impl<C: Cache> ChainNotifier<C> {
 			Some(prev_header) => Ok(*prev_header),
 			None => chain_poller.look_up_previous_header(header).await,
 		}
+	}
+
+	/// Notifies the chain listeners of disconnected blocks.
+	fn disconnect_blocks<L: ChainListener>(
+		&mut self,
+		mut disconnected_blocks: Vec<ValidatedBlockHeader>,
+		chain_listener: &mut L,
+	) {
+		for header in disconnected_blocks.drain(..) {
+			if let Some(cached_header) = self.header_cache.block_disconnected(&header.block_hash) {
+				assert_eq!(cached_header, header);
+			}
+			chain_listener.block_disconnected(&header.header, header.height);
+		}
+	}
+
+	/// Notifies the chain listeners of connected blocks.
+	async fn connect_blocks<L: ChainListener, P: Poll>(
+		&mut self,
+		mut new_tip: ValidatedBlockHeader,
+		mut connected_blocks: Vec<ValidatedBlockHeader>,
+		chain_poller: &mut P,
+		chain_listener: &mut L,
+	) -> Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)> {
+		for header in connected_blocks.drain(..).rev() {
+			let block = chain_poller
+				.fetch_block(&header).await
+				.or_else(|e| Err((e, Some(new_tip))))?;
+			debug_assert_eq!(block.block_hash, header.block_hash);
+
+			self.header_cache.block_connected(header.block_hash, header);
+			chain_listener.block_connected(&block, header.height);
+			new_tip = header;
+		}
+
+		Ok(())
 	}
 }
 
@@ -401,8 +429,8 @@ mod spv_client_tests {
 		let best_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(best_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(best_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => {
 				assert_eq!(e.kind(), BlockSourceErrorKind::Persistent);
@@ -419,8 +447,8 @@ mod spv_client_tests {
 		let common_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(common_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(common_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -438,8 +466,8 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(old_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(old_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -457,8 +485,8 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(old_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(old_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -476,8 +504,8 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(old_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(old_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -496,8 +524,8 @@ mod spv_client_tests {
 		let worse_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
-		let mut client = SpvClient::new(best_tip, poller, cache, NullChainListener {});
+		let mut cache = UnboundedCache::new();
+		let mut client = SpvClient::new(best_tip, poller, &mut cache, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -525,7 +553,7 @@ mod chain_notifier_tests {
 		let mut listener = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(2))
 			.expect_block_connected(*new_tip);
-		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=1) };
+		let mut notifier = ChainNotifier { header_cache: &mut chain.header_cache(0..=1) };
 		let mut poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -541,7 +569,7 @@ mod chain_notifier_tests {
 		let new_tip = test_chain.tip();
 		let old_tip = main_chain.tip();
 		let mut listener = MockChainListener::new();
-		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=1) };
+		let mut notifier = ChainNotifier { header_cache: &mut main_chain.header_cache(0..=1) };
 		let mut poller = poll::ChainPoller::new(&mut test_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => {
@@ -562,7 +590,7 @@ mod chain_notifier_tests {
 		let mut listener = MockChainListener::new()
 			.expect_block_disconnected(*old_tip)
 			.expect_block_connected(*new_tip);
-		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=2) };
+		let mut notifier = ChainNotifier { header_cache: &mut main_chain.header_cache(0..=2) };
 		let mut poller = poll::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -582,7 +610,7 @@ mod chain_notifier_tests {
 			.expect_block_disconnected(*old_tip)
 			.expect_block_disconnected(*main_chain.at_height(2))
 			.expect_block_connected(*new_tip);
-		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=3) };
+		let mut notifier = ChainNotifier { header_cache: &mut main_chain.header_cache(0..=3) };
 		let mut poller = poll::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -602,7 +630,7 @@ mod chain_notifier_tests {
 			.expect_block_disconnected(*old_tip)
 			.expect_block_connected(*fork_chain.at_height(2))
 			.expect_block_connected(*new_tip);
-		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=2) };
+		let mut notifier = ChainNotifier { header_cache: &mut main_chain.header_cache(0..=2) };
 		let mut poller = poll::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -617,7 +645,7 @@ mod chain_notifier_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new();
-		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=1) };
+		let mut notifier = ChainNotifier { header_cache: &mut chain.header_cache(0..=1) };
 		let mut poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, None),
@@ -632,7 +660,7 @@ mod chain_notifier_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new();
-		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
+		let mut notifier = ChainNotifier { header_cache: &mut chain.header_cache(0..=3) };
 		let mut poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, Some(old_tip)),
@@ -648,7 +676,7 @@ mod chain_notifier_tests {
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(2));
-		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
+		let mut notifier = ChainNotifier { header_cache: &mut chain.header_cache(0..=3) };
 		let mut poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, Some(chain.at_height(2))),
