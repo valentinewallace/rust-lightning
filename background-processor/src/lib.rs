@@ -29,7 +29,7 @@ pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
 	/// May be used to retrieve and handle the error if `BackgroundProcessor`'s thread
 	/// exits due to an error while persisting.
-	pub thread_handle: JoinHandle<Result<(), std::io::Error>>
+	pub thread_handle: JoinHandle<Result<(), std::io::Error>>,
 }
 
 #[cfg(not(test))]
@@ -69,6 +69,7 @@ impl BackgroundProcessor {
 			loop {
 				let updates_available = manager.wait_timeout(Duration::from_millis(100));
 				if updates_available {
+					println!("VMW: persisting");
 					persist_manager(&*manager)?;
 				}
 				// Exit the loop if the background processor was requested to stop.
@@ -85,7 +86,7 @@ impl BackgroundProcessor {
 		});
 		Self {
 			stop_thread: stop_thread_clone,
-			thread_handle: handle
+			thread_handle: handle,
 		}
 	}
 
