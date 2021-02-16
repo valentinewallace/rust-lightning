@@ -1,8 +1,17 @@
+#[cfg(target_os = "windows")]
+extern crate winapi;
+#[cfg(target_os = "windows")]
+use {
+  std::ffi::OsStr,
+  std::os::windows::ffi::OsStrExt
+};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(not(target_os = "windows"))]
 use std::os::unix::io::AsRawFd;
+
 
 pub(crate) trait DiskWriteable {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error>;
@@ -12,6 +21,22 @@ pub(crate) fn get_full_filepath(filepath: String, filename: String) -> String {
 	let mut path = PathBuf::from(filepath);
 	path.push(filename);
 	path.to_str().unwrap().to_string()
+}
+
+#[cfg(target_os = "windows")]
+macro_rules! call {
+  ($e: expr) => (
+    if $e != 0 {
+      return Ok(())
+    } else {
+      return Err(std::io::Error::last_os_error())
+    }
+  )
+}
+
+#[cfg(target_os = "windows")]
+fn path_to_windows_str<T: AsRef<OsStr>>(x: T) -> Vec<winapi::shared::ntdef::WCHAR> {
+  x.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
 #[allow(bare_trait_objects)]
@@ -32,13 +57,22 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 		data.write_to_file(&mut f)?;
 		f.sync_all()?;
 	}
-	fs::rename(&tmp_filename, &filename_with_path)?;
 	// Fsync the parent directory on Unix.
 	#[cfg(not(target_os = "windows"))]
 	{
+		fs::rename(&tmp_filename, &filename_with_path)?;
 		let path = Path::new(&filename_with_path).parent().unwrap();
 		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
+	}
+	#[cfg(target_os = "windows")]
+	{
+		let src = PathBuf::from(tmp_filename);
+		let dst = PathBuf::from(filename_with_path);
+    call!(unsafe {winapi::um::winbase::MoveFileExW(
+      path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(),
+      winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
+    )})
 	}
 	Ok(())
 }
