@@ -89,7 +89,19 @@ impl FilesystemPersister {
         F: FeeEstimator,
         L: Logger
 	{
-		util::write_to_file(data_dir, "manager".to_string(), manager)
+		let mut manager_bytes = Vec::new();
+		manager.write(&mut manager_bytes).unwrap();
+		println!("VMW manager bytes being persisted: {}", manager_bytes.len());
+		match util::write_to_file(data_dir, "manager".to_string(), manager) {
+			Ok(()) => {
+				println!("VMW: writing manager was Ok");
+				Ok(())
+			},
+			Err(e) => {
+				println!("VMW: errored persisting manager: {:?}", e);
+				return Err(e)
+			}
+		}
 	}
 
 	#[cfg(test)]

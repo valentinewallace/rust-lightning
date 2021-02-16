@@ -16,7 +16,9 @@ pub(crate) fn get_full_filepath(filepath: String, filename: String) -> String {
 
 #[allow(bare_trait_objects)]
 pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, data: &D) -> std::io::Result<()> {
+	println!("VMW: creating dir");
 	fs::create_dir_all(path.clone())?;
+	println!("VMW: created dir");
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
 	// old data on power loss after we've returned.
@@ -28,11 +30,17 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	{
 		// Note that going by rust-lang/rust@d602a6b, on MacOS it is only safe to use
 		// rust stdlib 1.36 or higher.
+		println!("VMW: about to create file");
 		let mut f = fs::File::create(&tmp_filename)?;
+		println!("VMW: created file");
 		data.write_to_file(&mut f)?;
+		println!("VMW: about to sync all");
 		f.sync_all()?;
+		println!("VMW: sync'd all");
 	}
+	println!("VMW: about to rename");
 	fs::rename(&tmp_filename, &filename_with_path)?;
+	println!("VMW: renamed");
 	// Fsync the parent directory on Unix.
 	#[cfg(not(target_os = "windows"))]
 	{

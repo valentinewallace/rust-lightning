@@ -203,12 +203,16 @@ mod tests {
 
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].persister.get_data_dir();
-		let callback = move |node: &ChannelManager<InMemoryChannelKeys, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
+		let callback = move |node: &ChannelManager<InMemoryChannelKeys, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| {
+			println!("VMW: callback being invoked");
+			FilesystemPersister::persist_manager(data_dir.clone(), node)
+		};
 		let bg_processor = BackgroundProcessor::start(callback, nodes[0].node.clone(), nodes[0].logger.clone());
 
 		// Go through the channel creation process until each node should have something persisted.
 		let tx = open_channel!(nodes[0], nodes[1], 100000);
 
+		let mut num_calls = 0;
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr, $expected_bytes: expr) => {
 				match $node.write(&mut $expected_bytes) {
@@ -216,13 +220,21 @@ mod tests {
 						loop {
 							match std::fs::read($filepath) {
 								Ok(bytes) => {
+									if num_calls < 100 {
+										println!("VMW: bytes of node: {}, bytes on disk: {}", $expected_bytes.len(), bytes.len());
+										num_calls += 1;
+									}
 									if bytes == $expected_bytes {
 										break
 									} else {
+										// println!("VMW: continuing 1");
 										continue
 									}
 								},
-								Err(_) => continue
+								Err(_) => {
+									println!("VMW: continuing 2");
+									continue
+								}
 							}
 						}
 					},
@@ -234,8 +246,10 @@ mod tests {
 		// Check that the initial channel manager data is persisted as expected.
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "manager".to_string());
 		let mut expected_bytes = Vec::new();
+		println!("VMW: about to check for persisted 1...");
 		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
 		loop {
+			println!("VMW: checking condvar 1");
 			if !nodes[0].node.get_persistence_condvar_value() { break }
 		}
 
@@ -244,8 +258,10 @@ mod tests {
 
 		// Check that the force-close updates are persisted.
 		let mut expected_bytes = Vec::new();
+		println!("VMW: about to check for persisted 2...");
 		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
 		loop {
+			println!("VMW: checking condvar 2");
 			if !nodes[0].node.get_persistence_condvar_value() { break }
 		}
 

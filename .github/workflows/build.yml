@@ -39,60 +39,60 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           override: true
           profile: minimal
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
-        if: matrix.coverage
-        run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }}
-        if: "! matrix.build-net-tokio"
-        run: cargo build --verbose  --color always -p lightning
-      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: |
-          cd lightning-block-sync
-          cargo build --verbose --color always --features rest-client
-          cargo build --verbose --color always --features rpc-client
-          cargo build --verbose --color always --features rpc-client,rest-client
-          cargo build --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
-      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
-        if: matrix.coverage
-        run: |
-          cd lightning-block-sync
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rest-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
+      # - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
+      #   if: "matrix.build-net-tokio && !matrix.coverage"
+      #   run: cargo build --verbose --color always
+      # - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+      #   if: matrix.coverage
+      #   run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
+      # - name: Build on Rust ${{ matrix.toolchain }}
+      #   if: "! matrix.build-net-tokio"
+      #   run: cargo build --verbose  --color always -p lightning
+      # - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
+      #   if: "matrix.build-net-tokio && !matrix.coverage"
+      #   run: |
+      #     cd lightning-block-sync
+      #     cargo build --verbose --color always --features rest-client
+      #     cargo build --verbose --color always --features rpc-client
+      #     cargo build --verbose --color always --features rpc-client,rest-client
+      #     cargo build --verbose --color always --features rpc-client,rest-client,tokio
+      #     cd ..
+      # - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
+      #   if: matrix.coverage
+      #   run: |
+      #     cd lightning-block-sync
+      #     RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rest-client
+      #     RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
+      #     RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
+      #     RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
+      #     cd ..
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
-        run: cargo test --verbose --color always
-      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
-        if: matrix.coverage
-        run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
-      - name: Test on Rust ${{ matrix.toolchain }}
-        if: "! matrix.build-net-tokio"
-        run: cargo test --verbose --color always  -p lightning
-      - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: |
-          cd lightning-block-sync
-          cargo test --verbose --color always --features rest-client
-          cargo test --verbose --color always --features rpc-client
-          cargo test --verbose --color always --features rpc-client,rest-client
-          cargo test --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
-      - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
-        if: matrix.coverage
-        run: |
-          cd lightning-block-sync
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rest-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
+        run: cargo test --verbose --color always -- --nocapture test_backgr
+      # - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+      #   if: matrix.coverage
+      #   run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
+      # - name: Test on Rust ${{ matrix.toolchain }}
+      #   if: "! matrix.build-net-tokio"
+      #   run: cargo test --verbose --color always -p lightning
+      # - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
+      #   if: "matrix.build-net-tokio && !matrix.coverage"
+      #   run: |
+      #     cd lightning-block-sync
+      #     cargo test --verbose --color always --features rest-client
+      #     cargo test --verbose --color always --features rpc-client
+      #     cargo test --verbose --color always --features rpc-client,rest-client
+      #     cargo test --verbose --color always --features rpc-client,rest-client,tokio
+      #     cd ..
+      # - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
+      #   if: matrix.coverage
+      #   run: |
+      #     cd lightning-block-sync
+      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rest-client
+      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
+      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
+      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
+      #     cd ..
       - name: Install deps for kcov
         if: matrix.coverage
         run: |
@@ -116,15 +116,15 @@ jobs:
             mkdir -p "target/cov/$(basename $file)";
             ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
           done
-      - name: Upload coverage
-        if: matrix.coverage
-        uses: codecov/codecov-action@v1
-        with:
-          # Could you use this to fake the coverage report for your PR? Sure.
-          # Will anyone be impressed by your amazing coverage? No
-          # Maybe if codecov wasn't broken we wouldn't need to do this...
-          token: f421b687-4dc2-4387-ac3d-dc3b2528af57
-          fail_ci_if_error: true
+      # - name: Upload coverage
+      #   if: matrix.coverage
+      #   uses: codecov/codecov-action@v1
+      #   with:
+      #     # Could you use this to fake the coverage report for your PR? Sure.
+      #     # Will anyone be impressed by your amazing coverage? No
+      #     # Maybe if codecov wasn't broken we wouldn't need to do this...
+      #     token: f421b687-4dc2-4387-ac3d-dc3b2528af57
+      #     fail_ci_if_error: true
 
   benchmark:
     runs-on: ubuntu-latest
