@@ -44,10 +44,13 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	println!("VMW: created dir");
 
 	println!("VMW: entries in dir:");
+	let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
+	println!("VMW: dir perms: {:?}", dir_perms);
 	let dir = PathBuf::from(path.clone());
 	for entry in fs::read_dir(dir).unwrap() {
 		let entry = entry.unwrap();
-		println!("VMW: entry in dir: {:?}", entry.path());
+		let metadata = entry.metadata().unwrap();
+		println!("VMW: entry in dir: {:?}, perms in entry: {:?}", entry.path(), metadata.permissions());
 	}
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
