@@ -81,6 +81,8 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	}
 	#[cfg(target_os = "windows")]
 	{
+		let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
+		dir_perms.set_readonly(false);
 		if let Ok(metadata) = fs::metadata(filename_with_path.clone()) {
 			let mut perms = metadata.permissions();
 			perms.set_readonly(false);
