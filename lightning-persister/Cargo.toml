@@ -16,5 +16,8 @@ libc = "0.2"
 version = "0.24"
 features = ["bitcoinconsensus"]
 
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winbase"] }
+
 [dev-dependencies]
 lightning = { version = "0.0.12", path = "../lightning", features = ["_test_utils"] }
