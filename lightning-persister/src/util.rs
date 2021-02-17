@@ -155,10 +155,10 @@ mod tests {
 	// monitor's file. We induce this failure by making the `tmp` file a
 	// directory.
 	// Explanation: given "from" = the file being renamed, "to" = the
-	// renamee that already exists: Windows should fail because it'll fail
-	// whenever "to" is a directory, and Unix should fail because if "from" is a
+	// renamee that already exists: Unix should fail because if "from" is a
 	// file, then "to" is also required to be a file.
 	#[test]
+	#[cfg(not(target_os = "windows"))]
 	fn test_rename_failure() {
 		let test_writeable = TestWriteable{};
 		let filename = "test_rename_failure_filename";
@@ -167,13 +167,9 @@ mod tests {
 		fs::create_dir_all(get_full_filepath(path.to_string(), filename.to_string())).unwrap();
 		match write_to_file(path.to_string(), filename.to_string(), &test_writeable) {
 			Err(e) => {
-				println!("VMW: error in test_rename_failure: {:?}", e);
-				#[cfg(not(target_os = "windows"))]
 				assert_eq!(e.kind(), io::ErrorKind::Other);
-				#[cfg(target_os = "windows")]
-				assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
 			}
-			_ => panic!("Unexpected error message")
+			_ => panic!("Unexpected Ok(())")
 		}
 		fs::remove_dir_all(path).unwrap();
 	}

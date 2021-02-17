@@ -217,11 +217,13 @@ mod tests {
 				persisted_chan_data_0 = persister_0.load_channel_data(nodes[0].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_0.keys().len(), 1);
 				for mon in persisted_chan_data_0.values() {
+					println!("VMW: checking mon 0 update id:");
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
 				persisted_chan_data_1 = persister_1.load_channel_data(nodes[1].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_1.keys().len(), 1);
 				for mon in persisted_chan_data_1.values() {
+					println!("VMW: checking mon 1 update id:");
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
 			}
