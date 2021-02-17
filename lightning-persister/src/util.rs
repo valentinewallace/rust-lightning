@@ -112,6 +112,8 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 				winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
 			)});
 		}
+		let mut final_file = fs::File::open(filename_with_path.clone())?;
+		final_file.sync_all()?;
 		println!("VMW: renamed");
 	}
 	Ok(())
