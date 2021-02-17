@@ -141,6 +141,7 @@ impl FilesystemPersister {
 
 impl<ChanSigner: ChannelKeys + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+		println!("VMW: persisting monitor w/ update ID: {}", monitor.get_latest_update_id());
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
 		  // .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
@@ -151,6 +152,7 @@ impl<ChanSigner: ChannelKeys + Send + Sync> channelmonitor::Persist<ChanSigner> 
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+		println!("VMW: updating persisted monitor w/ update ID: {}", monitor.get_latest_update_id());
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
 		  // .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
