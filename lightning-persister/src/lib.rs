@@ -143,13 +143,21 @@ impl<ChanSigner: ChannelKeys + Send + Sync> channelmonitor::Persist<ChanSigner> 
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+		  // .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+		  .map_err(|e| {
+				println!("VMW: failure in persist_new_channel: {:?}", e);
+				ChannelMonitorUpdateErr::PermanentFailure
+			})
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+		  // .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+		  .map_err(|e| {
+				println!("VMW: failure in update_persisted_channel: {:?}", e);
+				ChannelMonitorUpdateErr::PermanentFailure
+			})
 	}
 }
 
