@@ -48,15 +48,15 @@ jobs:
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: cargo build --verbose  --color always -p lightning
-      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: |
-          cd lightning-block-sync
-          cargo build --verbose --color always --features rest-client
-          cargo build --verbose --color always --features rpc-client
-          cargo build --verbose --color always --features rpc-client,rest-client
-          cargo build --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
+      # - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
+      #   if: "matrix.build-net-tokio && !matrix.coverage"
+      #   run: |
+      #     cd lightning-block-sync
+      #     cargo build --verbose --color always --features rest-client
+      #     cargo build --verbose --color always --features rpc-client
+      #     cargo build --verbose --color always --features rpc-client,rest-client
+      #     cargo build --verbose --color always --features rpc-client,rest-client,tokio
+      #     cd ..
       # - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
       #   if: matrix.coverage
       #   run: |
