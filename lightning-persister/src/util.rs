@@ -44,20 +44,20 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	println!("VMW: created dir");
 
 	println!("VMW: entries in dir:");
-	let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
-	println!("VMW: dir perms: {:?}", dir_perms);
+	let dir_perms = fs::metadata(path.clone()).unwrap().permissions();
+	println!("VMW: dir perms: {:?}, readonly: {}", dir_perms, dir_perms.readonly());
 	let dir = PathBuf::from(path.clone());
 	for entry in fs::read_dir(dir).unwrap() {
 		let entry = entry.unwrap();
 		let metadata = entry.metadata().unwrap();
-		println!("VMW: entry in dir: {:?}, perms in entry: {:?}", entry.path(), metadata.permissions());
+		println!("VMW: entry in dir: {:?}, perms in entry: {:?}, readonly: {}", entry.path(), metadata.permissions(), metadata.permissions().readonly());
 	}
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
 	// old data on power loss after we've returned.
 	// The way to atomically write a file on Unix platforms is:
 	// open(tmpname), write(tmpfile), fsync(tmpfile), close(tmpfile), rename(), fsync(dir)
-	let filename_with_path = get_full_filepath(path, filename);
+	let filename_with_path = get_full_filepath(path.clone(), filename);
 	let tmp_filename = format!("{}.tmp", filename_with_path);
 
 	{
