@@ -231,8 +231,8 @@ mod tests {
 										continue
 									}
 								},
-								Err(_) => {
-									println!("VMW: continuing 2");
+								Err(e) => {
+									println!("VMW: continuing 2: err: {:?}", e);
 									continue
 								}
 							}
