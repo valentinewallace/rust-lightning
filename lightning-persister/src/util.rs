@@ -43,15 +43,6 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	fs::create_dir_all(path.clone())?;
 	println!("VMW: created dir");
 
-	println!("VMW: entries in dir:");
-	let dir_perms = fs::metadata(path.clone()).unwrap().permissions();
-	println!("VMW: dir perms: {:?}, readonly: {}", dir_perms, dir_perms.readonly());
-	let dir = PathBuf::from(path.clone());
-	for entry in fs::read_dir(dir).unwrap() {
-		let entry = entry.unwrap();
-		let metadata = entry.metadata().unwrap();
-		println!("VMW: entry in dir: {:?}, perms in entry: {:?}, readonly: {}", entry.path(), metadata.permissions(), metadata.permissions().readonly());
-	}
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
 	// old data on power loss after we've returned.
@@ -81,6 +72,16 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	}
 	#[cfg(target_os = "windows")]
 	{
+		println!("VMW: entries in dir:");
+		let dir_perms = fs::metadata(path.clone()).unwrap().permissions();
+		println!("VMW: dir perms: {:?}, readonly: {}", dir_perms, dir_perms.readonly());
+		let dir = PathBuf::from(path.clone());
+		for entry in fs::read_dir(dir).unwrap() {
+			let entry = entry.unwrap();
+			let metadata = entry.metadata().unwrap();
+			println!("VMW: entry in dir: {:?}, perms in entry: {:?}, readonly: {}", entry.path(), metadata.permissions(), metadata.permissions().readonly());
+		}
+
 		let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
 		dir_perms.set_readonly(false);
 		if let Ok(metadata) = fs::metadata(filename_with_path.clone()) {
