@@ -70,6 +70,7 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 	}
+	std::thread::sleep(std::time::Duration::new(5, 0));
 	#[cfg(target_os = "windows")]
 	{
 		println!("VMW: entries in dir:");
@@ -82,16 +83,16 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 			println!("VMW: entry in dir: {:?}, perms in entry: {:?}, readonly: {}", entry.path(), metadata.permissions(), metadata.permissions().readonly());
 		}
 
-		let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
-		dir_perms.set_readonly(false);
-		if let Ok(metadata) = fs::metadata(filename_with_path.clone()) {
-			let mut perms = metadata.permissions();
-			perms.set_readonly(false);
-		}
-    // let mut perms = fs::metadata(filename_with_path.clone())?.permissions();
-    let mut tmp_perms = fs::metadata(tmp_filename.clone())?.permissions();
-		tmp_perms.set_readonly(false);
-		println!("VMW: about to rename");
+		// let mut dir_perms = fs::metadata(path.clone()).unwrap().permissions();
+		// dir_perms.set_readonly(false);
+		// if let Ok(metadata) = fs::metadata(filename_with_path.clone()) {
+		// 	let mut perms = metadata.permissions();
+		// 	perms.set_readonly(false);
+		// }
+    // // let mut perms = fs::metadata(filename_with_path.clone())?.permissions();
+    // let mut tmp_perms = fs::metadata(tmp_filename.clone())?.permissions();
+		// tmp_perms.set_readonly(false);
+		// println!("VMW: about to rename");
 		// let src = PathBuf::from(tmp_filename);
 		// let dst = PathBuf::from(filename_with_path);
 		fs::rename(&tmp_filename.clone(), &filename_with_path.clone())?;
