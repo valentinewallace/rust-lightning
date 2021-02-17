@@ -92,12 +92,13 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
     let mut tmp_perms = fs::metadata(tmp_filename.clone())?.permissions();
 		tmp_perms.set_readonly(false);
 		println!("VMW: about to rename");
-		let src = PathBuf::from(tmp_filename);
-		let dst = PathBuf::from(filename_with_path);
-		call!(unsafe {winapi::um::winbase::MoveFileExW(
-			path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(),
-			winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
-		)});
+		// let src = PathBuf::from(tmp_filename);
+		// let dst = PathBuf::from(filename_with_path);
+		fs::rename(&tmp_filename.clone(), &filename_with_path.clone())?;
+		// call!(unsafe {winapi::um::winbase::MoveFileExW(
+		// 	path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(),
+		// 	winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
+		// )});
 		println!("VMW: renamed");
 	}
 	Ok(())
