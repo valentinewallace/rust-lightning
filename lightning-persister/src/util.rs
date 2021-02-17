@@ -39,9 +39,8 @@ fn path_to_windows_str<T: AsRef<OsStr>>(x: T) -> Vec<winapi::shared::ntdef::WCHA
 
 #[allow(bare_trait_objects)]
 pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, data: &D) -> std::io::Result<()> {
-	println!("VMW: creating dir");
+	println!("VMW: in write_to_file, filename: {}", filename);
 	fs::create_dir_all(path.clone())?;
-	println!("VMW: created dir");
 
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
