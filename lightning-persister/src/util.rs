@@ -100,8 +100,9 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 		// 	path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(),
 		// 	winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
 		// )});
+		let backup_filepath = format!("{}.backup", filename_with_path.clone());
 		call!(unsafe {winapi::um::winbase::ReplaceFileW(
-			path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(), std::ptr::null,
+			path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(), path_to_windows_str(backup_filepath).as_ptr(),
 			winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING, std::ptr::null, std::ptr::null
 		)});
 		println!("VMW: renamed");
