@@ -78,6 +78,13 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 	}
 	#[cfg(target_os = "windows")]
 	{
+		if let Ok(metadata) = fs::metadata(filename_with_path.clone()) {
+			let mut perms = metadata.permissions();
+			perms.set_readonly(false);
+		}
+    // let mut perms = fs::metadata(filename_with_path.clone())?.permissions();
+    let mut tmp_perms = fs::metadata(tmp_filename.clone())?.permissions();
+		tmp_perms.set_readonly(false);
 		println!("VMW: about to rename");
 		let src = PathBuf::from(tmp_filename);
 		let dst = PathBuf::from(filename_with_path);
