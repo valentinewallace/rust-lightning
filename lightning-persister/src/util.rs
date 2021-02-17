@@ -1,6 +1,8 @@
 
 #[cfg(target_os = "windows")]
 extern crate winapi;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::IntoRawHandle;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -113,7 +115,9 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 			)});
 		}
 		let mut final_file = fs::File::open(filename_with_path.clone())?;
-		final_file.sync_all()?;
+		let file_handle = final_file.into_raw_handle();
+		unsafe{winapi::um::fileapi::FlushFileBuffers(file_handle);}
+		// final_file.sync_all()?;
 		println!("VMW: renamed");
 	}
 	Ok(())
