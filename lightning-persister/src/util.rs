@@ -70,7 +70,7 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 	}
-	std::thread::sleep(std::time::Duration::new(5, 0));
+	// std::thread::sleep(std::time::Duration::new(60, 0));
 	#[cfg(target_os = "windows")]
 	{
 		println!("VMW: entries in dir:");
@@ -95,11 +95,15 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 		// println!("VMW: about to rename");
 		// let src = PathBuf::from(tmp_filename);
 		// let dst = PathBuf::from(filename_with_path);
-		fs::rename(&tmp_filename.clone(), &filename_with_path.clone())?;
+		// fs::rename(&tmp_filename.clone(), &filename_with_path.clone())?;
 		// call!(unsafe {winapi::um::winbase::MoveFileExW(
 		// 	path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(),
 		// 	winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING
 		// )});
+		call!(unsafe {winapi::um::winbase::ReplaceFileW(
+			path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(), std::ptr::null,
+			winapi::um::winbase::MOVEFILE_WRITE_THROUGH | winapi::um::winbase::MOVEFILE_REPLACE_EXISTING, std::ptr::null, std::ptr::null
+		)});
 		println!("VMW: renamed");
 	}
 	Ok(())
