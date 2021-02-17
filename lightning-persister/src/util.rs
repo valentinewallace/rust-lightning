@@ -167,6 +167,7 @@ mod tests {
 		fs::create_dir_all(get_full_filepath(path.to_string(), filename.to_string())).unwrap();
 		match write_to_file(path.to_string(), filename.to_string(), &test_writeable) {
 			Err(e) => {
+				println!("VMW: error in test_rename_failure: {:?}", e);
 				#[cfg(not(target_os = "windows"))]
 				assert_eq!(e.kind(), io::ErrorKind::Other);
 				#[cfg(target_os = "windows")]
