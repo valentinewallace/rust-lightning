@@ -52,6 +52,7 @@ impl Validate for BlockHeaderData {
 			.validate_pow(&self.header.target())
 			.or_else(|e| Err(BlockSourceError::persistent(e)))?;
 
+		// TODO: Use the result of validate_pow instead of recomputing the block hash once upstream.
 		if self.header.block_hash() != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
 		}
@@ -68,6 +69,7 @@ impl Validate for Block {
 			.validate_pow(&self.header.target())
 			.or_else(|e| Err(BlockSourceError::persistent(e)))?;
 
+		// TODO: Use the result of validate_pow instead of recomputing the block hash once upstream.
 		if self.block_hash() != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
 		}
