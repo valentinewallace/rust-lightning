@@ -105,7 +105,7 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, da
 
 		if Path::new(&filename_with_path.clone()).exists() {
 			unsafe {winapi::um::winbase::ReplaceFileW(
-				path_to_windows_str(src).as_ptr(), path_to_windows_str(dst).as_ptr(), std::ptr::null(),
+				path_to_windows_str(dst).as_ptr(), path_to_windows_str(src).as_ptr(), std::ptr::null(),
 				winapi::um::winbase::REPLACEFILE_IGNORE_MERGE_ERRORS, std::ptr::null_mut() as *mut winapi::ctypes::c_void, std::ptr::null_mut() as *mut winapi::ctypes::c_void
 			)};
 		} else {
