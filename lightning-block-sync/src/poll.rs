@@ -35,7 +35,7 @@ pub enum ChainTip {
 }
 
 /// The `Validate` trait defines behavior for validating chain data.
-pub trait Validate {
+pub(crate) trait Validate {
 	/// The validated data wrapper which can be dereferenced to obtain the validated data.
 	type T: std::ops::Deref<Target = Self>;
 
