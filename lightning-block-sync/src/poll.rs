@@ -8,6 +8,11 @@ use std::ops::DerefMut;
 
 /// The `Poll` trait defines behavior for polling block sources for a chain tip and retrieving
 /// related chain data. It serves as an adapter for `BlockSource`.
+///
+/// [`ChainPoller`] adapts a single `BlockSource`, while any other implementations of `Poll` are
+/// required to be built in terms of it to ensure chain data validity.
+///
+/// [`ChainPoller`]: ../struct.ChainPoller.html
 pub trait Poll {
 	/// Returns a chain tip in terms of its relationship to the provided chain tip.
 	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
@@ -149,12 +154,20 @@ impl std::ops::Deref for ValidatedBlock {
 	}
 }
 
+/// The canonical `Poll` implementation used for a single `BlockSource`.
+///
+/// Other `Poll` implementations must be built using `ChainPoller` as it provides the only means of
+/// validating chain data.
 pub struct ChainPoller<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> {
 	block_source: B,
 	network: Network,
 }
 
 impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> ChainPoller<B, T> {
+	/// Creates a new poller for the given block source.
+	///
+	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
+	/// validity.
 	pub fn new(block_source: B, network: Network) -> Self {
 		Self { block_source, network }
 	}
