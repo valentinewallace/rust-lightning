@@ -227,7 +227,6 @@ impl<C: Cache> ChainNotifier<C> {
 
 		let mut new_tip = *old_header;
 		for header in difference.disconnected_blocks.drain(..) {
-			println!("Disconnecting block {}", header.block_hash);
 			if let Some(cached_header) = self.header_cache.block_disconnected(&header.block_hash) {
 				assert_eq!(cached_header, header);
 			}
@@ -241,7 +240,6 @@ impl<C: Cache> ChainNotifier<C> {
 				.or_else(|e| Err((e, Some(new_tip))))?;
 			debug_assert_eq!(block.block_hash, header.block_hash);
 
-			println!("Connecting block {}", header.block_hash);
 			self.header_cache.block_connected(header.block_hash, header);
 			chain_listener.block_connected(&block, header.height);
 			new_tip = header;
