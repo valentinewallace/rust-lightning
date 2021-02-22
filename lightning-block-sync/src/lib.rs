@@ -167,10 +167,10 @@ pub struct SpvClient<'a, P: Poll, C: Cache, L: ChainListener> {
 /// Used when needing to replay chain data upon startup or as new chain events occur.
 pub trait ChainListener {
 	/// Notifies the listener that a block was added at the given height.
-	fn block_connected(&mut self, block: &Block, height: u32);
+	fn block_connected(&self, block: &Block, height: u32);
 
 	/// Notifies the listener that a block was removed at the given height.
-	fn block_disconnected(&mut self, header: &BlockHeader, height: u32);
+	fn block_disconnected(&self, header: &BlockHeader, height: u32);
 }
 
 /// The `Cache` trait defines behavior for managing a block header cache, where block headers are
