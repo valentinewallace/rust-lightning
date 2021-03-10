@@ -113,6 +113,7 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 	node.node.block_connected(&block.header, &txdata, height);
 	node.node.test_process_background_events();
 	*node.last_block.lock().unwrap() = (block.header.block_hash(), height);
+	node.blocks.lock().unwrap().push((block.header, height));
 }
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
@@ -120,6 +121,21 @@ pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &Blo
 	node.node.block_disconnected(header);
 	node.node.test_process_background_events();
 	*node.last_block.lock().unwrap() = (header.prev_blockhash, height - 1);
+	node.blocks.lock().unwrap().pop();
+}
+
+pub fn disconnect_all_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
+	let mut blocks_len = {
+		node.blocks.lock().unwrap().len()
+	};
+	while blocks_len > 0 {
+		let (block_header, height) = {
+			let blocks = node.blocks.lock().unwrap();
+			(blocks[blocks.len() - 1].0, blocks[blocks.len() - 1].1)
+		};
+		disconnect_block(&node, &block_header, height);
+		blocks_len = node.blocks.lock().unwrap().len();
+	}
 }
 
 pub struct TestChanMonCfg {
@@ -153,6 +169,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
 	pub last_block: Mutex<(BlockHash, u32)>,
+	pub blocks: Mutex<Vec<(BlockHeader, u32)>>,
 }
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
@@ -1221,6 +1238,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 		                 last_block: Mutex::new((genesis_block(Network::Testnet).header.block_hash(), 0)),
+		                 blocks: Mutex::new(Vec::new())
 		})
 	}
 
