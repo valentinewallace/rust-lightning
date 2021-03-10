@@ -497,7 +497,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	};
 
 	if steps & 0x0f == 6 { return; }
-	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx);
+	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx, 2);
 
 	if steps & 0x0f == 7 { return; }
 	confirm_transaction(&nodes[0], &tx);

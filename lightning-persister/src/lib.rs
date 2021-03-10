@@ -241,7 +241,7 @@ mod tests {
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
 
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: *nodes[0].last_block_hash.lock().unwrap(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].last_block.lock().unwrap().0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[0].clone()]}, CHAN_CONFIRM_DEPTH);
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);

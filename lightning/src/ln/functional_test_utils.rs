@@ -44,23 +44,50 @@ use std::sync::Mutex;
 use std::mem;
 use std::collections::HashMap;
 
-pub const CHAN_CONFIRM_DEPTH: u32 = 100;
+pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
 pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
-	let dummy_tx_count = tx.version as usize;
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_block(Network::Testnet).header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-		txdata: vec![dummy_tx; dummy_tx_count],
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.last_block.lock().unwrap().0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: Vec::new(),
 	};
 	block.txdata.push(tx.clone());
-	connect_block(node, &block, 1);
+	let height = node.last_block.lock().unwrap().1 + 1;
+	connect_block(node, &block, height);
 	for i in 2..CHAN_CONFIRM_DEPTH {
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
+		connect_block(node, &block, i + height);
+	}
+}
+pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.last_block.lock().unwrap().0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: Vec::new(),
+	};
+	let height = node.last_block.lock().unwrap().1 + 1;
+	assert!(height <= conf_height);
+	for i in height..conf_height {
 		connect_block(node, &block, i);
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+	}
+
+	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
+		block.txdata.push(Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() });
+	}
+	block.txdata.push(tx.clone());
+	connect_block(node, &block, conf_height);
+	for i in 1..CHAN_CONFIRM_DEPTH {
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		connect_block(node, &block, i + conf_height);
 	}
 }
 
@@ -85,14 +112,14 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
 	node.node.test_process_background_events();
-	*node.last_block_hash.lock().unwrap() = block.header.block_hash();
+	*node.last_block.lock().unwrap() = (block.header.block_hash(), height);
 }
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
 	node.node.block_disconnected(header);
 	node.node.test_process_background_events();
-	*node.last_block_hash.lock().unwrap() = header.prev_blockhash;
+	*node.last_block.lock().unwrap() = (header.prev_blockhash, height - 1);
 }
 
 pub struct TestChanMonCfg {
@@ -125,7 +152,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
-	pub last_block_hash: Mutex<BlockHash>,
+	pub last_block: Mutex<(BlockHash, u32)>,
 }
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
@@ -419,8 +446,8 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 	tx
 }
 
-pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	confirm_transaction(node_conf, tx);
+pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
+	confirm_transaction_at(node_conf, tx, conf_height);
 	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id()));
 }
 
@@ -445,8 +472,9 @@ pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(node_recv
 }
 
 pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
-	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx);
-	confirm_transaction(node_a, tx);
+	let conf_height = std::cmp::max(node_a.last_block.lock().unwrap().1 + 1, node_b.last_block.lock().unwrap().1 + 1);
+	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx, conf_height);
+	confirm_transaction_at(node_a, tx, conf_height);
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
@@ -1023,7 +1051,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 	claim_payment_along_route(origin_node, expected_route, false, our_payment_preimage, expected_amount);
 }
 
-pub const TEST_FINAL_CLTV: u32 = 32;
+pub const TEST_FINAL_CLTV: u32 = 100;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
@@ -1192,7 +1220,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
-		                 last_block_hash: Mutex::new(genesis_block(Network::Testnet).header.block_hash()),
+		                 last_block: Mutex::new((genesis_block(Network::Testnet).header.block_hash(), 0)),
 		})
 	}
 
