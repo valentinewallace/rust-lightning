@@ -91,6 +91,27 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	}
 }
 
+pub fn connect_n_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) {
+	let (mut prev_blockhash, mut prev_height) = {
+		let num_blocks = { node.blocks.lock().unwrap().len() };
+		if num_blocks > 0 {
+			let blocks = node.blocks.lock().unwrap();
+			(blocks[blocks.len() - 1].0.block_hash(), blocks[blocks.len() - 1].1)
+		} else {
+			(Default::default(), 1)
+		}
+	};
+	for _ in 0..depth {
+		let block = Block {
+			header: BlockHeader { version: 0x2000000, prev_blockhash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42  },
+			txdata: vec![],
+		};
+		connect_block(node, &block, prev_height + 1);
+		prev_blockhash = block.header.block_hash();
+		prev_height = prev_height + 1;
+	}
+}
+
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
 	let mut block = Block {
 		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
