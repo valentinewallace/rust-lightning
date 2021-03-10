@@ -119,7 +119,6 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
 	node.node.block_disconnected(header);
-	node.node.test_process_background_events();
 	*node.last_block.lock().unwrap() = (header.prev_blockhash, height - 1);
 	node.blocks.lock().unwrap().pop();
 }

@@ -270,7 +270,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 			assert_eq!(channel_state.short_to_id.len(), 0);
 		}
 	}
-
 	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
 	// is a ChannelForcClosed on the right channel with should_broadcast set.
 	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan_id, true));
