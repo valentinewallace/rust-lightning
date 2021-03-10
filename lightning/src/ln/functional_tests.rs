@@ -2663,12 +2663,12 @@ fn claim_htlc_outputs_shared_tx() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1, 3_000_000);
 
 	{
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].last_block.lock().unwrap().0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 		check_added_monitors!(nodes[0], 1);
-		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 		check_added_monitors!(nodes[1], 1);
-		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, CHAN_CONFIRM_DEPTH + 1, true, header.block_hash());
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();

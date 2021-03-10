@@ -1227,7 +1227,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	nodes
 }
 
-pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 138; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
+// Note that the following only works for CLTV values up to 128
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 137; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 
 #[derive(PartialEq)]
