@@ -8625,7 +8625,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		}
 		let script_weight = match broadcast_alice {
 			true => OFFERED_HTLC_SCRIPT_WEIGHT,
-			false => ACCEPTED_HTLC_SCRIPT_WEIGHT
+			false => ACCEPTED_HTLC_SCRIPT_WEIGHT + 1 // TODO: why +1 here?
 		};
 		// If Alice force-closed and Bob didn't receive her commitment transaction until after he
 		// received Carol's fulfill, he broadcasts the HTLC-output-claiming transaction first. Else if
