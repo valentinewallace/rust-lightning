@@ -4054,7 +4054,8 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		let payment_secret = PaymentSecret([0xdb; 32]);
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, CHAN_CONFIRM_DEPTH).unwrap();
+		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, cur_height).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -4070,9 +4071,9 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	connect_block(&nodes[0], &block, 101);
-	connect_block(&nodes[1], &block, 101);
-	for i in 102..TEST_FINAL_CLTV + 100 + 1 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
+	connect_block(&nodes[0], &block, CHAN_CONFIRM_DEPTH + 1);
+	connect_block(&nodes[1], &block, CHAN_CONFIRM_DEPTH + 1);
+	for i in CHAN_CONFIRM_DEPTH + 2 ..TEST_FINAL_CLTV + CHAN_CONFIRM_DEPTH + 2 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
 		block.header.prev_blockhash = block.block_hash();
 		connect_block(&nodes[0], &block, i);
 		connect_block(&nodes[1], &block, i);
@@ -4089,9 +4090,9 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
-	// 100_000 msat as u64, followed by a height of 123 as u32
+	// 100_000 msat as u64, followed by a height of 102 as u32
 	let mut expected_failure_data = byte_utils::be64_to_array(100_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(123));
+	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(102));
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
 }
 
