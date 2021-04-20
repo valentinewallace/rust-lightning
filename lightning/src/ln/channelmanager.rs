@@ -3598,6 +3598,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
 		//TODO: This behavior should be documented. It's non-intuitive that we query
 		// ChannelMonitors when clearing other events.
 		self.process_pending_monitor_events();
@@ -3619,6 +3621,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvi
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
 		//TODO: This behavior should be documented. It's non-intuitive that we query
 		// ChannelMonitors when clearing other events.
 		self.process_pending_monitor_events();
