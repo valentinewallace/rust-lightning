@@ -3584,6 +3584,10 @@ where
 			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
 			if old_serial >= header.time as usize { break; }
 			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+				let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+				payment_secrets.retain(|_, inbound_payment| {
+					inbound_payment.expiry_time > header.time as u64
+				});
 				break;
 			}
 		}
@@ -3701,6 +3705,10 @@ where
 						} else { true }
 					});
 					!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+				});
+				let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+				payment_secrets.retain(|_, inbound_payment| {
+					inbound_payment.expiry_height > height
 				});
 			}
 		}
