@@ -3706,10 +3706,6 @@ where
 					});
 					!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
 				});
-				let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
-				payment_secrets.retain(|_, inbound_payment| {
-					inbound_payment.expiry_height > height
-				});
 			}
 		}
 
