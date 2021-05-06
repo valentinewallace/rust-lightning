@@ -8,21 +8,54 @@
 // licenses.
 
 macro_rules! encode_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
 		#[allow(unused_imports)]
 		use util::ser::{BigSize, LengthCalculatingWriter};
+		// Fields must be serialized in order, so we have to potentially switch between optional
+		// fields and normal fields while serializing. Thus, we end up having to loop over the type
+		// counts.
+		// Sadly, while LLVM does appear smart enough to make `max_field` a constant, it appears to
+		// refuse to unroll the loop. If we have enough entries that this is slow we can revisit
+		// this design in the future.
+		#[allow(unused_mut)]
+		let mut max_field: u64 = 0;
 		$(
-			BigSize($type).write($stream)?;
-			let mut len_calc = LengthCalculatingWriter(0);
-			$field.write(&mut len_calc)?;
-			BigSize(len_calc.0 as u64).write($stream)?;
-			$field.write($stream)?;
+			if $type >= max_field { max_field = $type + 1; }
 		)*
+		$(
+			if $optional_type >= max_field { max_field = $optional_type + 1; }
+		)*
+		#[allow(unused_variables)]
+		for i in 0..max_field {
+			$(
+				if i == $type {
+					BigSize($type).write($stream)?;
+					let mut len_calc = LengthCalculatingWriter(0);
+					$field.write(&mut len_calc)?;
+					BigSize(len_calc.0 as u64).write($stream)?;
+					$field.write($stream)?;
+				}
+			)*
+			$(
+				if i == $optional_type {
+					if let Some(ref field) = $optional_field {
+						BigSize($optional_type).write($stream)?;
+						let mut len_calc = LengthCalculatingWriter(0);
+						field.write(&mut len_calc)?;
+						BigSize(len_calc.0 as u64).write($stream)?;
+						field.write($stream)?;
+					}
+				}
+			)*
+		}
+	} };
+	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+		encode_tlv!($stream, {$(($type, $field)),*}, {});
 	} }
 }
 
 macro_rules! encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
 		use util::ser::{BigSize, LengthCalculatingWriter};
 		#[allow(unused_mut)]
 		let mut len = LengthCalculatingWriter(0);
@@ -34,12 +67,22 @@ macro_rules! encode_varint_length_prefixed_tlv {
 				BigSize(field_len.0 as u64).write(&mut len)?;
 				len.0 += field_len.0;
 			)*
+			$(
+				if let Some(ref field) = $optional_field {
+					BigSize($optional_type).write(&mut len)?;
+					let mut field_len = LengthCalculatingWriter(0);
+					field.write(&mut field_len)?;
+					BigSize(field_len.0 as u64).write(&mut len)?;
+					len.0 += field_len.0;
+				}
+			)*
 		}
 
 		BigSize(len.0 as u64).write($stream)?;
-		encode_tlv!($stream, {
-			$(($type, $field)),*
-		});
+		encode_tlv!($stream, { $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
+	} };
+	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+		encode_varint_length_prefixed_tlv!($stream, { $(($type, $field)),* }, {});
 	} }
 }
 
@@ -206,8 +249,8 @@ macro_rules! write_ver_prefix {
 /// This is the preferred method of adding new fields which old nodes can ignore and still function
 /// correctly.
 macro_rules! write_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: expr)),*}) => {
-		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*});
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => {
+		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
 	}
 }
 

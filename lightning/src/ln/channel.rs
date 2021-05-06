@@ -4568,7 +4568,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.commitment_secrets.write(writer)?;
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {}, {});
 
 		Ok(())
 	}

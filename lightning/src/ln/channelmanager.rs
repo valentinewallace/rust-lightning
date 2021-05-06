@@ -4395,7 +4395,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			pending_payment.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {}, {});
 
 		Ok(())
 	}
