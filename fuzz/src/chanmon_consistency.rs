@@ -46,7 +46,7 @@ use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
-use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
+use lightning::util::events::MessageSendEventsProvider;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_utils::OnlyReadsKeysInterface;
 use lightning::routing::router::{Route, RouteHop};

@@ -35,7 +35,7 @@ use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::Sign;
 use util::logger::Logger;
 use util::events;
-use util::events::Event;
+use util::events::EventHandler;
 
 use std::collections::{HashMap, hash_map};
 use std::sync::RwLock;
@@ -138,6 +138,15 @@ where C::Target: chain::Filter,
 			fee_estimator: feeest,
 			persister,
 		}
+	}
+
+	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+		use util::events::EventsProvider;
+		let events = std::cell::RefCell::new(Vec::new());
+		let event_handler = |event| events.borrow_mut().push(event);
+		self.process_pending_events(&event_handler);
+		events.into_inner()
 	}
 }
 
@@ -299,6 +308,9 @@ where C::Target: chain::Filter,
 	}
 }
 
+/// Provides [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
+///
+/// [`SpendableOutputs`]: events::Event::SpendableOutputs
 impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
@@ -306,12 +318,14 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 	      L::Target: Logger,
 	      P::Target: channelmonitor::Persist<ChannelSigner>,
 {
-	fn get_and_clear_pending_events(&self) -> Vec<Event> {
+	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		let mut pending_events = Vec::new();
 		for monitor in self.monitors.read().unwrap().values() {
 			pending_events.append(&mut monitor.get_and_clear_pending_events());
 		}
-		pending_events
+		for event in pending_events.drain(..) {
+			handler.handle_event(event);
+		}
 	}
 }
 
@@ -320,7 +334,6 @@ mod tests {
 	use ::{check_added_monitors, get_local_commitment_txn};
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
-	use util::events::EventsProvider;
 	use util::events::MessageSendEventsProvider;
 	use util::test_utils::{OnRegisterOutput, TxOutReference};
 
