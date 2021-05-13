@@ -880,7 +880,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 
 mod fuzzy_internal_msgs {
 	use prelude::*;
-	use ln::PaymentSecret;
+	use ln::{PaymentPreimage, PaymentSecret};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -901,6 +901,7 @@ mod fuzzy_internal_msgs {
 		},
 		FinalNode {
 			payment_data: Option<FinalOnionHopData>,
+			keysend_preimage: Option<PaymentPreimage>
 		},
 	}
 
@@ -1300,7 +1301,7 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id)
 				}, { });
 			},
-			OnionHopDataFormat::FinalNode { ref payment_data } => {
+			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
 				if let Some(final_data) = payment_data {
 					if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 				}
@@ -1308,7 +1309,8 @@ impl Writeable for OnionHopData {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
 				}, {
-					(8, payment_data)
+					(8, payment_data),
+					(5482373484, keysend_preimage)
 				});
 			},
 		}
@@ -1331,12 +1333,14 @@ impl Readable for OnionHopData {
 			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
+			let mut keysend_preimage: Option<PaymentPreimage> = None;
 			decode_tlv!(&mut rd, {
 				(2, amt),
 				(4, cltv_value)
 			}, {
 				(6, short_id),
-				(8, payment_data)
+				(8, payment_data),
+				(5482373484, keysend_preimage)
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {
@@ -1351,7 +1355,8 @@ impl Readable for OnionHopData {
 					}
 				}
 				OnionHopDataFormat::FinalNode {
-					payment_data
+					payment_data,
+					keysend_preimage,
 				}
 			};
 			(format, amt.0, cltv_value.0)
@@ -2533,6 +2538,7 @@ mod tests {
 		let mut msg = msgs::OnionHopData {
 			format: OnionHopDataFormat::FinalNode {
 				payment_data: None,
+				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
@@ -2541,7 +2547,7 @@ mod tests {
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::FinalNode { payment_data: None } = msg.format { } else { panic!(); }
+		if let OnionHopDataFormat::FinalNode { payment_data: None, .. } = msg.format { } else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
 	}
@@ -2555,6 +2561,7 @@ mod tests {
 					payment_secret: expected_payment_secret,
 					total_msat: 0x1badca1f
 				}),
+				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
@@ -2567,7 +2574,8 @@ mod tests {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
 				total_msat: 0x1badca1f
-			})
+			}),
+			keysend_preimage: None,
 		} = msg.format {
 			assert_eq!(payment_secret, expected_payment_secret);
 		} else { panic!(); }
