@@ -777,7 +777,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 														continue;
 													}
 													msgs::DecodeError::InvalidValue => {
-														log_debug!(self.logger, "Got an invalid value while deserializing message");
+														reader.set_position(0);
+														let msg_type = match <u16 as ::util::ser::Readable>::read(&mut reader) {
+															Ok(t) => format!("{}", t),
+															Err(_) => "unknown".to_string(),
+														};
+														log_debug!(self.logger, "Got an invalid value while deserializing message of type: {}", msg_type);
 														return Err(PeerHandleError { no_connection_possible: false });
 													}
 													msgs::DecodeError::ShortRead => {
