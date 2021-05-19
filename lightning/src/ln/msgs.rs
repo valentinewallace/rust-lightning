@@ -1662,6 +1662,7 @@ impl Readable for QueryShortChannelIds {
 			return Err(DecodeError::InvalidValue);
 		}
 
+
 		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
 		// less the 1-byte encoding_type
 		let short_channel_id_count: u16 = (encoding_len - 1)/8;
@@ -1774,6 +1775,7 @@ impl Readable for ReplyChannelRange {
 		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
+
 
 		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
 		// less the 1-byte encoding_type
