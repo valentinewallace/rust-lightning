@@ -62,6 +62,7 @@ use util::logger::Logger;
 use util::errors::APIError;
 
 use std::{cmp, mem};
+use std::cell::RefCell;
 use std::collections::{HashMap, hash_map, HashSet};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
@@ -3561,14 +3562,24 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
-		//TODO: This behavior should be documented. It's non-intuitive that we query
-		// ChannelMonitors when clearing other events.
-		self.process_pending_monitor_events();
+		let result = RefCell::new(Vec::new());
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			// TODO: This behavior should be documented. It's unintuitive that we query
+			// ChannelMonitors when clearing other events.
+			self.process_pending_monitor_events();
 
-		let mut ret = Vec::new();
-		let mut channel_state = self.channel_state.lock().unwrap();
-		mem::swap(&mut ret, &mut channel_state.pending_msg_events);
-		ret
+			let mut pending_events = Vec::new();
+			let mut channel_state = self.channel_state.lock().unwrap();
+			mem::swap(&mut pending_events, &mut channel_state.pending_msg_events);
+
+			if pending_events.is_empty() {
+				NotifyOption::SkipPersist
+			} else {
+				result.replace(pending_events);
+				NotifyOption::DoPersist
+			}
+		});
+		result.into_inner()
 	}
 }
 
