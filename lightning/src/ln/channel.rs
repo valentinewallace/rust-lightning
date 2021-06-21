@@ -456,7 +456,6 @@ struct CommitmentTxInfoCached {
 }
 
 pub const OUR_MAX_HTLCS: u16 = 50; //TODO
-const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 
 #[cfg(not(test))]
 const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
@@ -3499,24 +3498,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
-	pub fn get_holder_fee_base_msat<F: Deref>(&self, fee_estimator: &F) -> u32
-		where F::Target: FeeEstimator
-	{
-		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
-		// output value back into a transaction with the regular channel output:
-
-		// the fee cost of the HTLC-Success/HTLC-Timeout transaction:
-		let mut res = self.feerate_per_kw as u64 * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT) / 1000;
-
-		if self.is_outbound() {
-			// + the marginal fee increase cost to us in the commitment transaction:
-			res += self.feerate_per_kw as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC / 1000;
-		}
-
-		// + the marginal cost of an input which spends the HTLC-Success/HTLC-Timeout output:
-		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) as u64 * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
-
-		res as u32
+	pub fn get_outbound_forwarding_fee_base_msat(&self) -> u32 {
+		self.config.fee_base_msat
 	}
 
 	/// Returns true if we've ever received a message from the remote end for this Channel

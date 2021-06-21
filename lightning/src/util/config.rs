@@ -146,6 +146,17 @@ pub struct ChannelConfig {
 	///
 	/// Default value: 0.
 	pub fee_proportional_millionths: u32,
+	/// Amount (in milli-satoshi) the channel will charge for each transferred HTLC, in excess of
+	/// fee_proportional_millionths.
+	/// This may be allowed to change at runtime in a later update, however doing so must result in
+	/// update messages sent to notify all nodes of our updated relay fee.
+	///
+	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
+	/// as of July 2021. Ajusting it upwards or downwards may change whether nodes route through
+	/// this node.
+	///
+	/// Default value: 1000.
+	pub fee_base_msat: u32,
 	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
 	/// the channel this config applies to.
 	///
@@ -197,6 +208,7 @@ impl Default for ChannelConfig {
 	fn default() -> Self {
 		ChannelConfig {
 			fee_proportional_millionths: 0,
+			fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
@@ -209,6 +221,7 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	(2, cltv_expiry_delta, required),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),
+	(8, fee_base_msat, required),
 });
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
