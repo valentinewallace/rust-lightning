@@ -2259,10 +2259,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else if total_value == payment_data.total_msat {
 												new_events.push(events::Event::PaymentReceived {
 													payment_hash,
-													payment_preimage: inbound_payment.get().payment_preimage,
-													payment_secret: payment_data.payment_secret,
+													receipt: events::ReceiveInfo::Invoice {
+														payment_preimage: inbound_payment.get().payment_preimage,
+														payment_secret: payment_data.payment_secret,
+														user_payment_id: inbound_payment.get().user_payment_id,
+													},
 													amt: total_value,
-													user_payment_id: inbound_payment.get().user_payment_id,
 												});
 												// Only ever generate at most one PaymentReceived
 												// per registered payment_hash, even if it isn't
