@@ -158,6 +158,8 @@ pub(crate) struct HTLCPreviousHopData {
 	outpoint: OutPoint,
 }
 
+struct ClaimableKeysend(PaymentPreimage);
+
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	value: u64,
@@ -1437,15 +1439,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 			}
 
-			let payment_data = match next_hop_data.format {
-				msgs::OnionHopDataFormat::Legacy { .. } => None,
+			let routing = match next_hop_data.format {
+				msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
 				msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
-				msgs::OnionHopDataFormat::FinalNode { payment_data, .. } => payment_data,
+				msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+          if let Some(data) = payment_data {
+            PendingHTLCRouting::Receive {
+              payment_data: data,
+              incoming_cltv_expiry: msg.cltv_expiry,
+            }
+          } else if let Some(payment_preimage) = keysend_preimage {
+            PendingHTLCRouting::ReceiveKeysend {
+              payment_preimage,
+              incoming_cltv_expiry: msg.cltv_expiry,
+            }
+          } else {
+            return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
+          }
+				},
 			};
-
-			if payment_data.is_none() {
-				return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
-			}
 
 			// Note that we could obviously respond immediately with an update_fulfill_htlc
 			// message, however that would leak that we are the recipient of this payment, so
@@ -1453,10 +1465,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// delay) once they've send us a commitment_signed!
 
 			PendingHTLCStatus::Forward(PendingHTLCInfo {
-				routing: PendingHTLCRouting::Receive {
-					payment_data: payment_data.unwrap(),
-					incoming_cltv_expiry: msg.cltv_expiry,
-				},
+				routing,
 				payment_hash: msg.payment_hash.clone(),
 				incoming_shared_secret: shared_secret,
 				amt_to_forward: next_hop_data.amt_to_forward,
@@ -2184,19 +2193,31 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
-									incoming_shared_secret, payment_hash, amt_to_forward, .. },
+									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
-								let claimable_htlc = ClaimableHTLC {
-									prev_hop: HTLCPreviousHopData {
-										short_channel_id: prev_short_channel_id,
-										outpoint: prev_funding_outpoint,
-										htlc_id: prev_htlc_id,
-										incoming_packet_shared_secret: incoming_shared_secret,
+								let mut claimable_htlc = None;
+								let mut claimable_keysend_htlc = None;
+								match routing {
+									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry } => {
+										claimable_htlc = Some(ClaimableHTLC {
+											prev_hop: HTLCPreviousHopData {
+												short_channel_id: prev_short_channel_id,
+												outpoint: prev_funding_outpoint,
+												htlc_id: prev_htlc_id,
+												incoming_packet_shared_secret: incoming_shared_secret,
+											},
+											value: amt_to_forward,
+											payment_data: payment_data.clone(),
+											cltv_expiry: incoming_cltv_expiry,
+										});
 									},
-									value: amt_to_forward,
-									payment_data: payment_data.clone(),
-									cltv_expiry: incoming_cltv_expiry,
+									PendingHTLCRouting::ReceiveKeysend { payment_preimage, .. } => {
+
+										claimable_keysend_htlc = Some(ClaimableKeysend(payment_preimage));
+									},
+									_ => {
+										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
+									}
 								};
 
 								macro_rules! fail_htlc {
@@ -2224,23 +2245,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								// associated with the same payment_hash pending or not.
 								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 								match payment_secrets.entry(payment_hash) {
-									hash_map::Entry::Vacant(_) => {
-										log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
-										fail_htlc!(claimable_htlc);
+									hash_map::Entry::Vacant(_) if claimable_keysend_htlc.is_some() => {
+										let claimable = claimable_keysend_htlc.unwrap();
+										new_events.push(events::Event::PaymentReceived {
+											payment_hash,
+											amt: amt_to_forward,
+											receipt: events::ReceiveInfo::Spontaneous(claimable.0),
+										});
 									},
-									hash_map::Entry::Occupied(inbound_payment) => {
+									hash_map::Entry::Vacant(_) => {
+										log_trace!(self.logger, "Failing new non-keysend HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
+										let claimable = claimable_htlc.unwrap();
+										fail_htlc!(claimable);
+									},
+									hash_map::Entry::Occupied(inbound_payment) if claimable_htlc.is_some() => {
+										let claimable = claimable_htlc.unwrap();
+										let payment_data = claimable.payment_data.clone();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable);
 										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
 												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable);
 										} else {
 											let mut total_value = 0;
 											let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
 												.or_insert(Vec::new());
-											htlcs.push(claimable_htlc);
+											htlcs.push(claimable);
 											for htlc in htlcs.iter() {
 												total_value += htlc.value;
 												if htlc.payment_data.total_msat != payment_data.total_msat {
@@ -2277,10 +2309,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											}
 										}
 									},
+									hash_map::Entry::Occupied(_) => {
+										panic!("Unexpected inbound payment found for inbound keysend payment");
+									},
 								};
-							},
-							HTLCForwardInfo::AddHTLC { .. } => {
-								panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 							},
 							HTLCForwardInfo::FailHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");

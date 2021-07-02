@@ -97,7 +97,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+			StaticRemoteKey | PaymentSecret,
 			// Byte 2
 			,
 			// Byte 3
@@ -107,7 +107,7 @@ mod sealed {
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
-			,
+			VariableLengthOnion,
 			// Byte 2
 			BasicMPP,
 			// Byte 3
@@ -119,7 +119,8 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+			// VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+			StaticRemoteKey | PaymentSecret,
 			// Byte 2
 			,
 			// Byte 3
@@ -135,7 +136,7 @@ mod sealed {
 			// Byte 0
 			DataLossProtect | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
-			,
+			VariableLengthOnion,
 			// Byte 2
 			BasicMPP,
 			// Byte 3
@@ -157,7 +158,8 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			VariableLengthOnion | PaymentSecret,
+			// VariableLengthOnion | PaymentSecret,
+			PaymentSecret,
 			// Byte 2
 			,
 		],
@@ -165,7 +167,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			,
+			VariableLengthOnion,
 			// Byte 2
 			BasicMPP,
 		],

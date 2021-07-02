@@ -31,6 +31,7 @@ use core::ops::Deref;
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug)]
 pub enum ReceiveInfo {
+	/// XXX
 	Invoice {
 		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
 		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
@@ -60,11 +61,9 @@ pub enum ReceiveInfo {
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		user_payment_id: u64,
 	},
-	Spontaneous {
-		/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
-		/// (the payee) providing a preimage.
-		payment_preimage: PaymentPreimage,
-	}
+	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
+	/// (the payee) providing a preimage.
+	Spontaneous(PaymentPreimage),
 }
 
 /// An Event which you should probably take some action in response to.
@@ -107,6 +106,7 @@ pub enum Event {
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).
 		amt: u64,
+		/// XXX
 		receipt: ReceiveInfo,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
@@ -170,7 +170,7 @@ impl Writeable for Event {
 						payment_preimage = *preimage;
 						user_payment_id = Some(id);
 					},
-					ReceiveInfo::Spontaneous { payment_preimage: preimage } => {
+					ReceiveInfo::Spontaneous(preimage) => {
 						payment_preimage = Some(*preimage);
 					}
 				}
@@ -246,9 +246,7 @@ impl MaybeReadable for Event {
 								id
 							} else { return Err(msgs::DecodeError::InvalidValue) }
 						},
-						None if payment_preimage.is_some() => ReceiveInfo::Spontaneous {
-							payment_preimage: payment_preimage.unwrap(),
-						},
+						None if payment_preimage.is_some() => ReceiveInfo::Spontaneous(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
 					Ok(Some(Event::PaymentReceived {
