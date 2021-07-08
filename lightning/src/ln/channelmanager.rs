@@ -1472,7 +1472,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
 				msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
 				msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
-					if let Some(data) = payment_data {
+					if payment_data.is_some() && keysend_preimage.is_some() {
+						return_err!("We don't support MPP keysend payments", 0x4000|0x2000|2, &[0;0]); // XXX: what failure code?
+					} else if let Some(data) = payment_data {
 						PendingHTLCRouting::Receive {
 							payment_data: data,
 							incoming_cltv_expiry: msg.cltv_expiry,
@@ -2292,26 +2294,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
-										if let ClaimableType::Invoice(_) = claimable_htlc.claim_type {
-											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
-											fail_htlc!(claimable_htlc);
-										} else {
-											let keysend_preimage = match claimable_htlc.claim_type {
-												ClaimableType::Spontaneous(p) => p.clone(),
-												_ => unreachable!(),
-											};
-											let htlc_vec = channel_state.claimable_htlcs.entry(payment_hash)
-												.or_insert(Vec::new());
-											if htlc_vec.len() != 0 {
-												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
+										match claimable_htlc.claim_type {
+											ClaimableType::Invoice(_) => {
+												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
 												fail_htlc!(claimable_htlc);
-											} else {
-												htlc_vec.push(claimable_htlc);
-												new_events.push(events::Event::PaymentReceived {
-													payment_hash,
-													amt: amt_to_forward,
-													receipt: events::ReceiveInfo::Spontaneous(keysend_preimage),
-												});
+											},
+											ClaimableType::Spontaneous(preimage) => {
+												let htlc_vec = channel_state.claimable_htlcs.entry(payment_hash)
+													.or_insert(Vec::new());
+												if htlc_vec.len() != 0 {
+													log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
+													fail_htlc!(claimable_htlc);
+												} else {
+													htlc_vec.push(claimable_htlc);
+													new_events.push(events::Event::PaymentReceived {
+														payment_hash,
+														amt: amt_to_forward,
+														receipt: events::ReceiveInfo::Spontaneous(preimage),
+													});
+												}
 											}
 										}
 									},
@@ -2335,6 +2336,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											let mut total_value = 0;
 											let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
 												.or_insert(Vec::new());
+											if htlcs.len() == 1 {
+												if let ClaimableType::Spontaneous(_) = htlcs[0].claim_type {
+													log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
+													fail_htlc!(claimable_htlc);
+													continue
+												}
+											}
 											htlcs.push(claimable_htlc);
 											for htlc in htlcs.iter() {
 												total_value += htlc.value;
