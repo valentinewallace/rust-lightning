@@ -9417,7 +9417,7 @@ fn test_keysend_payments_to_public_node() {
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
 	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, Some(PaymentSecret([0; 32])), event, true, Some(test_preimage));
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
 	claim_payment(&nodes[0], &path, test_preimage);
 }
 
@@ -9447,6 +9447,6 @@ fn test_keysend_payments_to_private_node() {
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
 	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, Some(PaymentSecret([0; 32])), event, true, Some(test_preimage));
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
 	claim_payment(&nodes[0], &path, test_preimage);
 }

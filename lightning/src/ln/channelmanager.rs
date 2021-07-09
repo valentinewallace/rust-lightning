@@ -4498,18 +4498,85 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(6, incoming_packet_shared_secret, required)
 });
 
-impl_writeable_tlv_based_enum!(ClaimableType, ;
-	(0, Invoice),
-	(1, Spontaneous),
-);
+impl Writeable for ClaimableHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		let payment_data = match &self.claim_type {
+			ClaimableType::Invoice(data) => data.clone(),
+			_ => msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: 0,
+			}
+		};
+		let keysend_preimage = match self.claim_type {
+			ClaimableType::Invoice(_) => None,
+			ClaimableType::Spontaneous(preimage) => Some(preimage.clone()),
+		};
+		write_tlv_fields!
+		(writer,
+		 {
+		   (0, self.prev_hop, required), (2, self.value, required),
+		   (4, payment_data, required), (6, self.cltv_expiry, required),
+			 (8, keysend_preimage, option),
+		 });
+		Ok(())
+	}
 
-impl_writeable_tlv_based!(ClaimableHTLC, {
-	(0, prev_hop, required),
-	(2, value, required),
-	// XXX what to do here?
-	(4, claim_type, required),
-	(6, cltv_expiry, required),
-});
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		use util::ser::BigSize;
+		let len = {
+			#[allow(unused_mut)]
+			let mut len = ::util::ser::LengthCalculatingWriter(0);
+			get_varint_length_prefixed_tlv_length!(len, 0, self.prev_hop, required);
+			get_varint_length_prefixed_tlv_length!(len, 2, self.value, required);
+			let payment_data = match &self.claim_type {
+				ClaimableType::Invoice(data) => data.clone(),
+				_ => msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]),
+					total_msat: 0,
+				}
+			};
+			get_varint_length_prefixed_tlv_length!(len, 4, payment_data, required);
+			get_varint_length_prefixed_tlv_length!(len, 6, self.cltv_expiry, required);
+			let keysend_preimage = match self.claim_type {
+				ClaimableType::Invoice(_) => None,
+				ClaimableType::Spontaneous(preimage) => Some(preimage.clone()),
+			};
+			get_varint_length_prefixed_tlv_length!(len, 8, keysend_preimage, option);
+			len.0
+		};
+		let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
+		BigSize(len as u64).write(&mut len_calc).expect("No in-memory data may fail to serialize");
+		len + len_calc.0
+	}
+}
+
+impl Readable for ClaimableHTLC {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+		init_tlv_field_var!(prev_hop, required);
+		init_tlv_field_var!(value, required);
+		init_tlv_field_var!(payment_data, required);
+		init_tlv_field_var!(cltv_expiry, required);
+		init_tlv_field_var!(keysend_preimage, option);
+		read_tlv_fields!
+		(reader,
+		 {
+		   (0, prev_hop, required), (2, value, required),
+		   (4, payment_data, required), (6, cltv_expiry, required),
+			 (8, keysend_preimage, option)
+		 });
+		let claim_type = match keysend_preimage {
+			Some(p) => ClaimableType::Spontaneous(p),
+			None => ClaimableType::Invoice(payment_data.0.unwrap()),
+		};
+		Ok(Self {
+			prev_hop: init_tlv_based_struct_field!(prev_hop, required),
+			value: init_tlv_based_struct_field!(value, required),
+			claim_type,
+			cltv_expiry: init_tlv_based_struct_field!(cltv_expiry, required),
+		})
+	}
+}
 
 impl_writeable_tlv_based_enum!(HTLCSource,
 	(0, OutboundRoute) => {
@@ -4966,7 +5033,7 @@ mod tests {
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::get_route;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ReceiveInfo};
 	use util::test_utils;
 	use std::sync::Arc;
 	use std::thread;
@@ -5072,7 +5139,7 @@ mod tests {
 
 		// First, send a partial MPP payment.
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
@@ -5081,7 +5148,7 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
@@ -5111,8 +5178,8 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
-		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
+		claim_payment_along_route(&nodes[0], &[&[&nodes[1]], &[&nodes[1]]], false, payment_preimage);
 	}
 
 	#[test]
