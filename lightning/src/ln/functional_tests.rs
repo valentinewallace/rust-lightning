@@ -9550,3 +9550,60 @@ fn test_tx_confirmed_skipping_blocks_immediate_broadcast() {
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(false);
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(true);
 }
+
+#[test]
+fn test_test() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	// First, send a partial MPP payment.
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+	let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+	// Use the utility function send_payment_along_path to send the payment with MPP data which
+	// indicates there are more HTLCs coming.
+	let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
+	nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), false);
+	nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), true);
+	assert!(nodes[1].node.claim_funds(payment_preimage));
+	check_added_monitors!(nodes[1], 2);
+	let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+	check_added_monitors!(nodes[0], 1);
+	let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+	check_added_monitors!(nodes[1], 1);
+	let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_first_cs);
+	check_added_monitors!(nodes[1], 1);
+	let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+	check_added_monitors!(nodes[0], 1);
+	let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+	let as_second_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	check_added_monitors!(nodes[0], 1);
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+	check_added_monitors!(nodes[1], 1);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
+	check_added_monitors!(nodes[1], 1);
+	let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
+	check_added_monitors!(nodes[0], 1);
+	expect_payment_sent!(nodes[0], payment_preimage);
+}
+
