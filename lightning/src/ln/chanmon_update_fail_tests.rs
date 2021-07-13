@@ -2168,7 +2168,8 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	expect_pending_htlcs_forwardable!(nodes[0], events);
 	expect_payment_received!(nodes[0], payment_hash, payment_secret, 1_000_000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage);
@@ -2527,7 +2528,8 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	};
 	if second_fails {
 		assert!(nodes[2].node.fail_htlc_backwards(&payment_hash));
-		expect_pending_htlcs_forwardable!(nodes[2]);
+		let events = nodes[2].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[2], events);
 		check_added_monitors!(nodes[2], 1);
 		get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	} else {
@@ -2547,7 +2549,8 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent!(nodes[0], payment_preimage);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		expect_payment_sent!(nodes[0], payment_preimage, events);
 		if htlc_status == HTLCStatusAtDupClaim::Cleared {
 			commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
 		}
@@ -2560,7 +2563,8 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 
 	if second_fails {
 		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
 	} else {
 		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	}
@@ -2568,12 +2572,14 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {
 		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa.unwrap());
 		check_added_monitors!(nodes[1], 1);
-		expect_pending_htlcs_forwardable_ignore!(nodes[1]); // We finally receive the second payment, but don't claim it
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable_ignore!(nodes[1], events); // We finally receive the second payment, but don't claim it
 
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent!(nodes[0], payment_preimage);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		expect_payment_sent!(nodes[0], payment_preimage, events);
 	}
 	if htlc_status != HTLCStatusAtDupClaim::Cleared {
 		commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
@@ -2641,6 +2647,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
+	check_closed_event!(nodes[1], 1);
+	check_closed_event!(nodes[0], 1);
 }
 
 #[test]
@@ -2661,6 +2669,7 @@ fn test_permanent_error_during_sending_shutdown() {
 	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 2);
+	check_closed_event!(nodes[0], 1);
 }
 
 #[test]
@@ -2683,4 +2692,5 @@ fn test_permanent_error_during_handling_shutdown() {
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &shutdown);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 2);
+	check_closed_event!(nodes[1], 1);
 }

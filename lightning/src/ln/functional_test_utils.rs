@@ -1251,13 +1251,7 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 		if !skip_last {
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
 			let mut events = origin_node.node.get_and_clear_pending_events();
-			let payment_sent: Vec<Event>;
-			if events.len() == 2 {
-				payment_sent = events.drain(1..2).collect();
-			} else {
-				payment_sent = events;
-			}
-			expect_payment_sent!(origin_node, our_payment_preimage, payment_sent);
+			expect_payment_sent!(origin_node, our_payment_preimage, events);
 		}
 	}
 }

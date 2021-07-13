@@ -58,7 +58,8 @@ fn chanmon_fail_from_stale_commitment() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	expect_pending_htlcs_forwardable!(nodes[1], events);
 	get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
@@ -67,15 +68,18 @@ fn chanmon_fail_from_stale_commitment() {
 	mine_transaction(&nodes[1], &bs_txn[0]);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
+	check_closed_event!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	expect_pending_htlcs_forwardable!(nodes[1], events);
 	check_added_monitors!(nodes[1], 1);
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, true, true);
-	expect_payment_failed!(nodes[0], payment_hash, false);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	expect_payment_failed!(nodes[0], events, payment_hash, false);
 	expect_payment_failure_chan_update!(nodes[0], update_a.contents.short_channel_id, true);
 }

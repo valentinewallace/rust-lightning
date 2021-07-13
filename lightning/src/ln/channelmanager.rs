@@ -53,7 +53,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureDescriptor};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -307,7 +307,7 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
-			chan_id: Some(channel_id),
+			chan_id: None,
 			shutdown_finish: None,
 		}
 	}
@@ -791,6 +791,7 @@ macro_rules! handle_error {
 					// In testing, ensure there are no deadlocks where the lock is already held upon
 					// entering the macro.
 					assert!($self.channel_state.try_lock().is_ok());
+					assert!($self.pending_events.try_lock().is_ok());
 				}
 
 				let mut msg_events = Vec::with_capacity(2);
@@ -803,7 +804,7 @@ macro_rules! handle_error {
 						});
 					}
 					if let Some(channel_id) = chan_id {
-						$self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id,  err: ClosureDescriptor::ProcessingError });
+						$self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id,  err: ClosureReason::ProcessingError { err: err.err.clone() } });
 					}
 				}
 
@@ -1413,7 +1414,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<PublicKey, APIError> {
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
@@ -1425,6 +1426,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				if let Some(short_id) = chan.get().get_short_channel_id() {
 					channel_state.short_to_id.remove(&short_id);
+				}
+				let mut pending_events_lock = self.pending_events.lock().unwrap();
+				if peer_node_id.is_some() {
+					if let Some(peer_msg) = peer_msg {
+						pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, err: ClosureReason::CounterpartyForceClosed { peer_msg: Some(peer_msg.to_string()) } });
+					} else {
+						pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, err: ClosureReason::CounterpartyForceClosed { peer_msg: None } });
+					}
+				} else {
+					pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, err: ClosureReason::HolderForceClosed });
 				}
 				chan.remove_entry().1
 			} else {
@@ -1439,7 +1450,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				msg: update
 			});
 		}
-		self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: *channel_id,  err: ClosureDescriptor::ForceClosed });
 
 		Ok(chan.get_counterparty_node_id())
 	}
@@ -1448,7 +1458,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		match self.force_close_channel_with_peer(channel_id, None) {
+		match self.force_close_channel_with_peer(channel_id, None, None) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
 					events::MessageSendEvent::HandleError {
@@ -3505,7 +3515,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msg: update
 				});
 			}
-			self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: msg.channel_id,  err: ClosureDescriptor::CooperativeClosure });
+			//TODO: split between CounterpartyInitiated/LocallyInitiated
+			self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: msg.channel_id,  err: ClosureReason::CooperativeClosure });
 		}
 		Ok(())
 	}
@@ -3916,7 +3927,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: update
 							});
 						}
-						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureDescriptor::UnknownOnchainCommitment });
+						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureReason::CommitmentTxBroadcasted });
 						pending_msg_events.push(events::MessageSendEvent::HandleError {
 							node_id: chan.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
@@ -4452,7 +4463,7 @@ where
 							msg: update
 						});
 					}
-					self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: channel.channel_id(),  err: ClosureDescriptor::UnknownOnchainCommitment });
+					self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: channel.channel_id(),  err: ClosureReason::CommitmentTxBroadcasted });
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
@@ -4643,7 +4654,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 								msg: update
 							});
 						}
-						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureDescriptor::DisconnectedPeer });
+						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureReason::DisconnectedPeer });
 						false
 					} else {
 						true
@@ -4658,7 +4669,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 							if let Some(short_id) = chan.get_short_channel_id() {
 								short_to_id.remove(&short_id);
 							}
-							self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureDescriptor::ProcessingError });
+							self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  err: ClosureReason::DisconnectedPeer });
 							return false;
 						} else {
 							no_channels_remain = false;
@@ -4750,12 +4761,12 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			for chan in self.list_channels() {
 				if chan.counterparty.node_id == *counterparty_node_id {
 					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id));
+					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id), Some(&msg.data));
 				}
 			}
 		} else {
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id));
+			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id), Some(&msg.data));
 		}
 	}
 }
@@ -5554,8 +5565,10 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -5565,7 +5578,8 @@ mod tests {
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
-		expect_payment_failed!(nodes[0], our_payment_hash, true);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		expect_payment_failed!(nodes[0], events, our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
 		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
@@ -5650,8 +5664,9 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
+		expect_pending_htlcs_forwardable!(nodes[1], events);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -5661,7 +5676,8 @@ mod tests {
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		expect_payment_failed!(nodes[0], events, payment_hash, true);
 
 		// Finally, claim the original payment.
 		claim_payment(&nodes[0], &expected_route, payment_preimage);
@@ -5688,8 +5704,10 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable!(nodes[1], events);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -5699,7 +5717,8 @@ mod tests {
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		expect_payment_failed!(nodes[0], events, payment_hash, true);
 
 		// Finally, succeed the keysend payment.
 		claim_payment(&nodes[0], &expected_route, payment_preimage);
