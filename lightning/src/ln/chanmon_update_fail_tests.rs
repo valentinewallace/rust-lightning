@@ -2082,7 +2082,10 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	let bs_initial_send_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	// bs_initial_send_msgs are not delivered until they are re-generated after reconnect
 
-	*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 2;
+	}
 	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 	let as_update_fee_msgs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
