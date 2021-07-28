@@ -2922,9 +2922,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
 									   payment_preimage, e);
 						}
+						// Note that we do *not* set `claimed_htlc` to false here. In fact, this
+						// totally could be a duplicate claim, but we have no way of knowing
+						// without interrogating the `ChannelMonitor` we've provided the above
+						// update to. Instead, we simply document in `PaymentForwarded` that this
+						// can happen.
 						Ok(())
 					},
-					Err(Some(res)) => Err(res),
+					Err(Some(res)) => {
+						// We went to claim a payment, but the channel needed to be force-closed
+						// when we went to sign the commitment transaction. Assume this is not a
+						// duplicate claim for the same reason as above.
+						Err(res)
+					},
 				};
 				mem::drop(channel_state_lock);
 				if let Err((counterparty_node_id, err)) = res {

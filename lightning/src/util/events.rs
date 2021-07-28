@@ -160,7 +160,9 @@ pub enum Event {
 		///
 		/// If the channel which sent us the payment has been force-closed, we will claim the funds
 		/// via an on-chain transaction. In that case we do not consider the on-chain transaction
-		/// fees involved in such a claim and this value will be `None`.
+		/// fees involved in such a claim and this value will be `None`. It is possible duplicate
+		/// `PaymentForwarded` events are generated for the same payment iff `fee_earned_msat` is
+		/// `None`.
 		fee_earned_msat: Option<u64>,
 		/// If this is `true`, the forwarded HTLC was claimed on-chain after a force-closure.
 		claim_from_onchain_tx: bool,
