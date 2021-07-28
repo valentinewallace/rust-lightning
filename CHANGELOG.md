@@ -8,7 +8,8 @@
  * 0.0.100 clients with pending PaymentForwarded events at serialization-time
    will generate serialized `ChannelManager` objects which 0.0.99 and earlier
    clients cannot read. The likelihood of this can be reduced by ensuring you
-   process all pending events immediately before serialization.
+   process all pending events immediately before serialization (as is done by
+   the `lightning-background-processor` crate).
 
 
 # 0.0.99 - 2021-07-09
