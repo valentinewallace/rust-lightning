@@ -207,6 +207,12 @@ pub(super) enum HTLCFailReason {
 	}
 }
 
+/// Return value for claim_funds_from_hop
+struct ClaimFundsRes {
+	offchain_htlc_claim_value_msat: Option<u64>,
+	offchain_channel_update: Result<(), Option<(PublicKey, MsgHandleErrInternal)>>,
+}
+
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
@@ -2786,8 +2792,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
 									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
 				} else {
-					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage) {
-						(_, Err(Some(e))) => {
+					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage).offchain_channel_update {
+						Err(Some(e)) => {
 							if let msgs::ErrorAction::IgnoreError = e.1.err.action {
 								// We got a temporary failure updating monitor, but will claim the
 								// HTLC when the monitor updating is restored (or on chain).
@@ -2795,8 +2801,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								claimed_any_htlcs = true;
 							} else { errs.push(e); }
 						},
-						(_, Err(None)) => unreachable!("We already checked for channel existence, we can't fail here!"),
-						(_, Ok(_)) => claimed_any_htlcs = true,
+						Err(None) => unreachable!("We already checked for channel existence, we can't fail here!"),
+						Ok(_) => claimed_any_htlcs = true,
 					}
 				}
 			}
@@ -2814,13 +2820,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		} else { false }
 	}
 
-	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> (Option<u64>, Result<(), Option<(PublicKey, MsgHandleErrInternal)>>) {
+	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsRes {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		let channel_state = &mut **channel_state_lock;
 		let chan_id = match channel_state.short_to_id.get(&prev_hop.short_channel_id) {
 			Some(chan_id) => chan_id.clone(),
 			None => {
-				return (None, Err(None))
+				return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Err(None) }
 			}
 		};
 
@@ -2832,10 +2838,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							log_given_level!(self.logger, if e == ChannelMonitorUpdateErr::PermanentFailure { Level::Error } else { Level::Debug },
 								"Failed to update channel monitor with preimage {:?}: {:?}",
 								payment_preimage, e);
-							return (Some(htlc_value_msat), Err(Some((
-								chan.get().get_counterparty_node_id(),
-								handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
-							))));
+							return ClaimFundsRes {
+								offchain_htlc_claim_value_msat: Some(htlc_value_msat),
+								offchain_channel_update: Err(Some((
+									chan.get().get_counterparty_node_id(),
+									handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
+								))),
+							};
 						}
 						if let Some((msg, commitment_signed)) = msgs {
 							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
@@ -2852,9 +2861,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 							});
 						}
-						return (Some(htlc_value_msat), Ok(()));
+						return ClaimFundsRes { offchain_htlc_claim_value_msat: Some(htlc_value_msat), offchain_channel_update: Ok(()) };
 					} else {
-						return (None, Ok(()));
+						return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Ok(()) };
 					}
 				},
 				Err((e, monitor_update)) => {
@@ -2868,7 +2877,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if drop {
 						chan.remove_entry();
 					}
-					return (None, Err(Some((counterparty_node_id, res))));
+					return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Err(Some((counterparty_node_id, res))) };
 				},
 			}
 		} else { unreachable!(); }
@@ -2894,10 +2903,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_outpoint = hop_data.outpoint;
 				let mut claimed_htlc = true;
-				let (claimed_value_msat, claim_res) = self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage);
-				let res = match claim_res {
+				let claim_res = self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage);
+				let res = match claim_res.offchain_channel_update {
 					Ok(()) => {
-						if claimed_value_msat.is_none() {
+						if claim_res.offchain_htlc_claim_value_msat.is_none() {
 							// If claim_funds_from_hop returns Ok(()) with no HTLC value, it means
 							// we tried to claim the same HTLC twice. Note that
 							// claim_funds_from_hop returning Err() with no HTLC value may or may
@@ -2943,7 +2952,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				if claimed_htlc {
 					if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-						let fee_earned_msat = if let Some(claimed_htlc_value) = claimed_value_msat {
+						let fee_earned_msat = if let Some(claimed_htlc_value) = claim_res.offchain_htlc_claim_value_msat {
 							Some(claimed_htlc_value - forwarded_htlc_value)
 						} else { None };
 
