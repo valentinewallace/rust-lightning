@@ -7543,7 +7543,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert!(regex::Regex::new(r"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: (\([A-Fa-f0-9]+\))").unwrap().is_match(&*msg.data));
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -7561,7 +7561,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert!(regex::Regex::new(r"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: (\([A-Fa-f0-9]+\))").unwrap().is_match(&*msg.data));
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -7588,7 +7588,7 @@ fn test_invalid_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert!(regex::Regex::new(r"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: (\([A-Fa-f0-9]+\))").unwrap().is_match(&*msg.data));
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
 		},
 		_ => panic!("Unexpected event"),
 	}
