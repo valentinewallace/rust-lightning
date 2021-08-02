@@ -601,8 +601,8 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
-			if !shutdown_scriptpubkey.is_compatible(their_features) {
-				return Err(APIError::APIMisuseError { err: format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey) });
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 			}
 		}
 
@@ -4477,7 +4477,7 @@ impl<Signer: Sign> Channel<Signer> {
 			None => {
 				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(APIError::APIMisuseError { err: format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey) });
+					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 				}
 				self.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
