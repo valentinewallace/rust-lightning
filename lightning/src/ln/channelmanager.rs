@@ -208,9 +208,11 @@ pub(super) enum HTLCFailReason {
 }
 
 /// Return value for claim_funds_from_hop
-struct ClaimFundsRes {
-	offchain_htlc_claim_value_msat: Option<u64>,
-	offchain_channel_update: Result<(), Option<(PublicKey, MsgHandleErrInternal)>>,
+enum ClaimFundsFromHop {
+	PrevHopForceClosed,
+	MonitorUpdateFail(PublicKey, MsgHandleErrInternal, Option<u64>),
+	Success(u64),
+	DuplicateClaim,
 }
 
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
@@ -2792,17 +2794,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
 									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
 				} else {
-					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage).offchain_channel_update {
-						Err(Some(e)) => {
-							if let msgs::ErrorAction::IgnoreError = e.1.err.action {
+					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage) {
+						ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) => {
+							if let msgs::ErrorAction::IgnoreError = err.err.action {
 								// We got a temporary failure updating monitor, but will claim the
 								// HTLC when the monitor updating is restored (or on chain).
-								log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", e.1.err.err);
+								log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
 								claimed_any_htlcs = true;
-							} else { errs.push(e); }
+							} else { errs.push((pk, err)); }
 						},
-						Err(None) => unreachable!("We already checked for channel existence, we can't fail here!"),
-						Ok(_) => claimed_any_htlcs = true,
+						ClaimFundsFromHop::PrevHopForceClosed => unreachable!("We already checked for channel existence, we can't fail here!"),
+						_ => claimed_any_htlcs = true,
 					}
 				}
 			}
@@ -2820,13 +2822,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		} else { false }
 	}
 
-	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsRes {
+	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		let channel_state = &mut **channel_state_lock;
 		let chan_id = match channel_state.short_to_id.get(&prev_hop.short_channel_id) {
 			Some(chan_id) => chan_id.clone(),
 			None => {
-				return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Err(None) }
+				return ClaimFundsFromHop::PrevHopForceClosed
 			}
 		};
 
@@ -2838,13 +2840,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							log_given_level!(self.logger, if e == ChannelMonitorUpdateErr::PermanentFailure { Level::Error } else { Level::Debug },
 								"Failed to update channel monitor with preimage {:?}: {:?}",
 								payment_preimage, e);
-							return ClaimFundsRes {
-								offchain_htlc_claim_value_msat: Some(htlc_value_msat),
-								offchain_channel_update: Err(Some((
-									chan.get().get_counterparty_node_id(),
-									handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
-								))),
-							};
+							return ClaimFundsFromHop::MonitorUpdateFail(
+								chan.get().get_counterparty_node_id(),
+								handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
+								Some(htlc_value_msat)
+							);
 						}
 						if let Some((msg, commitment_signed)) = msgs {
 							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
@@ -2861,9 +2861,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 							});
 						}
-						return ClaimFundsRes { offchain_htlc_claim_value_msat: Some(htlc_value_msat), offchain_channel_update: Ok(()) };
+						return ClaimFundsFromHop::Success(htlc_value_msat);
 					} else {
-						return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Ok(()) };
+						return ClaimFundsFromHop::DuplicateClaim;
 					}
 				},
 				Err((e, monitor_update)) => {
@@ -2877,7 +2877,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if drop {
 						chan.remove_entry();
 					}
-					return ClaimFundsRes { offchain_htlc_claim_value_msat: None, offchain_channel_update: Err(Some((counterparty_node_id, res))) };
+					return ClaimFundsFromHop::MonitorUpdateFail(counterparty_node_id, res, None);
 				},
 			}
 		} else { unreachable!(); }
@@ -2902,57 +2902,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_outpoint = hop_data.outpoint;
-				let mut claimed_htlc = true;
-				let claim_res = self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage);
-				let res = match claim_res.offchain_channel_update {
-					Ok(()) => {
-						if claim_res.offchain_htlc_claim_value_msat.is_none() {
-							// If claim_funds_from_hop returns Ok(()) with no HTLC value, it means
-							// we tried to claim the same HTLC twice. Note that
-							// claim_funds_from_hop returning Err() with no HTLC value may or may
-							// not indicate we tried to claim the same HTLC twice, but we generate
-							// a PaymentForwarded event with no known fee in both cases, as it
-							// should be relatively rare that we claim twice.
-							claimed_htlc = false;
-						}
-						Ok(())
-					},
-					Err(None) => {
-						let preimage_update = ChannelMonitorUpdate {
-							update_id: CLOSED_CHANNEL_UPDATE_ID,
-							updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-								payment_preimage: payment_preimage.clone(),
-							}],
-						};
-						// We update the ChannelMonitor on the backward link, after
-						// receiving an offchain preimage event from the forward link (the
-						// event being update_fulfill_htlc).
-						if let Err(e) = self.chain_monitor.update_channel(prev_outpoint, preimage_update) {
-							log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
-									   payment_preimage, e);
-						}
-						// Note that we do *not* set `claimed_htlc` to false here. In fact, this
-						// totally could be a duplicate claim, but we have no way of knowing
-						// without interrogating the `ChannelMonitor` we've provided the above
-						// update to. Instead, we simply document in `PaymentForwarded` that this
-						// can happen.
-						Ok(())
-					},
-					Err(Some(res)) => {
-						// We went to claim a payment, but the channel needed to be force-closed
-						// when we went to sign the commitment transaction. Assume this is not a
-						// duplicate claim for the same reason as above.
-						Err(res)
-					},
+				let res = self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage);
+				let claimed_htlc = if let ClaimFundsFromHop::DuplicateClaim = res { false } else { true };
+				let htlc_claim_value_msat = match res {
+					ClaimFundsFromHop::MonitorUpdateFail(_, _, amt_opt) => amt_opt,
+					ClaimFundsFromHop::Success(amt) => Some(amt),
+					_ => None,
 				};
-				mem::drop(channel_state_lock);
-				if let Err((counterparty_node_id, err)) = res {
-					let res: Result<(), _> = Err(err);
-					let _ = handle_error!(self, res, counterparty_node_id);
+				if let ClaimFundsFromHop::PrevHopForceClosed = res {
+					let preimage_update = ChannelMonitorUpdate {
+						update_id: CLOSED_CHANNEL_UPDATE_ID,
+						updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+							payment_preimage: payment_preimage.clone(),
+						}],
+					};
+					// We update the ChannelMonitor on the backward link, after
+					// receiving an offchain preimage event from the forward link (the
+					// event being update_fulfill_htlc).
+					if let Err(e) = self.chain_monitor.update_channel(prev_outpoint, preimage_update) {
+						log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
+											 payment_preimage, e);
+					}
+					// Note that we do *not* set `claimed_htlc` to false here. In fact, this
+					// totally could be a duplicate claim, but we have no way of knowing
+					// without interrogating the `ChannelMonitor` we've provided the above
+					// update to. Instead, we simply document in `PaymentForwarded` that this
+					// can happen.
 				}
+				mem::drop(channel_state_lock);
+				if let ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) = res {
+					let result: Result<(), _> = Err(err);
+					let _ = handle_error!(self, result, pk);
+				}
+
 				if claimed_htlc {
 					if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-						let fee_earned_msat = if let Some(claimed_htlc_value) = claim_res.offchain_htlc_claim_value_msat {
+						let fee_earned_msat = if let Some(claimed_htlc_value) = htlc_claim_value_msat {
 							Some(claimed_htlc_value - forwarded_htlc_value)
 						} else { None };
 
