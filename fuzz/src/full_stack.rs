@@ -38,7 +38,7 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::router::get_route;
-use lightning::routing::network_graph::NetGraphMsgHandler;
+use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::events::Event;
@@ -160,12 +160,12 @@ type ChannelMan = ChannelManager<
 	EnforcingSigner,
 	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
+type PeerMan<'a, 'b> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<&'b NetworkGraph, Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
 
-struct MoneyLossDetector<'a> {
+struct MoneyLossDetector<'a, 'b> {
 	manager: Arc<ChannelMan>,
 	monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	handler: PeerMan<'a>,
+	handler: PeerMan<'a, 'b>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -175,11 +175,11 @@ struct MoneyLossDetector<'a> {
 	max_height: usize,
 	blocks_connected: u32,
 }
-impl<'a> MoneyLossDetector<'a> {
+impl<'a, 'b> MoneyLossDetector<'a, 'b> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
 	           manager: Arc<ChannelMan>,
 	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	           handler: PeerMan<'a>) -> Self {
+	           handler: PeerMan<'a, 'b>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -238,7 +238,7 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 }
 
-impl<'a> Drop for MoneyLossDetector<'a> {
+impl<'a, 'b> Drop for MoneyLossDetector<'a, 'b> {
 	fn drop(&mut self) {
 		if !::std::thread::panicking() {
 			// Disconnect all peers
@@ -371,7 +371,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params));
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
-	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(genesis_block(network).block_hash(), None, Arc::clone(&logger)));
+	let network_graph = NetworkGraph::new(genesis_block(network).block_hash());
+	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(&network_graph, None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {

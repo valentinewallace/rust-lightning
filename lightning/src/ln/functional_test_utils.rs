@@ -200,6 +200,7 @@ pub struct NodeCfg<'a> {
 	pub logger: &'a test_utils::TestLogger,
 	pub node_seed: [u8; 32],
 	pub features: InitFeatures,
+	pub network_graph: NetworkGraph,
 }
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
@@ -208,7 +209,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingSigner, &'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
-	pub net_graph_msg_handler: NetGraphMsgHandler<&'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+	pub net_graph_msg_handler: NetGraphMsgHandler<&'a NetworkGraph, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -242,9 +243,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let network_graph_ser = &self.net_graph_msg_handler.network_graph;
 				network_graph_ser.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
-				assert!(network_graph_deser == self.net_graph_msg_handler.network_graph);
-				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					Some(self.chain_source), self.logger, network_graph_deser
+				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph);
+				let net_graph_msg_handler = NetGraphMsgHandler::new(
+					&network_graph_deser, Some(self.chain_source), self.logger
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -1378,6 +1379,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
 			features: InitFeatures::known(),
+			network_graph: NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash),
 		});
 	}
 
@@ -1423,7 +1425,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
 
 	for i in 0..node_count {
-		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_source.genesis_hash, None, cfgs[i].logger);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(&cfgs[i].network_graph, None, cfgs[i].logger);
 		nodes.push(Node{ chain_source: cfgs[i].chain_source,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,

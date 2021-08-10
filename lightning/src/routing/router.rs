@@ -1245,7 +1245,7 @@ mod tests {
 	}
 
 	// Using the same keys for LN and BTC ids
-	fn add_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey,
+	fn add_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey,
 	   node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64) {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
@@ -1275,7 +1275,7 @@ mod tests {
 		};
 	}
 
-	fn update_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate) {
+	fn update_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate) {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_privkey),
@@ -1288,7 +1288,7 @@ mod tests {
 		};
 	}
 
-	fn add_or_update_node(net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey,
+	fn add_or_update_node(net_graph_msg_handler: &NetGraphMsgHandler<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey,
 	   features: NodeFeatures, timestamp: u32) {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 		let unsigned_announcement = UnsignedNodeAnnouncement {
@@ -1341,11 +1341,12 @@ mod tests {
 		}
 	}
 
-	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>) {
+	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<sync::Arc<NetworkGraph>, sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger));
 		// Build network from our_id to node7:
 		//
 		//        -1(1)2-  node0  -1(3)2-
@@ -3592,7 +3593,8 @@ mod tests {
 		// "previous hop" being set to node 3, creating a loop in the path.
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
+		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger));
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);

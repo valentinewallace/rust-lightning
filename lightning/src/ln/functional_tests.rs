@@ -24,7 +24,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::router::{Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
-use routing::network_graph::RoutingFees;
+use routing::network_graph::{NetworkGraph, RoutingFees};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
@@ -5931,7 +5931,8 @@ fn test_key_derivation_params() {
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister, &keys_manager);
-	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager: &keys_manager, node_seed: seed, features: InitFeatures::known() };
+	let network_graph = NetworkGraph::new(chanmon_cfgs[0].chain_source.genesis_hash);
+	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager: &keys_manager, node_seed: seed, features: InitFeatures::known(), network_graph };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
