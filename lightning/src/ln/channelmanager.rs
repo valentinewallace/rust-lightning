@@ -2625,8 +2625,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///    than a minute, informing the network that they should no longer attempt to route over
 	///    the channel.
 	///
-	/// Note that this may cause reentrancy through a `chain::Watch::update_channel` calls or
-	/// feerate estimate fetches.
+	/// Note that this may cause reentrancy through `chain::Watch::update_channel` calls or feerate
+	/// estimate fetches.
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut should_persist = NotifyOption::SkipPersist;
