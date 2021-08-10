@@ -4072,7 +4072,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 				result = NotifyOption::DoPersist;
 			}
 
-			if self.startup_complete.load(Ordering::Relaxed) != 0 {
+			if self.startup_complete.load(Ordering::Relaxed) == 0 {
 				let new_feerate = self.fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 				let mut handle_errors = Vec::new();
