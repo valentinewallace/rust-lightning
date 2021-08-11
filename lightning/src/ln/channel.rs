@@ -64,9 +64,18 @@ pub struct ChannelValueStat {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum InboundFeeUpdateState {
+enum FeeUpdateState {
+	// Inbound states mirroring InboundHTLCState
 	RemoteAnnounced,
 	AwaitingRemoteRevokeToAnnounce,
+	// Note that we do not have a AwaitingAnnouncedRemoteRevoke variant here as it is universally
+	// handled the same as `Committed`, with the only exception in `InboundHTLCState` being the
+	// distinction of when we allow ourselves to forward the HTLC. Because we aren't "forwarding"
+	// the fee update anywhere, we can simply consider the fee update `Committed` immediately
+	// instead of setting it to AwaitingAnnouncedRemoteRevoke.
+
+	// Inbound state can only be `LocalAnnounced` or `Committed`
+	Outbound,
 }
 
 enum InboundHTLCRemovalReason {
@@ -426,7 +435,7 @@ pub(super) struct Channel<Signer: Sign> {
 	// revoke_and_ack is received and new commitment_signed is generated to be
 	// sent to the funder. Otherwise, the pending value is removed when receiving
 	// commitment_signed.
-	pending_update_fee: Option<(u32, InboundFeeUpdateState)>,
+	pending_update_fee: Option<(u32, FeeUpdateState)>,
 	// update_fee() during ChannelState::AwaitingRemoteRevoke is hold in
 	// holdina_cell_update_fee then moved to pending_udpate_fee when revoke_and_ack
 	// is received. holding_cell_update_fee is updated when there are additional
@@ -1024,17 +1033,14 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let mut feerate_per_kw = self.feerate_per_kw;
 		if let Some((feerate, update_state)) = self.pending_update_fee {
-			if self.is_outbound() && generated_by_local {
+			if match update_state {
+				// Note that these match the inclusion criteria when scanning
+				// pending_inbound_htlcs below.
+				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.is_outbound()); !generated_by_local },
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => { debug_assert!(!self.is_outbound()); !generated_by_local },
+				FeeUpdateState::Outbound => { assert!(self.is_outbound());  generated_by_local },
+			} {
 				feerate_per_kw = feerate;
-			} else if !self.is_outbound() {
-				if match update_state {
-					// Note that these match the inclusion criteria when scanning
-					// pending_inbound_htlcs below.
-					InboundFeeUpdateState::RemoteAnnounced => !generated_by_local,
-					InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce => !generated_by_local,
-				} {
-					feerate_per_kw = feerate;
-				}
 			}
 		}
 
@@ -2401,8 +2407,9 @@ impl<Signer: Sign> Channel<Signer> {
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
 		let update_fee = if let Some((_, update_state)) = self.pending_update_fee {
-			!self.is_outbound() && update_state == InboundFeeUpdateState::RemoteAnnounced
+			update_state == FeeUpdateState::RemoteAnnounced
 		} else { false };
+		if update_fee { debug_assert!(!self.is_outbound()); }
 		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 		if update_fee {
 			let counterparty_reserve_we_require = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
@@ -2467,12 +2474,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
-		if !self.is_outbound() {
-			if let &mut Some((_, ref mut update_state)) = &mut self.pending_update_fee {
-				if *update_state == InboundFeeUpdateState::RemoteAnnounced {
-					*update_state = InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce;
-					need_commitment = true;
-				}
+		if let &mut Some((_, ref mut update_state)) = &mut self.pending_update_fee {
+			if *update_state == FeeUpdateState::RemoteAnnounced {
+				*update_state = FeeUpdateState::AwaitingRemoteRevokeToAnnounce;
+				need_commitment = true;
 			}
 		}
 
@@ -2655,9 +2660,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 			let update_fee = if let Some(feerate) = self.holding_cell_update_fee.take() {
 				assert!(self.is_outbound());
-				self.pending_update_fee = Some((feerate,
-					// Note that as we're an outbound channel, this is just a dummy value
-					InboundFeeUpdateState::RemoteAnnounced));
+				self.pending_update_fee = Some((feerate, FeeUpdateState::Outbound));
 				Some(msgs::UpdateFee {
 					channel_id: self.channel_id,
 					feerate_per_kw: feerate as u32,
@@ -2841,22 +2844,22 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
-		if self.is_outbound() {
-			if let Some((feerate, _)) = self.pending_update_fee.take() {
-				log_trace!(logger, " ...promoting outbound fee update {} to Committed", feerate);
-				self.feerate_per_kw = feerate;
-			}
-		} else {
-			if let Some((feerate, update_state)) = self.pending_update_fee {
-				match update_state {
-					InboundFeeUpdateState::RemoteAnnounced => {},
-					InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
-						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
-						require_commitment = true;
-						self.feerate_per_kw = feerate;
-						self.pending_update_fee = None;
-					},
-				}
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			match update_state {
+				FeeUpdateState::Outbound => {
+					debug_assert!(self.is_outbound());
+					log_trace!(logger, " ...promoting outbound fee update {} to Committed", feerate);
+					self.feerate_per_kw = feerate;
+					self.pending_update_fee = None;
+				},
+				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.is_outbound()); },
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
+					debug_assert!(!self.is_outbound());
+					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
+					require_commitment = true;
+					self.feerate_per_kw = feerate;
+					self.pending_update_fee = None;
+				},
 			}
 		}
 
@@ -2946,9 +2949,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		debug_assert!(self.pending_update_fee.is_none());
-		self.pending_update_fee = Some((feerate_per_kw,
-			// Note that as we're an outbound channel, this is just a dummy value
-			InboundFeeUpdateState::RemoteAnnounced));
+		self.pending_update_fee = Some((feerate_per_kw, FeeUpdateState::Outbound));
 
 		Some(msgs::UpdateFee {
 			channel_id: self.channel_id,
@@ -3010,7 +3011,8 @@ impl<Signer: Sign> Channel<Signer> {
 		self.next_counterparty_htlc_id -= inbound_drop_count;
 
 		if let Some((_, update_state)) = self.pending_update_fee {
-			if !self.is_outbound() && update_state == InboundFeeUpdateState::RemoteAnnounced {
+			if update_state == FeeUpdateState::RemoteAnnounced {
+				debug_assert!(!self.is_outbound());
 				self.pending_update_fee = None;
 			}
 		}
@@ -3109,7 +3111,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
-		self.pending_update_fee = Some((msg.feerate_per_kw, InboundFeeUpdateState::RemoteAnnounced));
+		self.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.update_time_counter += 1;
 		Ok(())
 	}
@@ -4478,12 +4480,11 @@ impl<Signer: Sign> Channel<Signer> {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
 			}
 		}
-		if !self.is_outbound() {
-			if let Some((feerate, update_state)) = self.pending_update_fee {
-				if update_state == InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce {
-					self.feerate_per_kw = feerate;
-					self.pending_update_fee = None;
-				}
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			if update_state == FeeUpdateState::AwaitingRemoteRevokeToAnnounce {
+				debug_assert!(!self.is_outbound());
+				self.feerate_per_kw = feerate;
+				self.pending_update_fee = None;
 			}
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
@@ -4913,7 +4914,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			self.pending_update_fee.map(|(a, _)| a).write(writer)?;
 		} else {
 			// As for inbound HTLCs, if the update was only announced and never committed, drop it.
-			if let Some((feerate, InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce)) = self.pending_update_fee {
+			if let Some((feerate, FeeUpdateState::AwaitingRemoteRevokeToAnnounce)) = self.pending_update_fee {
 				Some(feerate).write(writer)?;
 			} else {
 				None::<u32>.write(writer)?;
@@ -5134,11 +5135,6 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		}
 
 		let pending_update_fee_value: Option<u32> = Readable::read(reader)?;
-		let pending_update_fee = if let Some(feerate) = pending_update_fee_value {
-			Some((feerate, InboundFeeUpdateState::AwaitingRemoteRevokeToAnnounce))
-		} else {
-			None
-		};
 
 		let holding_cell_update_fee = Readable::read(reader)?;
 
@@ -5191,7 +5187,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let channel_parameters = Readable::read(reader)?;
+		let channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
 		let funding_transaction = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -5213,6 +5209,16 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 				assert!(historical_inbound_htlc_fulfills.insert(Readable::read(reader)?));
 			}
 		}
+
+		let pending_update_fee = if let Some(feerate) = pending_update_fee_value {
+			Some((feerate, if channel_parameters.is_outbound_from_holder {
+				FeeUpdateState::Outbound
+			} else {
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce
+			}))
+		} else {
+			None
+		};
 
 		let mut announcement_sigs = None;
 		read_tlv_fields!(reader, {
