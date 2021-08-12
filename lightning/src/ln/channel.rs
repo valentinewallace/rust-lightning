@@ -3153,7 +3153,7 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { None };
 
 		log_trace!(logger, "Regenerated latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				log_bytes!(self.channel_id()), if update_fee.is_some() { " a fee update," } else { "" },
+				log_bytes!(self.channel_id()), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
