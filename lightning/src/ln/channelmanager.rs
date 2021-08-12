@@ -2574,7 +2574,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut should_persist = NotifyOption::SkipPersist;
 		if chan.is_outbound() {
 			if chan.get_feerate() < new_feerate || chan.get_feerate() > new_feerate * 2 {
-				log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}. Checking if its live ({}).",
+				log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}. Checking if it is live ({}).",
 					log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate, chan.is_live());
 				if chan.is_live() {
 					should_persist = NotifyOption::DoPersist;
