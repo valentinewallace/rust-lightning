@@ -2062,7 +2062,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	//
 	// B sends A new HTLC + CS, not delivered
 	// A sends B update_fee + CS
-	// B sends RAA, making B think the fee is locked
+	// B receives the CS and sends RAA, previously causing B to lock in the new feerate
 	// reconnect
 	// B resends initial CS, using the original fee
 
