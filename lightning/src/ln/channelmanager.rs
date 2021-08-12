@@ -2569,52 +2569,50 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn update_channel_fee(&self, short_to_id: &mut HashMap<u64, [u8; 32]>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
-		let mut retain_channel = true;
-		let mut ret_err = Ok(());
-		let mut should_persist = NotifyOption::SkipPersist;
-		if chan.is_outbound() {
-			if chan.get_feerate() < new_feerate || chan.get_feerate() > new_feerate * 2 {
-				log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}. Checking if it is live ({}).",
-					log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate, chan.is_live());
-				if chan.is_live() {
-					should_persist = NotifyOption::DoPersist;
-					let res = match chan.send_update_fee_and_commit(new_feerate, &self.logger) {
-						Ok(res) => Ok(res),
-						Err(e) => {
-							let (drop, res) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
-							if drop { retain_channel = false; }
-							Err(res)
-						}
-					};
-					match res {
-						Ok(Some((update_fee, commitment_signed, monitor_update))) => {
-							if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
-								let (res, drop) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, false, true, Vec::new(), Vec::new(), chan_id);
-								if drop { retain_channel = false; }
-								ret_err = res;
-							} else {
-								pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-									node_id: chan.get_counterparty_node_id(),
-									updates: msgs::CommitmentUpdate {
-										update_add_htlcs: Vec::new(),
-										update_fulfill_htlcs: Vec::new(),
-										update_fail_htlcs: Vec::new(),
-										update_fail_malformed_htlcs: Vec::new(),
-										update_fee: Some(update_fee),
-										commitment_signed,
-									},
-								});
-							}
-						},
-						Ok(None) => {},
-						Err(e) => { ret_err = Err(e); },
-					}
-				}
-			} else {
-				log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}", log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
-			}
+		if !chan.is_outbound() { return (true, NotifyOption::SkipPersist, Ok(())); }
+		// If the feerate has decreased by less than half, don't bother
+		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
+			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}", log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+			return (true, NotifyOption::SkipPersist, Ok(()));
 		}
-		(retain_channel, should_persist, ret_err)
+		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}. Checking if it is live ({}).",
+			log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate, chan.is_live());
+		if !chan.is_live() { return (true, NotifyOption::SkipPersist, Ok(())); }
+
+		let mut retain_channel = true;
+		let res = match chan.send_update_fee_and_commit(new_feerate, &self.logger) {
+			Ok(res) => Ok(res),
+			Err(e) => {
+				let (drop, res) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+				if drop { retain_channel = false; }
+				Err(res)
+			}
+		};
+		let ret_err = match res {
+			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
+				if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+					let (res, drop) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, false, true, Vec::new(), Vec::new(), chan_id);
+					if drop { retain_channel = false; }
+					res
+				} else {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: chan.get_counterparty_node_id(),
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs: Vec::new(),
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: Some(update_fee),
+							commitment_signed,
+						},
+					});
+					Ok(())
+				}
+			},
+			Ok(None) => Ok(()),
+			Err(e) => Err(e),
+		};
+		(retain_channel, NotifyOption::DoPersist, ret_err)
 	}
 
 	/// Performs actions which should happen roughly once per minute.
