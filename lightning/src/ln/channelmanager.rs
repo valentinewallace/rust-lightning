@@ -2681,7 +2681,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			should_persist
 		});
-
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
