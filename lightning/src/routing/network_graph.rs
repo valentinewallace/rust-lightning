@@ -29,7 +29,7 @@ use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, Reply
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::{Logger, Level};
-use util::events::{MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
 use io;
@@ -109,6 +109,66 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 		(2, is_permanent, required),
 	},
 );
+
+/// An [`EventHandler`] decorator for applying updates from [`Event::PaymentFailed`] to the
+/// [`NetworkGraph`].
+pub struct NetworkUpdateHandler<G: Deref<Target=NetworkGraph>, L: Deref, E: EventHandler>
+where L::Target: Logger {
+	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
+	network_graph: G,
+	logger: L,
+	inner: E,
+}
+
+impl<G: Deref<Target=NetworkGraph>, L: Deref, E: EventHandler> NetworkUpdateHandler<G, L, E>
+where L::Target: Logger {
+	/// Creates a handler that decorates `event_handler` with functionality for updating the given
+	/// `network_graph`.
+	pub fn new(network_graph: G, logger: L, event_handler: E) -> Self {
+		Self {
+			secp_ctx: Secp256k1::verification_only(),
+			network_graph,
+			logger,
+			inner: event_handler,
+		}
+	}
+
+	/// Applies changes to the [`NetworkGraph`] from the given update.
+	fn handle_network_update(&self, update: &NetworkUpdate) {
+		match *update {
+			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
+				let short_channel_id = msg.contents.short_channel_id;
+				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+				let status = if is_enabled { "enabled" } else { "disabled" };
+				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
+				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
+			},
+			NetworkUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+				let action = if is_permanent { "Removing" } else { "Disabling" };
+				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
+				self.network_graph.close_channel_from_update(short_channel_id, is_permanent);
+			},
+			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
+				let action = if is_permanent { "Removing" } else { "Disabling" };
+				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
+				self.network_graph.fail_node(node_id, is_permanent);
+			},
+		}
+	}
+}
+
+impl<G: Deref<Target=NetworkGraph>, L: Deref, E: EventHandler> EventHandler for NetworkUpdateHandler<G, L, E>
+where L::Target: Logger {
+	fn handle_event(&self, event: &Event) {
+		if let Event::PaymentFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
+			if let Some(network_update) = network_update {
+				self.handle_network_update(network_update);
+			}
+		}
+
+		self.inner.handle_event(event)
+	}
+}
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -1109,15 +1169,16 @@ impl ReadOnlyNetworkGraph<'_> {
 #[cfg(test)]
 mod tests {
 	use chain;
+	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, MAX_EXCESS_BYTES_FOR_RELAY};
+	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, NetworkUpdate, NetworkUpdateHandler, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, 
 		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
-	use util::events::{MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
@@ -1614,8 +1675,13 @@ mod tests {
 	}
 
 	#[test]
-	fn handling_htlc_fail_channel_update() {
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+	fn handling_network_update() {
+		let logger = test_utils::TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash);
+		let handler = NetworkUpdateHandler::new(&network_graph, &logger, |_: &_| {});
+		let secp_ctx = Secp256k1::new();
+
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
@@ -1628,8 +1694,7 @@ mod tests {
 
 		{
 			// There is no nodes in the table at the beginning.
-			let network = &net_graph_msg_handler.network_graph;
-			assert_eq!(network.read_only().nodes().len(), 0);
+			assert_eq!(network_graph.read_only().nodes().len(), 0);
 		}
 
 		{
@@ -1653,10 +1718,9 @@ mod tests {
 				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
 				contents: unsigned_announcement.clone(),
 			};
-			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
-				Ok(_) => (),
-				Err(_) => panic!()
-			};
+			let chain_source: Option<&test_utils::TestChainSource> = None;
+			assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source, &secp_ctx).is_ok());
+			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 			let unsigned_channel_update = UnsignedChannelUpdate {
 				chain_hash,
@@ -1676,29 +1740,42 @@ mod tests {
 				contents: unsigned_channel_update.clone()
 			};
 
-			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
-				Ok(res) => assert!(res),
-				_ => panic!()
-			};
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
+
+			handler.handle_event(&Event::PaymentFailed {
+				payment_hash: PaymentHash([0; 32]),
+				rejected_by_dest: false,
+				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
+					msg: valid_channel_update,
+				}),
+				error_code: None,
+				error_data: None,
+			});
+
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 		}
 
 		// Non-permanent closing just disables a channel
 		{
-			let network = &net_graph_msg_handler.network_graph;
-			match network.read_only().channels().get(&short_channel_id) {
+			match network_graph.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert!(channel_info.one_to_two.is_some());
+					assert!(channel_info.one_to_two.as_ref().unwrap().enabled);
 				}
 			};
-		}
 
-		net_graph_msg_handler.network_graph.close_channel_from_update(short_channel_id, false);
+			handler.handle_event(&Event::PaymentFailed {
+				payment_hash: PaymentHash([0; 32]),
+				rejected_by_dest: false,
+				network_update: Some(NetworkUpdate::ChannelClosed {
+					short_channel_id,
+					is_permanent: false,
+				}),
+				error_code: None,
+				error_data: None,
+			});
 
-		// Non-permanent closing just disables a channel
-		{
-			let network = &net_graph_msg_handler.network_graph;
-			match network.read_only().channels().get(&short_channel_id) {
+			match network_graph.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert!(!channel_info.one_to_two.as_ref().unwrap().enabled);
@@ -1706,14 +1783,22 @@ mod tests {
 			};
 		}
 
-		net_graph_msg_handler.network_graph.close_channel_from_update(short_channel_id, true);
-
 		// Permanent closing deletes a channel
 		{
-			let network = &net_graph_msg_handler.network_graph;
-			assert_eq!(network.read_only().channels().len(), 0);
+			handler.handle_event(&Event::PaymentFailed {
+				payment_hash: PaymentHash([0; 32]),
+				rejected_by_dest: false,
+				network_update: Some(NetworkUpdate::ChannelClosed {
+					short_channel_id,
+					is_permanent: true,
+				}),
+				error_code: None,
+				error_data: None,
+			});
+
+			assert_eq!(network_graph.read_only().channels().len(), 0);
 			// Nodes are also deleted because there are no associated channels anymore
-			assert_eq!(network.read_only().nodes().len(), 0);
+			assert_eq!(network_graph.read_only().nodes().len(), 0);
 		}
 		// TODO: Test NetworkUpdate::NodeFailure, which is not implemented yet.
 	}
@@ -2493,6 +2578,30 @@ mod tests {
 			short_channel_ids: vec![0x0003e8_000000_0000],
 		});
 		assert!(result.is_err());
+	}
+
+	#[test]
+	fn delegates_to_decorated_event_handler() {
+		let event_handled = core::cell::RefCell::new(false);
+
+		{
+			let logger = test_utils::TestLogger::new();
+			let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+			let network_graph = NetworkGraph::new(genesis_hash);
+
+			let handler = NetworkUpdateHandler::new(&network_graph, &logger, |_: &_| {
+				*event_handled.borrow_mut() = true;
+			});
+			handler.handle_event(&Event::PaymentFailed {
+				payment_hash: PaymentHash([0; 32]),
+				rejected_by_dest: false,
+				network_update: None,
+				error_code: None,
+				error_data: None,
+			});
+		}
+
+		assert!(event_handled.into_inner());
 	}
 }
 
