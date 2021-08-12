@@ -24,10 +24,10 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::router::{Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
-use routing::network_graph::{NetworkGraph, RoutingFees};
+use routing::network_graph::{NetworkGraph, NetworkUpdate, RoutingFees};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use ln::script::ShutdownScript;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
@@ -1007,10 +1007,10 @@ fn htlc_fail_async_shutdown() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 
-	expect_payment_failed!(nodes[0], our_payment_hash, false);
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_1.0.contents.short_channel_id, false);
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2);
+	assert_eq!(msg_events.len(), 1);
 	let node_0_closing_signed = match msg_events[0] {
 		MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
@@ -1018,12 +1018,6 @@ fn htlc_fail_async_shutdown() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	match msg_events[1] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
-			assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
@@ -1403,8 +1397,7 @@ fn holding_cell_htlc_counting() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_updates.commitment_signed, false, true);
 
-	expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
-	expect_payment_failed!(nodes[0], payment_hash_2, false);
+	expect_payment_failed_with_update!(nodes[0], payment_hash_2, false, chan_2.0.contents.short_channel_id, false);
 
 	// Now forward all the pending HTLCs and claim them back
 	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &initial_payment_event.msgs[0]);
@@ -3180,8 +3173,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
-			expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
-			expect_payment_failed!(nodes[0], payment_hash, false);
+			expect_payment_failed_with_update!(nodes[0], payment_hash, false, chan_2.0.contents.short_channel_id, true);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -3367,33 +3359,30 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
-			let events = nodes[0].node.get_and_clear_pending_msg_events();
-			// If we delivered B's RAA we got an unknown preimage error, not something
-			// that we should update our routing table for.
-			assert_eq!(events.len(), if deliver_bs_raa { 2 } else { 3 });
-			for event in events {
-				match event {
-					MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-					_ => panic!("Unexpected event"),
-				}
-			}
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 3);
 			match events[0] {
-				Event::PaymentFailed { ref payment_hash, .. } => {
+				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
+					// If we delivered B's RAA we got an unknown preimage error, not something
+					// that we should update our routing table for.
+					if !deliver_bs_raa {
+						assert!(network_update.is_some());
+					}
 				},
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { ref payment_hash, .. } => {
+				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
+					assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
 			match events[2] {
-				Event::PaymentFailed { ref payment_hash, .. } => {
+				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
+					assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -4348,8 +4337,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			},
 			_ => unreachable!(),
 		}
-		expect_payment_failed!(nodes[0], second_payment_hash, false);
-		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
+		expect_payment_failed_with_update!(nodes[0], second_payment_hash, false, chan_2.0.contents.short_channel_id, false);
 	} else {
 		expect_payment_failed!(nodes[1], second_payment_hash, true);
 	}
@@ -4361,6 +4349,9 @@ fn test_holding_cell_htlc_add_timeouts() {
 	do_test_holding_cell_htlc_add_timeouts(true);
 }
 
+// TODO: Should this test be dropped? It doesn't break when removing calls to
+// handle_htlc_fail_channel_update. Error messages in is_err() assertions are:
+// "Already have knowledge of channel".
 #[test]
 fn test_invalid_channel_announcement() {
 	//Test BOLT 7 channel_announcement msg requirement for final node, gather data to build customed channel_announcement msgs
@@ -4376,8 +4367,6 @@ fn test_invalid_channel_announcement() {
 	let b_channel_lock = nodes[1].node.channel_state.lock().unwrap();
 	let as_chan = a_channel_lock.by_id.get(&chan_announcement.3).unwrap();
 	let bs_chan = b_channel_lock.by_id.get(&chan_announcement.3).unwrap();
-
-	nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 	let as_bitcoin_key = as_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
 	let bs_bitcoin_key = bs_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
@@ -4424,7 +4413,6 @@ fn test_invalid_channel_announcement() {
 	let unsigned_msg = dummy_unsigned_msg!();
 	sign_msg!(unsigned_msg);
 	assert_eq!(nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).unwrap(), true);
-	let _ = nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 	// Configured with Network::Testnet
 	let mut unsigned_msg = dummy_unsigned_msg!();
@@ -5530,9 +5518,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	{
 		commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
-		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
 	}
-	expect_payment_failed!(nodes[0], duplicate_payment_hash, false);
+	expect_payment_failed_with_update!(nodes[0], duplicate_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
 	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
@@ -5799,13 +5786,17 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let as_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(as_events.len(), if announce_latest { 5 } else { 3 });
 	let mut as_failds = HashSet::new();
+	let mut as_updates = 0;
 	for event in as_events.iter() {
-		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, .. } = event {
+		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
 			assert!(as_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_2 {
 				assert_eq!(*rejected_by_dest, deliver_last_raa);
 			} else {
 				assert!(!rejected_by_dest);
+			}
+			if network_update.is_some() {
+				as_updates += 1;
 			}
 		} else { panic!("Unexpected event"); }
 	}
@@ -5820,13 +5811,17 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let bs_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(bs_events.len(), if announce_latest { 4 } else { 3 });
 	let mut bs_failds = HashSet::new();
+	let mut bs_updates = 0;
 	for event in bs_events.iter() {
-		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, .. } = event {
+		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
 			assert!(bs_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
 				assert_eq!(*rejected_by_dest, deliver_last_raa);
 			} else {
 				assert!(!rejected_by_dest);
+			}
+			if network_update.is_some() {
+				bs_updates += 1;
 			}
 		} else { panic!("Unexpected event"); }
 	}
@@ -5838,20 +5833,11 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	assert!(bs_failds.contains(&payment_hash_5));
 
 	// For each HTLC which was not failed-back by normal process (ie deliver_last_raa), we should
-	// get a PaymentFailureNetworkUpdate. A should have gotten 4 HTLCs which were failed-back due
-	// to unknown-preimage-etc, B should have gotten 2. Thus, in the
-	// announce_latest && deliver_last_raa case, we should have 5-4=1 and 4-2=2
-	// PaymentFailureNetworkUpdates.
-	let as_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(as_msg_events.len(), if deliver_last_raa { 1 } else if !announce_latest { 3 } else { 5 });
-	let bs_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(bs_msg_events.len(), if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
-	for event in as_msg_events.iter().chain(bs_msg_events.iter()) {
-		match event {
-			&MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-			_ => panic!("Unexpected event"),
-		}
-	}
+	// get a NetworkUpdate. A should have gotten 4 HTLCs which were failed-back due to
+	// unknown-preimage-etc, B should have gotten 2. Thus, in the
+	// announce_latest && deliver_last_raa case, we should have 5-4=1 and 4-2=2 NetworkUpdates.
+	assert_eq!(as_updates, if deliver_last_raa { 1 } else if !announce_latest { 3 } else { 5 });
+	assert_eq!(bs_updates, if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
 }
 
 #[test]
@@ -6346,9 +6332,10 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*network_update, None);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);
 		},
@@ -6431,9 +6418,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*network_update, None);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);
 		},
@@ -6614,8 +6602,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
-	expect_payment_failure_chan_update!(nodes[0], chan_1_2.0.contents.short_channel_id, false);
-	expect_payment_failed!(nodes[0], our_payment_hash, false);
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_1_2.0.contents.short_channel_id, false);
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -8197,8 +8184,7 @@ fn test_priv_forwarding_rejection() {
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, true, true);
-	expect_payment_failed!(nodes[0], our_payment_hash, false);
-	expect_payment_failure_chan_update!(nodes[0], nodes[2].node.list_channels()[0].short_channel_id.unwrap(), true);
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, nodes[2].node.list_channels()[0].short_channel_id.unwrap(), true);
 
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
@@ -9746,8 +9732,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
-		expect_payment_failed!(nodes[0], payment_hash, false);
-		expect_payment_failure_chan_update!(nodes[0], chan_announce.contents.short_channel_id, true);
+		expect_payment_failed_with_update!(nodes[0], payment_hash, false, chan_announce.contents.short_channel_id, true);
 	}
 }
 
