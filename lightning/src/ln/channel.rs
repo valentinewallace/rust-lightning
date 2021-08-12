@@ -74,7 +74,7 @@ enum FeeUpdateState {
 	// the fee update anywhere, we can simply consider the fee update `Committed` immediately
 	// instead of setting it to AwaitingAnnouncedRemoteRevoke.
 
-	// Inbound state can only be `LocalAnnounced` or `Committed`
+	// Outbound state can only be `LocalAnnounced` or `Committed`
 	Outbound,
 }
 
