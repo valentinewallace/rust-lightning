@@ -3126,13 +3126,15 @@ impl<Signer: Sign> Channel<Signer> {
 		if feerate_over_dust_buffer {
 			let inbound_stats = self.get_inbound_pending_htlc_stats();
 			let outbound_stats = self.get_outbound_pending_htlc_stats();
-			if inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+			if holder_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
-					msg.feerate_per_kw, inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat)));
+					msg.feerate_per_kw, holder_tx_dust_exposure)));
 			}
-			if inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+			if counterparty_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
-					msg.feerate_per_kw, inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat)));
+					msg.feerate_per_kw, counterparty_tx_dust_exposure)));
 			}
 		}
 		Ok(())
