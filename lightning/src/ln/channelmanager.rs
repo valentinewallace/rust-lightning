@@ -174,6 +174,23 @@ struct ClaimableHTLC {
 	onion_payload: OnionPayload,
 }
 
+/// A payment identifier used to correlate an MPP payment's per-path HTLC sources internally.
+/// (C-not exported) as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct MppId(pub [u8; 32]);
+
+impl Writeable for MppId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for MppId {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(MppId(buf))
+	}
+}
 /// Tracks the inbound corresponding to an outbound HTLC
 #[derive(Clone, PartialEq)]
 pub(crate) enum HTLCSource {
@@ -184,6 +201,7 @@ pub(crate) enum HTLCSource {
 		/// Technically we can recalculate this from the route, but we cache it here to avoid
 		/// doing a double-pass on route when we get a failure back
 		first_hop_htlc_msat: u64,
+		mpp_id: Option<MppId>,
 	},
 }
 #[cfg(test)]
@@ -193,6 +211,7 @@ impl HTLCSource {
 			path: Vec::new(),
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
+			mpp_id: Some(MppId([2; 32])),
 		}
 	}
 }
@@ -1773,7 +1792,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	// Only public for testing, this should otherwise never be called direcly
-	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(), APIError> {
+	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, mpp_id: Option<MppId>, keysend_preimage: &Option<PaymentPreimage>) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
@@ -1810,6 +1829,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						path: path.clone(),
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
+						mpp_id,
 					}, onion_packet, &self.logger), channel_state, chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
@@ -1909,6 +1929,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut total_value = 0;
 		let our_node_id = self.get_our_node_id();
 		let mut path_errs = Vec::with_capacity(route.paths.len());
+		let mpp_id = if route.paths.len() == 1 { None } else {
+			Some(MppId(self.keys_manager.get_secure_random_bytes()))
+		};
 		'path_check: for path in route.paths.iter() {
 			if path.len() < 1 || path.len() > 20 {
 				path_errs.push(Err(APIError::RouteError{err: "Path didn't go anywhere/had bogus size"}));
@@ -1930,7 +1953,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let cur_height = self.best_block.read().unwrap().height() + 1;
 		let mut results = Vec::new();
 		for path in route.paths.iter() {
-			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height, &keysend_preimage));
+			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height, mpp_id, &keysend_preimage));
 		}
 		let mut has_ok = false;
 		let mut has_err = false;
@@ -4769,6 +4792,7 @@ impl Readable for ClaimableHTLC {
 impl_writeable_tlv_based_enum!(HTLCSource,
 	(0, OutboundRoute) => {
 		(0, session_priv, required),
+		(1, mpp_id, option),
 		(2, first_hop_htlc_msat, required),
 		(4, path, vec_type),
 	}, ;
@@ -5219,7 +5243,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::time::Duration;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use ln::channelmanager::PaymentSendFailure;
+	use ln::channelmanager::{MppId, PaymentSendFailure};
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs;
@@ -5370,10 +5394,11 @@ mod tests {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+		let mpp_id = Some(MppId([42; 32]));
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, mpp_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -5403,7 +5428,7 @@ mod tests {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
