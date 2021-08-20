@@ -4929,7 +4929,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		}
 
 		write_tlv_fields!(writer, {
-			// (0, pending_outbound_mpp_ids, vec_type),
+			(0, pending_outbound_mpp_ids, vec_type),
 		});
 
 		Ok(())
@@ -5194,7 +5194,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_mpp_ids = Vec::new();
 		read_tlv_fields!(reader, {
 			// TODO: how to make this line work
-			// (0, pending_outbound_mpp_ids, vec_type),
+			(0, pending_outbound_mpp_ids, vec_type),
 		});
 
 		if pending_outbound_mpp_ids.len() == pending_outbound_session_privs.len() {
