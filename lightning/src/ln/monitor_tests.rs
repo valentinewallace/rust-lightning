@@ -182,12 +182,18 @@ fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
 	v
 }
 
-#[test]
-fn test_claim_value_force_close() {
+fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// Tests `get_claimable_balances` with an HTLC across a force-close.
 	// We build a channel with an HTLC pending, then force close the channel and check that the
 	// `get_claimable_balances` return value is correct as transactions confirm on-chain.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	if prev_commitment_tx {
+		// We broadcast a second-to-latest commitment transaction, without providing the revocation
+		// secret to the counterparty. However, because we always immediately take the revocation
+		// secret from the keys_manager, we would panic at broadcast as we're trying to sign a
+		// transaction which, from the point of view of our keys_manager, is revoked.
+		chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
+	}
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -230,7 +236,7 @@ fn test_claim_value_force_close() {
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
-	get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+	let b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 	// We claim the dust payment here as well, but it won't impact our claimable balances as its
 	// dust and thus doesn't appear on chain at all.
 	nodes[1].node.claim_funds(dust_payment_preimage);
@@ -238,23 +244,44 @@ fn test_claim_value_force_close() {
 	nodes[1].node.claim_funds(timeout_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
 
+	if prev_commitment_tx {
+		// To build a previous commitment transaction, deliver one round of commitment messages.
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.update_fulfill_htlcs[0]);
+		expect_payment_sent!(nodes[0], payment_preimage);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
+		let _htlc_updates = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs);
+		let _bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		check_added_monitors!(nodes[1], 1);
+	}
+
 	// Once B has received the payment preimage, it includes the value of the HTLC in its
 	// "claimable if you were to close the channel" balance.
-	assert_eq!(sorted_vec(vec![ClaimableBalance::ClaimableOnChannelClose {
+	let mut a_expected_balances = vec![ClaimableBalance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000_000 - // Channel funding value in satoshis
 				4_000 - // The to-be-failed HTLC value in satoshis
 				3_000 - // The claimed HTLC value in satoshis
 				1_000 - // The push_msat value in satoshis
 				3 - // The dust HTLC value in satoshis
 				// The commitment transaction fee with two HTLC outputs:
-				chan_feerate * (channel::COMMITMENT_TX_BASE_WEIGHT + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
-		}, ClaimableBalance::MaybeClaimableHTLCAwaitingTimeout {
-			claimable_amount_satoshis: 3_000,
-			claimable_height: htlc_cltv_timeout,
+				chan_feerate * (channel::COMMITMENT_TX_BASE_WEIGHT +
+								if prev_commitment_tx { 1 } else { 2 } *
+								channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 		}, ClaimableBalance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
-		}]),
+		}];
+	if !prev_commitment_tx {
+		a_expected_balances.push(ClaimableBalance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 3_000,
+			claimable_height: htlc_cltv_timeout,
+		});
+	}
+	assert_eq!(sorted_vec(a_expected_balances),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(vec![ClaimableBalance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000 + 3_000 + 4_000,
@@ -268,9 +295,13 @@ fn test_claim_value_force_close() {
 	mine_transaction(&nodes[1], &remote_txn[0]);
 
 	let b_broadcast_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(b_broadcast_txn.len(), 5);
-	assert_eq!(b_broadcast_txn[0], b_broadcast_txn[3]);
-	assert_eq!(b_broadcast_txn[1], b_broadcast_txn[4]);
+	assert_eq!(b_broadcast_txn.len(), if prev_commitment_tx { 4 } else { 5 });
+	if prev_commitment_tx {
+		check_spends!(b_broadcast_txn[3], b_broadcast_txn[2]);
+	} else {
+		assert_eq!(b_broadcast_txn[0], b_broadcast_txn[3]);
+		assert_eq!(b_broadcast_txn[1], b_broadcast_txn[4]);
+	}
 	// b_broadcast_txn[0] should spend the HTLC output of the commitment tx for 3_000 sats
 	check_spends!(b_broadcast_txn[0], remote_txn[0]);
 	check_spends!(b_broadcast_txn[1], remote_txn[0]);
@@ -365,7 +396,9 @@ fn test_claim_value_force_close() {
 	// After broadcasting the HTLC claim transaction, node A will still consider the HTLC
 	// possibly-claimable up to ANTI_REORG_DELAY, at which point it will drop it.
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
-	expect_payment_sent!(nodes[0], payment_preimage);
+	if !prev_commitment_tx {
+		expect_payment_sent!(nodes[0], payment_preimage);
+	}
 	assert_eq!(sorted_vec(vec![ClaimableBalance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
@@ -492,4 +525,10 @@ fn test_claim_value_force_close() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	assert_eq!(Vec::<ClaimableBalance>::new(),
 		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+}
+
+#[test]
+fn test_claim_value_force_close() {
+	do_test_claim_value_force_close(true);
+	do_test_claim_value_force_close(false);
 }
