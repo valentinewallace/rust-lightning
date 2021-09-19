@@ -1,6 +1,7 @@
 //! Convenient utilities to create an invoice.
 use {Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
 use bech32::ToBase32;
+use secp256k1::recovery::RecoverableSignature;
 use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -87,6 +88,22 @@ where
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
 	}
+}
+
+/// TODO
+pub fn create_invoice_to_phantom<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S>(
+	nodes: Vec<&ChannelManager<Signer, M, T, K, F, L>>,
+	sign_invoice: S, network: Currency, amt_msat: Option<u64>, description: String
+)-> Result<Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	S: Fn(Vec<u8>) -> Result<RecoverableSignature, ()>,
+{
+	Err(SignOrCreationError::SignError(()))
 }
 
 #[cfg(test)]

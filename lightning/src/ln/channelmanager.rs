@@ -474,6 +474,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_state: Mutex<ChannelHolder<Signer>>,
 
+	fake_last_hops: Mutex<HashMap<u64, SecretKey>>,
+
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
 	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
 	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
@@ -1170,6 +1172,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
+			fake_last_hops: Mutex::new(HashMap::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 
@@ -1704,11 +1707,88 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				},
 			};
 
+			let mut routing = PendingHTLCRouting::Forward {
+				onion_packet: outgoing_packet.clone(),
+				short_channel_id,
+			};
+			let fake_last_hops = self.fake_last_hops.lock().unwrap();
+			if let Some(phantom_secret) = fake_last_hops.get(&short_channel_id) {
+				let shared_secret = {
+					let mut arr = [0; 32];
+					arr.copy_from_slice(&SharedSecret::new(&public_key.unwrap(), &phantom_secret)[..]);
+					arr
+				};
+				let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(&shared_secret);
+				let mut hmac = HmacEngine::<Sha256>::new(&mu);
+				hmac.input(&outgoing_packet.hop_data);
+				hmac.input(&msg.payment_hash.0[..]);
+				if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &outgoing_packet.hmac) {
+					return_malformed_err!("HMAC Check failed", 0x8000 | 0x4000 | 5);
+				}
+
+				let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
+				let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&outgoing_packet.hop_data[..]) };
+
+				let (next_hop_data, next_hop_hmac): (msgs::OnionHopData, _) = {
+					match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
+						Err(err) => {
+							let error_code = match err {
+								msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
+								msgs::DecodeError::UnknownRequiredFeature|
+								msgs::DecodeError::InvalidValue|
+								msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
+								_ => 0x2000 | 2, // Should never happen
+							};
+							return_err!("Unable to decode our hop data", error_code, &[0;0]);
+						},
+						Ok(msg) => {
+							let mut hmac = [0; 32];
+							if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
+								return_err!("Unable to decode hop data", 0x4000 | 22, &[0;0]);
+							}
+							(msg, hmac)
+						},
+					}
+				};
+				if next_hop_hmac == [0; 32] {
+					routing = match next_hop_data.format {
+						msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
+						msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
+						msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+							if payment_data.is_some() && keysend_preimage.is_some() {
+								return_err!("We don't support MPP keysend payments", 0x4000|22, &[0;0]);
+							} else if let Some(data) = payment_data {
+								PendingHTLCRouting::Receive {
+									payment_data: data,
+									incoming_cltv_expiry: msg.cltv_expiry,
+								}
+							} else if let Some(payment_preimage) = keysend_preimage {
+								// We need to check that the sender knows the keysend preimage before processing this
+								// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+								// could discover the final destination of X, by probing the adjacent nodes on the route
+								// with a keysend payment of identical payment hash to X and observing the processing
+								// time discrepancies due to a hash collision with X.
+								let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+								if hashed_preimage != msg.payment_hash {
+									return_err!("Payment preimage didn't match payment hash", 0x4000|22, &[0;0]);
+								}
+
+								PendingHTLCRouting::ReceiveKeysend {
+									payment_preimage,
+									incoming_cltv_expiry: msg.cltv_expiry,
+								}
+							} else {
+								return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
+							}
+						},
+					};
+				} else {
+					panic!();
+				}
+			}
+
 			PendingHTLCStatus::Forward(PendingHTLCInfo {
-				routing: PendingHTLCRouting::Forward {
-					onion_packet: outgoing_packet,
-					short_channel_id,
-				},
+				routing,
 				payment_hash: msg.payment_hash.clone(),
 				incoming_shared_secret: shared_secret,
 				amt_to_forward: next_hop_data.amt_to_forward,
@@ -4215,6 +4295,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 	}
 
+	/// XXX
+	pub fn create_fake_last_hop(&self, last_hop_secret: SecretKey, last_hop_scid: u64) {
+		// let rand_bytes = self.keys_manager.get_secure_random_bytes();
+		// let mut scid_bytes: [u8; 8] = [0; 8];
+		// scid_bytes.copy_from_slice(&rand_bytes[..8]);
+
+		// let scid = u64::from_be_bytes(scid_bytes);
+		let mut fake_hops = self.fake_last_hops.lock().unwrap();
+		let secp_ctx = Secp256k1::new();
+		let last_hop_pubkey = PublicKey::from_secret_key(&secp_ctx, &last_hop_secret);
+		// fake_hops.insert(last_hop_pubkey, (last_hop_secret, scid));
+		fake_hops.insert(last_hop_scid, last_hop_secret);
+	}
+
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
@@ -5506,6 +5600,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
+			fake_last_hops: Mutex::new(HashMap::new()),
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
