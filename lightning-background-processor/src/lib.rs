@@ -207,10 +207,16 @@ impl BackgroundProcessor {
 
 			let mut last_freshness_call = Instant::now();
 			let mut last_ping_call = Instant::now();
+			// When considering how long its taken since the last timer tick, we don't want to
+			// count any time spent in user code, especially since event processing can block on
+			// disk writes. Thus, we track how long we spent in event handling here.
+			let mut ev_handle_time_since_last_ping = Duration::from_millis(0);
 			loop {
-				peer_manager.process_events();
+				let ev_handle_start = Instant::now();
+				peer_manager.process_events(); // Note that this may block on ChannelManager's locking
 				channel_manager.process_pending_events(&event_handler);
 				chain_monitor.process_pending_events(&event_handler);
+				ev_handle_time_since_last_ping += ev_handle_start.elapsed();
 				let updates_available =
 					channel_manager.await_persistable_update_timeout(Duration::from_millis(100));
 				if updates_available {
@@ -223,10 +229,12 @@ impl BackgroundProcessor {
 				}
 				if last_freshness_call.elapsed().as_secs() > FRESHNESS_TIMER {
 					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
+					let persist_start = Instant::now();
 					channel_manager.timer_tick_occurred();
 					last_freshness_call = Instant::now();
+					ev_handle_time_since_last_ping += last_freshness_call - persist_start;
 				}
-				if last_ping_call.elapsed().as_secs() > PING_TIMER * 2 {
+				if (last_ping_call.elapsed() - ev_handle_time_since_last_ping).as_secs() > PING_TIMER * 2 {
 					// On various platforms, we may be starved of CPU cycles for several reasons.
 					// E.g. on iOS, if we've been in the background, we will be entirely paused.
 					// Similarly, if we're on a desktop platform and the device has been asleep, we
@@ -234,14 +242,21 @@ impl BackgroundProcessor {
 					// In any case, if we've been entirely paused for more than double our ping
 					// timer, we should have disconnected all sockets by now (and they're probably
 					// dead anyway), so disconnect them by calling `timer_tick_occurred()` twice.
+					// Note that we have to take care to not get here just because user event
+					// processing was slow at the top of the loop. For example, the sample client
+					// may call Bitcoin Core RPCs during event handling, which very often takes
+					// more than a handful of seconds to complete, and shouldn't disconnect all our
+					// peers.
 					log_trace!(logger, "Awoke after more than double our ping timer, disconnecting peers.");
 					peer_manager.timer_tick_occurred();
 					peer_manager.timer_tick_occurred();
 					last_ping_call = Instant::now();
+					ev_handle_time_since_last_ping = Duration::from_millis(0);
 				} else if last_ping_call.elapsed().as_secs() > PING_TIMER {
 					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 					peer_manager.timer_tick_occurred();
 					last_ping_call = Instant::now();
+					ev_handle_time_since_last_ping = Duration::from_millis(0);
 				}
 			}
 		});
