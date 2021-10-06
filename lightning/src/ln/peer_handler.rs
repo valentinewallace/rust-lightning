@@ -32,7 +32,7 @@ use routing::network_graph::NetGraphMsgHandler;
 use prelude::*;
 use io;
 use alloc::collections::LinkedList;
-use sync::{Arc, Mutex, MutexGuard, RwLock};
+use sync::{Arc, Mutex, MutexGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
@@ -279,6 +279,54 @@ impl error::Error for PeerHandleError {
 	}
 }
 
+
+#[cfg(feature = "std")]
+mod rwlock {
+	use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	/// Rust libstd's RwLock does not provide any fairness guarantees (and, in fact, when used on
+	/// Linux with pthreads under the hood, readers trivially and completely starve writers).
+	/// Because we often hold read locks while doing message processing in multiple threads which
+	/// can use significant CPU time, with write locks being time-sensitive but relatively small in
+	/// CPU time, we can end up with starvation completely blocking incoming connections or pings,
+	/// especially during initial graph sync.
+	///
+	/// Thus, we need to block readers when a writer is pending, which we do with a trivial RwLock
+	/// wrapper here. Its not particularly optimized, but provides some reasonable fairness by
+	/// blocking readers (by taking the write lock) if there are writers pending when we go to take
+	/// a read lock.
+	pub struct FairRwLock<T> {
+		lock: RwLock<T>,
+		waiting_writers: AtomicUsize,
+	}
+
+	impl<T> FairRwLock<T> {
+		pub fn new(t: T) -> Self {
+			Self { lock: RwLock::new(t), waiting_writers: AtomicUsize::new(0) }
+		}
+
+		pub fn write(&self) -> LockResult<RwLockWriteGuard<T>> {
+			self.waiting_writers.fetch_add(1, Ordering::AcqRel);
+			let res = self.lock.write();
+			self.waiting_writers.fetch_sub(1, Ordering::AcqRel);
+			res
+		}
+
+		pub fn read(&self) -> LockResult<RwLockReadGuard<T>> {
+			if self.waiting_writers.load(Ordering::Acquire) != 0 {
+				let _write_queue_lock = self.lock.write();
+			}
+			self.lock.read()
+		}
+	}
+}
+#[cfg(feature = "std")]
+use self::rwlock::*;
+
+#[cfg(not(feature = "std"))]
+type FairRwLock<T> = crate::sync::RwLock<T>;
+
 enum InitSyncTracker{
 	NoSyncRequested,
 	ChannelsSyncing(u64),
@@ -390,7 +438,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
 	message_handler: MessageHandler<CM, RM>,
-	peers: RwLock<PeerHolder<Descriptor>>,
+	peers: FairRwLock<PeerHolder<Descriptor>>,
 	/// Only add to this set when noise completes.
 	/// Locked *after* peers. When an item is removed, it must be removed with the `peers` write
 	/// lock held. Entries may be added with only the `peers` read lock held (though the
@@ -494,7 +542,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 		PeerManager {
 			message_handler,
-			peers: RwLock::new(PeerHolder {
+			peers: FairRwLock::new(PeerHolder {
 				peers: HashMap::new(),
 			}),
 			node_id_to_descriptor: Mutex::new(HashMap::new()),
