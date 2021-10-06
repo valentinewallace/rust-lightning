@@ -1506,32 +1506,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	///
 	/// [`send_data`]: SocketDescriptor::send_data
 	pub fn timer_tick_occurred(&self) {
-		let mut peers_lock = self.peers.write().unwrap();
+		let mut descriptors_needing_disconnect = Vec::new();
 		{
-			let mut descriptors_needing_disconnect = Vec::new();
+			let peers_lock = self.peers.read().unwrap();
 
-			peers_lock.peers.retain(|descriptor, peer_mutex| {
+			for (descriptor, peer_mutex) in peers_lock.peers.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
 				if peer.awaiting_pong {
 					descriptors_needing_disconnect.push(descriptor.clone());
-					match peer.their_node_id {
-						Some(node_id) => {
-							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
-							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
-							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
-						}
-						None => {
-							// This can't actually happen as we should have hit
-							// is_ready_for_encryption() previously on this same peer.
-							unreachable!();
-						},
-					}
-					return false;
+					continue;
 				}
 
 				if !peer.channel_encryptor.is_ready_for_encryption() {
 					// The peer needs to complete its handshake before we can exchange messages
-					return true;
+					continue;
 				}
 
 				let ping = msgs::Ping {
@@ -1540,12 +1528,25 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				};
 				self.enqueue_message(&mut *peer, &ping);
 
-				let mut descriptor_clone = descriptor.clone();
-				self.do_attempt_write_data(&mut descriptor_clone, &mut *peer);
+				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer);
 
 				peer.awaiting_pong = true;
-				true
-			});
+			}
+		}
+
+		if !descriptors_needing_disconnect.is_empty() {
+			{
+				let mut peers_lock = self.peers.write().unwrap();
+				for descriptor in descriptors_needing_disconnect.iter() {
+					if let Some(peer) = peers_lock.peers.remove(&descriptor) {
+						let node_id = peer.lock().unwrap()
+							.their_node_id.expect("We only set awaiting_pong after node_id is set and it cannot be unset");
+						log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
+						self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+						self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+					}
+				}
+			}
 
 			for mut descriptor in descriptors_needing_disconnect.drain(..) {
 				descriptor.disconnect_socket();
