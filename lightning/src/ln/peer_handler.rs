@@ -400,6 +400,11 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	/// `peers` write lock to do so, so instead we block on this empty mutex when entering
 	/// `process_events`.
 	event_processing_lock: Mutex<()>,
+	/// Because event processing is global and always does all available work before returning,
+	/// there is no reason for us to have many event processors waiting on the lock at once.
+	/// Instead, we limit the total blocked event processors to always exactly one using this
+	/// counter.
+	blocked_event_processors: AtomicUsize,
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
@@ -494,6 +499,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			}),
 			node_id_to_descriptor: Mutex::new(HashMap::new()),
 			event_processing_lock: Mutex::new(()),
+			blocked_event_processors: AtomicUsize::new(0),
 			our_node_secret,
 			ephemeral_key_midstate,
 			peer_counter_low: AtomicUsize::new(0),
@@ -1213,7 +1219,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
 	/// [`send_data`]: SocketDescriptor::send_data
 	pub fn process_events(&self) {
-		let _single_processor_lock = self.event_processing_lock.lock().unwrap();
+		let mut _single_processor_lock = self.event_processing_lock.try_lock();
+		if _single_processor_lock.is_err() {
+			// While we could wake the older sleeper here with a CV and make more even waiting
+			// times, that would be a lot of overengineering for a simple "reduce total waiter
+			// count" goal.
+			if self.blocked_event_processors.fetch_add(1, Ordering::AcqRel) != 0 {
+				self.blocked_event_processors.fetch_sub(1, Ordering::AcqRel);
+				return;
+			} else {
+				// We're the only waiter, as the running process_events may have emptied the
+				// pending events "long" ago and there are new events for us to process, wait until
+				// its done and process any leftover events before returning.
+				_single_processor_lock = Ok(self.event_processing_lock.lock().unwrap());
+				self.blocked_event_processors.fetch_sub(1, Ordering::Release);
+			}
+		}
 
 		let mut disconnect_peers = HashMap::new();
 		let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
