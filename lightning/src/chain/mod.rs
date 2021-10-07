@@ -183,8 +183,9 @@ pub enum ChannelMonitorUpdateErr {
 	///
 	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
 	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, ChannelManager::channel_monitor_updated can be used to
-	/// restore the channel to an operational state.
+	/// have been successfully applied, a [`MonitorEvent::UpdateCompleted`] event should be returned
+	/// via [`Watch::release_pending_monitor_events`] which will then restore the channel to an
+	/// operational state.
 	///
 	/// Note that a given ChannelManager will *never* re-generate a given ChannelMonitorUpdate. If
 	/// you return a TemporaryFailure you must ensure that it is written to disk safely before
@@ -198,13 +199,13 @@ pub enum ChannelMonitorUpdateErr {
 	/// the channel which would invalidate previous ChannelMonitors are not made when a channel has
 	/// been "frozen".
 	///
-	/// Note that even if updates made after TemporaryFailure succeed you must still call
-	/// channel_monitor_updated to ensure you have the latest monitor and re-enable normal channel
-	/// operation.
+	/// Note that even if updates made after TemporaryFailure succeed you must still provide a
+	/// [`MonitorEvent::UpdateCompleted`] to ensure you have the latest monitor and re-enable
+	/// normal channel operation.
 	///
-	/// Note that the update being processed here will not be replayed for you when you call
-	/// ChannelManager::channel_monitor_updated, so you must store the update itself along
-	/// with the persisted ChannelMonitor on your own local disk prior to returning a
+	/// Note that the update being processed here will not be replayed for you when you return a
+	/// [`MonitorEvent::UpdateCompleted`] event via [`Watch::release_pending_monitor_events`], so
+	/// you must store the update itself on your own local disk prior to returning a
 	/// TemporaryFailure. You may, of course, employ a journaling approach, storing only the
 	/// ChannelMonitorUpdate on disk without updating the monitor itself, replaying the journal at
 	/// reload-time.
@@ -280,6 +281,10 @@ pub trait Watch<ChannelSigner: Sign> {
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
+	///
+	/// Note that after any block- or transaction-connection calls to a [`ChannelMonitor`], no
+	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
+	/// to disk.
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
 }
 

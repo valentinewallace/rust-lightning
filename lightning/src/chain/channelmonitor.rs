@@ -123,6 +123,26 @@ impl Readable for ChannelMonitorUpdate {
 #[derive(Clone, Debug)]
 pub struct MonitorUpdateError(pub &'static str);
 
+/// A [`MonitorEvent`] which indicates a [`ChannelMonitor`] update has completed. See
+/// [`ChannelMonitorUpdateErr::TemporaryFailure`] for more information on how this is used.
+///
+/// [`ChannelMonitorUpdateErr::TemporaryFailure`]: super::ChannelMonitorUpdateErr::TemporaryFailure
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorUpdated {
+	/// The funding oupoint of the [`ChannelMonitor`] which was updated
+	pub funding_txo: OutPoint,
+	/// The Update ID of the update which was applied from [`ChannelMonitorUpdate::update_id`] or
+	/// [`ChannelMonitor::get_latest_update_id`].
+	///
+	/// Note that this should only be set to a given update's ID if all previous updates for the
+	/// same [`ChannelMonitor`] have been applied and persisted.
+	pub monitor_update_id: u64,
+}
+impl_writeable_tlv_based!(MonitorUpdated, {
+	(0, funding_txo, required),
+	(2, monitor_update_id, required),
+});
+
 /// An event to be processed by the ChannelManager.
 #[derive(Clone, PartialEq)]
 pub enum MonitorEvent {
@@ -131,7 +151,27 @@ pub enum MonitorEvent {
 
 	/// A monitor event that the Channel's commitment transaction was confirmed.
 	CommitmentTxConfirmed(OutPoint),
+
+	/// Indicates a [`ChannelMonitor`] update has completed. See
+	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] for more information on how this is used.
+	///
+	/// [`ChannelMonitorUpdateErr::TemporaryFailure`]: super::ChannelMonitorUpdateErr::TemporaryFailure
+	UpdateCompleted(MonitorUpdated),
+
+	/// Indicates a [`ChannelMonitor`] update has failed. See
+	/// [`ChannelMonitorUpdateErr::PermanentFailure`] for more information on how this is used.
+	///
+	/// [`ChannelMonitorUpdateErr::PermanentFailure`]: super::ChannelMonitorUpdateErr::PermanentFailure
+	UpdateFailed(OutPoint),
 }
+impl_writeable_tlv_based_enum_upgradable!(MonitorEvent, ;
+	(0, HTLCEvent),
+	// Note that UpdateCompleted and UpdateFailed is currently never serialized to disk as they are
+	// generated only in ChainMonitor
+	(1, UpdateCompleted),
+	(2, CommitmentTxConfirmed),
+	(3, UpdateFailed),
+);
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
@@ -624,7 +664,17 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
+	// Note that MonitorEvents MUST NOT be generated during update processing, only generated
+	// during chain data processing. This prevents a race in ChainMonitor::update_channel (and
+	// presumably user implementations thereof as well) where we update the in-memory channel
+	// object, then before the persistence finishes (as its all under a read-lock), we return
+	// pending events to the user or to the relevant ChannelManager. Then, on reload, we'll have
+	// the pre-event state here, but have processed the event in the ChannelManager.
+	// Note that because the `event_lock` in `ChainMonitor` is only taken in
+	// block/transaction-connected events and *not* during block/transaction-disconnected events,
+	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<MonitorEvent>,
+
 	pending_events: Vec<Event>,
 
 	// Used to track on-chain events (i.e., transactions part of channels confirmed on chain) on
@@ -850,14 +900,19 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.pending_monitor_events.len() as u64))?;
+		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
+			MonitorEvent::HTLCEvent(_) => true,
+			MonitorEvent::CommitmentTxConfirmed(_) => true,
+			_ => false,
+		}).count() as u64).to_be_bytes())?;
 		for event in self.pending_monitor_events.iter() {
 			match event {
 				MonitorEvent::HTLCEvent(upd) => {
 					0u8.write(writer)?;
 					upd.write(writer)?;
 				},
-				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?
+				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?,
+				_ => {}, // Covered in the TLV writes below
 			}
 		}
 
@@ -891,6 +946,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
 			(3, self.htlcs_resolved_on_chain, vec_type),
+			(5, self.pending_monitor_events, vec_type),
 		});
 
 		Ok(())
@@ -2998,14 +3054,15 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		}
 
 		let pending_monitor_events_len: u64 = Readable::read(reader)?;
-		let mut pending_monitor_events = Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3)));
+		let mut pending_monitor_events = Some(
+			Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3))));
 		for _ in 0..pending_monitor_events_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
 				1 => MonitorEvent::CommitmentTxConfirmed(funding_info.0),
 				_ => return Err(DecodeError::InvalidValue)
 			};
-			pending_monitor_events.push(ev);
+			pending_monitor_events.as_mut().unwrap().push(ev);
 		}
 
 		let pending_events_len: u64 = Readable::read(reader)?;
@@ -3066,6 +3123,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
+			(5, pending_monitor_events, vec_type),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3105,7 +3163,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				current_holder_commitment_number,
 
 				payment_preimages,
-				pending_monitor_events,
+				pending_monitor_events: pending_monitor_events.unwrap(),
 				pending_events,
 
 				onchain_events_awaiting_threshold_conf,
