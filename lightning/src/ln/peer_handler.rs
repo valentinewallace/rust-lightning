@@ -342,6 +342,18 @@ const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 10;
 /// the peer.
 const OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP: usize = 20;
 
+/// If we've sent a ping, and are still awaiting a response, we may need to churn our way through
+/// the socket receive buffer before we get it.
+///
+/// On a fairly old Arm64 board, with Linux defaults, this can take as long as 20 seconds, not
+/// including any network delays or outbound traffic.
+///
+/// Thus, to avoid needlessly disconnecting a peer, we allow a peer to take this many timer ticks
+/// to respond to a ping, as long as they send us at least one message during each tick, ensuring
+/// we aren't actually just disconnected. With a timer tick interval of five seconds, this
+/// translates to about 30 seconds.
+pub const MAX_BUFFER_DRAIN_TICK_INTERVALS: u8 = 6;
+
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
 	their_node_id: Option<PublicKey>,
@@ -357,7 +369,8 @@ struct Peer {
 
 	sync_status: InitSyncTracker,
 
-	awaiting_pong: bool,
+	awaiting_pong_tick_intervals: u8,
+	received_message_since_timer_tick: bool,
 }
 
 impl Peer {
@@ -617,7 +630,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			awaiting_pong: false,
+			awaiting_pong_tick_intervals: 0,
+			received_message_since_timer_tick: false,
 		})).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -655,7 +669,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			awaiting_pong: false,
+			awaiting_pong_tick_intervals: 0,
+			received_message_since_timer_tick: false,
 		})).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -996,6 +1011,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError> {
 
 		let their_node_id = peer_lock.their_node_id.clone().expect("We know the peer's public key by the time we recieve messages");
+		peer_lock.received_message_since_timer_tick = true;
 
 		// Need an Init as first message
 		if let wire::Message::Init(msg) = message {
@@ -1067,7 +1083,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				}
 			},
 			wire::Message::Pong(_msg) => {
-				peer_mutex.lock().unwrap().awaiting_pong = false;
+				peer_mutex.lock().unwrap().awaiting_pong_tick_intervals = 0;
 			},
 
 			// Channel messages:
@@ -1581,25 +1597,31 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 			for (descriptor, peer_mutex) in peers_lock.peers.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
-				if peer.awaiting_pong {
-					descriptors_needing_disconnect.push(descriptor.clone());
-					continue;
-				}
-
 				if !peer.channel_encryptor.is_ready_for_encryption() {
 					// The peer needs to complete its handshake before we can exchange messages
 					continue;
 				}
+
+				if (peer.awaiting_pong_tick_intervals > 0 && !peer.received_message_since_timer_tick)
+					|| peer.awaiting_pong_tick_intervals > MAX_BUFFER_DRAIN_TICK_INTERVALS
+				{
+					descriptors_needing_disconnect.push(descriptor.clone());
+					continue;
+				}
+
+				peer.received_message_since_timer_tick = false;
+				if peer.awaiting_pong_tick_intervals > 0 {
+					peer.awaiting_pong_tick_intervals += 1;
+					continue;
+				}
+				peer.awaiting_pong_tick_intervals = 1;
 
 				let ping = msgs::Ping {
 					ponglen: 0,
 					byteslen: 64,
 				};
 				self.enqueue_message(&mut *peer, &ping);
-
 				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer);
-
-				peer.awaiting_pong = true;
 			}
 		}
 

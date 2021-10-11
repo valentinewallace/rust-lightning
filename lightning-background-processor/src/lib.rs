@@ -15,8 +15,8 @@ use lightning::chain::channelmonitor;
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
-use lightning::ln::peer_handler::{PeerManager, SocketDescriptor};
-use lightning::ln::peer_handler::CustomMessageHandler;
+use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
+use lightning::ln::peer_handler;
 use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
@@ -248,8 +248,9 @@ impl BackgroundProcessor {
 					// more than a handful of seconds to complete, and shouldn't disconnect all our
 					// peers.
 					log_trace!(logger, "Awoke after more than double our ping timer, disconnecting peers.");
-					peer_manager.timer_tick_occurred();
-					peer_manager.timer_tick_occurred();
+					for _ in 0..peer_handler::MAX_BUFFER_DRAIN_TICK_INTERVALS + 1 {
+						peer_manager.timer_tick_occurred();
+					}
 					last_ping_call = Instant::now();
 					ev_handle_time_since_last_ping = Duration::from_millis(0);
 				} else if last_ping_call.elapsed().as_secs() > PING_TIMER {
