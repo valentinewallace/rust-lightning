@@ -216,6 +216,7 @@ impl BackgroundProcessor {
 				chain_monitor.process_pending_events(&event_handler);
 				let updates_available =
 					channel_manager.await_persistable_update_timeout(Duration::from_millis(100));
+				println!("VMW: updates_available: {}", updates_available);
 				if updates_available {
 					persister.persist_manager(&*channel_manager)?;
 				}

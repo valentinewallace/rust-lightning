@@ -733,6 +733,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 impl<'a, F: Fn() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
 		if (self.should_persist)() == NotifyOption::DoPersist {
+			println!("VMW: calling self.persistence_notifier.notify() on drop");
 			self.persistence_notifier.notify();
 		}
 	}
@@ -1631,6 +1632,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
 	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
 		let mut chan = {
+			println!("VMW: about to take channel_state_lock");
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
@@ -1663,6 +1665,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			});
 		}
 
+		println!("VWM: exiting force_close_channel_with_peer");
 		Ok(chan.get_counterparty_node_id())
 	}
 
@@ -1670,7 +1673,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		match self.force_close_channel_with_peer(channel_id, None, None) {
+		let res = match self.force_close_channel_with_peer(channel_id, None, None) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
 					events::MessageSendEvent::HandleError {
@@ -1683,7 +1686,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				Ok(())
 			},
 			Err(e) => Err(e)
-		}
+		};
+		println!("VMW: exiting force_close_channel");
+		res
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
@@ -5234,6 +5239,7 @@ impl PersistenceNotifier {
 
 	#[cfg(any(test, feature = "allow_wallclock_use"))]
 	fn wait_timeout(&self, max_wait: Duration) -> bool {
+		println!("VMW: wait_timeout called");
 		let current_time = Instant::now();
 		loop {
 			let &(ref mtx, ref cvar) = &self.persistence_lock;
@@ -5251,6 +5257,7 @@ impl PersistenceNotifier {
 			let elapsed = current_time.elapsed();
 			let result = *guard;
 			if result || elapsed >= max_wait {
+				println!("VMW: setting *guard to false");
 				*guard = false;
 				return result;
 			}
@@ -5263,10 +5270,13 @@ impl PersistenceNotifier {
 
 	// Signal to the ChannelManager persister that there are updates necessitating persisting to disk.
 	fn notify(&self) {
+		println!("VMW: in persistence_notifier.notify()");
 		let &(ref persist_mtx, ref cnd) = &self.persistence_lock;
 		let mut persistence_lock = persist_mtx.lock().unwrap();
+		println!("VMW: just acquired persistence_lock in persistence_notifier.notify");
 		*persistence_lock = true;
 		mem::drop(persistence_lock);
+		println!("VMW: calling cnd.notify_all()");
 		cnd.notify_all();
 	}
 }
