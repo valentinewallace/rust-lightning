@@ -515,22 +515,29 @@ mod tests {
 		// Check that the initial channel manager data is persisted as expected.
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "manager".to_string());
 		let mut expected_bytes = Vec::new();
+		println!("VMW: about to check_persisted_data 1");
 		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
+		println!("VMW: just check_persisted_data 1, about to loop on condvar 1");
 		loop {
 			if !nodes[0].node.get_persistence_condvar_value() { break }
 		}
+		println!("VMW: just looped on condvar 1, about to force close");
 
 		// Force-close the channel.
 		nodes[0].node.force_close_channel(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).unwrap();
 
 		// Check that the force-close updates are persisted.
 		let mut expected_bytes = Vec::new();
+		println!("VMW: about to check_persisted_data 2");
 		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
+		println!("VMW: just check_persisted_data 2, about to loop on condvar 2");
 		loop {
 			if !nodes[0].node.get_persistence_condvar_value() { break }
 		}
+		println!("VMW: just looped on condvar 2");
 
 		assert!(bg_processor.stop().is_ok());
+		println!("VMW: just stopped bg proc");
 	}
 
 	#[test]
