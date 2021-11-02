@@ -66,7 +66,7 @@ jobs:
         run: |
           for i in {1..1000}
           do
-            cargo test test_background_processor -- --nocapture
+            cargo test background_processor -- --nocapture
           done
   #     - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
   #       if: matrix.coverage
