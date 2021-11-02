@@ -7,26 +7,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ macos-latest ]
-        toolchain: [ stable
-                     # beta,
-                     # # 1.36.0 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
-                     # 1.36.0,
-                     # # 1.41.0 is Debian stable
-                     # 1.41.0,
-                     # # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
-                     # 1.45.2,
-                     # # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
-                     # 1.47.0]
-                   ]
+        platform: [ ubuntu-latest ]
+        # toolchain: [ stable,
+        #              beta,
+        #              # 1.36.0 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
+        #              1.36.0,
+        #              # 1.41.0 is Debian stable
+        #              1.41.0,
+        #              # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
+        #              1.45.2,
+        #              # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
+        #              1.47.0]
+        toolchain: [ stable ]
         include:
-          # - toolchain: stable
-          #   build-net-tokio: true
-          #   build-no-std: true
           - toolchain: stable
-            platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+          # - toolchain: stable
+          #   platform: macos-latest
+          #   build-net-tokio: true
+          #   build-no-std: true
           # - toolchain: beta
           #   platform: macos-latest
           #   build-net-tokio: true
@@ -54,13 +54,13 @@ jobs:
           #   build-no-std: false
     runs-on: ${{ matrix.platform }}
     steps:
-      - name: Install valgrind
-        run: |
-          # brew install valgrind
-          brew tap LouisBrunner/valgrind
-          brew install --HEAD LouisBrunner/valgrind/valgrind
       - name: Checkout source code
         uses: actions/checkout@v2
+      - name: Install valgrind
+        run: |
+          # apt-get update
+          # apt-get -y dist-upgrade
+          sudo apt-get install valgrind
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -97,78 +97,82 @@ jobs:
       #     RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
-        run: valgrind --tool=drd cargo test test_background_processor
-      # - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
-      #   if: matrix.coverage
-      #   run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
-      # - name: Test on no-std bullds Rust ${{ matrix.toolchain }}
-      #   if: "matrix.build-no-std && !matrix.coverage"
-      #   run: |
-      #     cd lightning
-      #     cargo test --verbose --color always --no-default-features --features no-std
-      #     # check if there is a conflict between no-std and the default std feature
-      #     cargo test --verbose --color always --features no-std
-      #     cd ..
-      # - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
-      #   if: "matrix.build-no-std && matrix.coverage"
-      #   run: |
-      #     cd lightning
-      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
-      #     cd ..
-      # - name: Test on Rust ${{ matrix.toolchain }}
-      #   if: "! matrix.build-net-tokio"
-      #   run: |
-      #     cargo test --verbose --color always  -p lightning
-      #     cargo test --verbose --color always  -p lightning-invoice
-      #     cargo build --verbose  --color always -p lightning-persister
-      # - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-      #   if: "matrix.build-net-tokio && !matrix.coverage"
-      #   run: |
-      #     cd lightning-block-sync
-      #     cargo test --verbose --color always --features rest-client
-      #     cargo test --verbose --color always --features rpc-client
-      #     cargo test --verbose --color always --features rpc-client,rest-client
-      #     cargo test --verbose --color always --features rpc-client,rest-client,tokio
-      # - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
-      #   if: matrix.coverage
-      #   run: |
-      #     cd lightning-block-sync
-      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rest-client
-      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
-      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
-      #     RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
-      # - name: Install deps for kcov
-      #   if: matrix.coverage
-      #   run: |
-      #     sudo apt-get update
-      #     sudo apt-get -y install binutils-dev libcurl4-openssl-dev zlib1g-dev libdw-dev libiberty-dev
-      # - name: Install kcov
-      #   if: matrix.coverage
-      #   run: |
-      #     wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz
-      #     tar xzf master.tar.gz
-      #     cd kcov-master && mkdir build && cd build
-      #     cmake ..
-      #     make
-      #     make install DESTDIR=../../kcov-build
-      #     cd ../.. && rm -rf kcov-master master.tar.gz
-      # - name: Generate coverage report
-      #   if: matrix.coverage
-      #   run: |
-      #     for file in target/debug/deps/lightning*; do
-      #       [ -x "${file}" ] || continue;
-      #       mkdir -p "target/cov/$(basename $file)";
-      #       ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
-      #     done
-      # - name: Upload coverage
-      #   if: matrix.coverage
-      #   uses: codecov/codecov-action@v1
-      #   with:
-      #     # Could you use this to fake the coverage report for your PR? Sure.
-      #     # Will anyone be impressed by your amazing coverage? No
-      #     # Maybe if codecov wasn't broken we wouldn't need to do this...
-      #     token: f421b687-4dc2-4387-ac3d-dc3b2528af57
-      #     fail_ci_if_error: true
+        run: |
+          for i in {1..1000}
+          do
+            valgrind --tool=drd cargo test test_background_processor
+          done
+  #     - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+  #       if: matrix.coverage
+  #       run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
+  #     - name: Test on no-std bullds Rust ${{ matrix.toolchain }}
+  #       if: "matrix.build-no-std && !matrix.coverage"
+  #       run: |
+  #         cd lightning
+  #         cargo test --verbose --color always --no-default-features --features no-std
+  #         # check if there is a conflict between no-std and the default std feature
+  #         cargo test --verbose --color always --features no-std
+  #         cd ..
+  #     - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
+  #       if: "matrix.build-no-std && matrix.coverage"
+  #       run: |
+  #         cd lightning
+  #         RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
+  #         cd ..
+  #     - name: Test on Rust ${{ matrix.toolchain }}
+  #       if: "! matrix.build-net-tokio"
+  #       run: |
+  #         cargo test --verbose --color always  -p lightning
+  #         cargo test --verbose --color always  -p lightning-invoice
+  #         cargo build --verbose  --color always -p lightning-persister
+  #     - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
+  #       if: "matrix.build-net-tokio && !matrix.coverage"
+  #       run: |
+  #         cd lightning-block-sync
+  #         cargo test --verbose --color always --features rest-client
+  #         cargo test --verbose --color always --features rpc-client
+  #         cargo test --verbose --color always --features rpc-client,rest-client
+  #         cargo test --verbose --color always --features rpc-client,rest-client,tokio
+  #     - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
+  #       if: matrix.coverage
+  #       run: |
+  #         cd lightning-block-sync
+  #         RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rest-client
+  #         RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
+  #         RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
+  #         RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
+  #     - name: Install deps for kcov
+  #       if: matrix.coverage
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get -y install binutils-dev libcurl4-openssl-dev zlib1g-dev libdw-dev libiberty-dev
+  #     - name: Install kcov
+  #       if: matrix.coverage
+  #       run: |
+  #         wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz
+  #         tar xzf master.tar.gz
+  #         cd kcov-master && mkdir build && cd build
+  #         cmake ..
+  #         make
+  #         make install DESTDIR=../../kcov-build
+  #         cd ../.. && rm -rf kcov-master master.tar.gz
+  #     - name: Generate coverage report
+  #       if: matrix.coverage
+  #       run: |
+  #         for file in target/debug/deps/lightning*; do
+  #           [ -x "${file}" ] || continue;
+  #           mkdir -p "target/cov/$(basename $file)";
+  #           ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
+  #         done
+  #     - name: Upload coverage
+  #       if: matrix.coverage
+  #       uses: codecov/codecov-action@v1
+  #       with:
+  #         # Could you use this to fake the coverage report for your PR? Sure.
+  #         # Will anyone be impressed by your amazing coverage? No
+  #         # Maybe if codecov wasn't broken we wouldn't need to do this...
+  #         token: f421b687-4dc2-4387-ac3d-dc3b2528af57
+  #         fail_ci_if_error: true
 
   # benchmark:
   #   runs-on: ubuntu-latest
