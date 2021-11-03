@@ -97,8 +97,11 @@ impl FilesystemPersister {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		println!("VMW: persisting manager");
 		let path = PathBuf::from(data_dir);
-		util::write_to_file(path, "manager".to_string(), manager)
+		let res = util::write_to_file(path, "manager".to_string(), manager);
+		println!("VMW: done persisting manager");
+		res
 	}
 
 	/// Read `ChannelMonitor`s from disk.

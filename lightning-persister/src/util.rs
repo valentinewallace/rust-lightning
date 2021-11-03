@@ -40,6 +40,7 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: T) -> Vec<winapi::shared::ntdef::W
 
 #[allow(bare_trait_objects)]
 pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, data: &D) -> std::io::Result<()> {
+	println!("VMW: about to write to file: {}", filename);
 	fs::create_dir_all(path.clone())?;
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
@@ -53,16 +54,21 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, d
 		// Note that going by rust-lang/rust@d602a6b, on MacOS it is only safe to use
 		// rust stdlib 1.36 or higher.
 		let mut f = fs::File::create(&tmp_filename)?;
+		println!("VMW: created dir, now writing to file");
 		data.write_to_file(&mut f)?;
+		println!("VMW: wrote to file, now calling file.sync_all()");
 		f.sync_all()?;
 	}
 	// Fsync the parent directory on Unix.
 	#[cfg(not(target_os = "windows"))]
 	{
+		println!("VMW: done sync_all'ing, now calling rename");
 		fs::rename(&tmp_filename, &filename_with_path)?;
 		let path = Path::new(&filename_with_path).parent().unwrap();
+		println!("VMW: done renaming, now opening dir_file");
 		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
+		println!("VMW: just libc::fsync'd");
 	}
 	#[cfg(target_os = "windows")]
 	{
@@ -82,6 +88,7 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, d
 			)});
 		}
 	}
+	println!("VMW: returning Ok from util::write_to_file");
 	Ok(())
 }
 
