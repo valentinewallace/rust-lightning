@@ -69,6 +69,8 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, d
 		let dir_file = fs::OpenOptions::new().read(true).open(path)?;
 		unsafe { libc::fsync(dir_file.as_raw_fd()); }
 		println!("VMW: just libc::fsync'd");
+		dir_file.sync_all()?;
+		println!("VMW: just sync_all'd");
 	}
 	#[cfg(target_os = "windows")]
 	{
