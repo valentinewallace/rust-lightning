@@ -2119,8 +2119,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 		};
 
-		let pending_forward_info = match next_hop {
-			onion_utils::Hop::Receive(next_hop_data) => {
+		macro_rules! get_recv_pending_htlc_status {
+			($hop_data: expr) => {{
 				// OUR PAYMENT!
 				// final_expiry_too_soon
 				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
@@ -2132,15 +2132,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
-				if next_hop_data.amt_to_forward > msg.amount_msat {
+				if $hop_data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
-				// final_incorrect_cltv_expiry
-				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
-					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
-				}
 
-				let routing = match next_hop_data.format {
+				let routing = match $hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
 					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
 					msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
@@ -2181,9 +2177,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					routing,
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+					amt_to_forward: $hop_data.amt_to_forward,
+					outgoing_cltv_value: $hop_data.outgoing_cltv_value,
 				})
+			}}
+		}
+
+		let pending_forward_info = match next_hop {
+			onion_utils::Hop::Receive(next_hop_data) => {
+				// final_incorrect_cltv_expiry
+				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
+					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
+				}
+				get_recv_pending_htlc_status!(next_hop_data)
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
