@@ -813,6 +813,17 @@ impl KeysManager {
 	/// versions. Once the library is more fully supported, the docs will be updated to include a
 	/// detailed description of the guarantee.
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+		Self::new_inner(seed, starting_time_secs, starting_time_nanos, None)
+	}
+
+	/// Similar to [`KeysManager::new`], but allows the node using this `KeysManager` to receive phantom node
+	/// payments. `inbound_payment_key` can be retrieved from
+	/// [`KeysInterface::get_inbound_payment_key_material`].
+	pub fn new_multi_receive(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32, inbound_payment_key: KeyMaterial) -> Self {
+		Self::new_inner(seed, starting_time_secs, starting_time_nanos, Some(inbound_payment_key))
+	}
+
+	fn new_inner(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32, inbound_payment_key_opt: Option<KeyMaterial>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
 		match ExtendedPrivKey::new_master(Network::Testnet, seed) {
@@ -833,9 +844,14 @@ impl KeysManager {
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
 				let rand_bytes_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
-				let inbound_payment_key: SecretKey = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted").private_key.key;
-				let mut inbound_pmt_key_bytes = [0; 32];
-				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
+				let inbound_payment_key = if let Some(key) = inbound_payment_key_opt {
+					key
+				} else {
+					let inbound_payment_key: SecretKey = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted").private_key.key;
+					let mut inbound_pmt_key_bytes = [0; 32];
+					inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
+					KeyMaterial(inbound_pmt_key_bytes)
+				};
 
 				let mut rand_bytes_unique_start = Sha256::engine();
 				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
@@ -845,7 +861,7 @@ impl KeysManager {
 				let mut res = KeysManager {
 					secp_ctx,
 					node_secret,
-					inbound_payment_key: KeyMaterial(inbound_pmt_key_bytes),
+					inbound_payment_key,
 
 					destination_script,
 					shutdown_pubkey,
