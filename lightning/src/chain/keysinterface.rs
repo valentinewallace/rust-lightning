@@ -31,6 +31,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
+use util::crypto::hkdf_extract_expand_twice;
 use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use chain::transaction::OutPoint;
@@ -848,6 +849,12 @@ impl KeysManager {
 	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
 	/// versions. Once the library is more fully supported, the docs will be updated to include a
 	/// detailed description of the guarantee.
+	///
+	/// This method cannot be used for nodes that wish to support receiving multi-node or phantom
+	/// payments; [`KeysManager::new_multi_receive`] must be used instead.
+	///
+	/// Switching between this method and [`KeysManager::new_multi_receive`] will invalidate any
+	/// previously issued invoices and attempts to pay previous invoices will fail.
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
@@ -872,6 +879,7 @@ impl KeysManager {
 				let inbound_payment_key: SecretKey = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted").private_key.key;
 				let mut inbound_pmt_key_bytes = [0; 32];
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
+				let inbound_payment_key = KeyMaterial(inbound_pmt_key_bytes);
 
 				let mut rand_bytes_unique_start = Sha256::engine();
 				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
@@ -881,7 +889,7 @@ impl KeysManager {
 				let mut res = KeysManager {
 					secp_ctx,
 					node_secret,
-					inbound_payment_key: KeyMaterial(inbound_pmt_key_bytes),
+					inbound_payment_key,
 
 					destination_script,
 					shutdown_pubkey,
@@ -964,7 +972,7 @@ impl KeysManager {
 	/// transaction will have a feerate, at least, of the given value.
 	///
 	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
-	/// if a descriptor was duplicated, or if an output descriptor script_pubkey 
+	/// if a descriptor was duplicated, or if an output descriptor script_pubkey
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
@@ -1136,6 +1144,72 @@ impl KeysInterface for KeysManager {
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+	}
+}
+
+/// Similar to [`KeysManager`], but allows the node using this struct to receive phantom node
+/// payments. `cross_node_seed` must be the same across all phantom-receiving nodes and also the
+/// same across restarts, or else payments may fail.
+pub struct PhantomKeysManager {
+	inner: KeysManager,
+	inbound_payment_key: KeyMaterial,
+	phantom_secret: SecretKey,
+}
+
+impl KeysInterface for PhantomKeysManager {
+	type Signer = InMemorySigner;
+
+	fn get_node_secret(&self) -> SecretKey {
+		self.inner.get_node_secret()
+	}
+
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
+	}
+
+	fn get_destination_script(&self) -> Script {
+		self.inner.get_destination_script()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		self.inner.get_shutdown_scriptpubkey()
+	}
+
+	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
+		self.inner.get_channel_signer(inbound, channel_value_satoshis)
+	}
+
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		self.inner.get_secure_random_bytes()
+	}
+
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
+		self.inner.read_chan_signer(reader)
+	}
+
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+	}
+}
+
+impl PhantomKeysManager {
+	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32, cross_node_seed: &[u8; 32]) -> Self {
+		let inner = KeysManager::new(seed, starting_time_secs, starting_time_nanos);
+		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(b"LDK Inbound and Phantom Payment Key Expansion", cross_node_seed);
+		Self {
+			inner,
+			inbound_payment_key: KeyMaterial(inbound_key),
+			phantom_secret: SecretKey::from_slice(&phantom_key).unwrap(),
+		}
+	}
+
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, secp_ctx)
+	}
+
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
+		self.inner.derive_channel_keys(channel_value_satoshis, params)
 	}
 }
 
