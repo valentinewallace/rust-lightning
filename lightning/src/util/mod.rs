@@ -48,3 +48,26 @@ pub mod test_utils;
 /// machine errors and used in fuzz targets and tests.
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 pub mod enforcing_trait_impls;
+
+pub(crate) mod crypto {
+	use bitcoin::hashes::{Hash, HashEngine};
+	use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use prelude::*;
+
+	pub fn hkdf_extract_expand(salt: &[u8], ikm: &[u8], num_keys: u8) -> Vec<[u8; 32]> {
+		let mut keys_res: Vec<[u8; 32]> = Vec::new();
+		let mut hmac = HmacEngine::<Sha256>::new(salt);
+		hmac.input(ikm);
+		let prk = Hmac::from_engine(hmac).into_inner();
+		for i in 0..num_keys {
+			let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+			if i != 0 {
+				hmac.input(&keys_res[keys_res.len() - 1]);
+			}
+			hmac.input(&[i + 1; 1]);
+			keys_res.push(Hmac::from_engine(hmac).into_inner());
+		}
+		keys_res
+	}
+}
