@@ -339,6 +339,10 @@ impl KeysInterface for KeyProvider {
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
+
+	fn get_phantom_secret(&self) -> Option<SecretKey> {
+		None
+	}
 }
 
 #[inline]

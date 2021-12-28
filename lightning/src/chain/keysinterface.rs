@@ -430,6 +430,9 @@ pub trait KeysInterface {
 	///
 	/// This method must return the same value each time it is called.
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+
+	/// Get a secret key for use in receiving phantom node payments.
+	fn get_phantom_secret(&self) -> Option<SecretKey>;
 }
 
 #[derive(Clone)]
@@ -1145,6 +1148,10 @@ impl KeysInterface for KeysManager {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
 	}
+
+	fn get_phantom_secret(&self) -> Option<SecretKey> {
+		None
+	}
 }
 
 /// Similar to [`KeysManager`], but allows the node using this struct to receive phantom node
@@ -1190,6 +1197,10 @@ impl KeysInterface for PhantomKeysManager {
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+	}
+
+	fn get_phantom_secret(&self) -> Option<SecretKey> {
+		Some(self.phantom_secret.clone())
 	}
 }
 

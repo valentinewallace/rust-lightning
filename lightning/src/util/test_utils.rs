@@ -90,6 +90,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 		))
 	}
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> { unreachable!(); }
+	fn get_phantom_secret(&self) -> Option<SecretKey> { unreachable!(); }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -532,6 +533,10 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data)
+	}
+
+	fn get_phantom_secret(&self) -> Option<SecretKey> {
+		self.backing.get_phantom_secret()
 	}
 }
 
