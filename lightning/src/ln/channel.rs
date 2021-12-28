@@ -5877,6 +5877,7 @@ mod tests {
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
 		fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { panic!(); }
+		fn get_phantom_secret(&self, _scid: u64) -> Result<SecretKey, ()> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

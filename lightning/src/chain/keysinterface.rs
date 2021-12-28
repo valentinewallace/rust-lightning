@@ -30,6 +30,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
+use util::crypto::hkdf_extract_expand;
 use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
@@ -408,6 +409,9 @@ pub trait KeysInterface {
 	///
 	/// This method must return the same value each time it is called.
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+
+	/// Get a secret key for use in receiving phantom node payments.
+	fn get_phantom_secret(&self, scid: u64) -> Result<SecretKey, ()>;
 }
 
 #[derive(Clone)]
@@ -1109,6 +1113,11 @@ impl KeysInterface for KeysManager {
 
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
 		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&invoice_preimage)), &self.get_node_secret()))
+	}
+
+	fn get_phantom_secret(&self, _scid: u64) -> Result<SecretKey, ()> {
+		let hkdf = hkdf_extract_expand(b"LDK Phantom Node Secret Key Expansion", &self.inbound_payment_key.0, 1);
+		Ok(SecretKey::from_slice(&hkdf[0]).unwrap())
 	}
 }
 

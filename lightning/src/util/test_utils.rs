@@ -88,6 +88,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 		))
 	}
 	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { unreachable!(); }
+	fn get_phantom_secret(&self, _scid: u64) -> Result<SecretKey, ()> { unreachable!(); }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -530,6 +531,8 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(invoice_preimage)
 	}
+
+	fn get_phantom_secret(&self, scid: u64) -> Result<SecretKey, ()> { self.backing.get_phantom_secret(scid) }
 }
 
 impl TestKeysInterface {
