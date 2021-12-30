@@ -339,6 +339,174 @@ mod inbound_payment {
 	}
 }
 
+/// LDK has multiple reasons to generate fake short channel ids:
+/// 1) zero-conf channels that don't have a confirmed channel id yet
+/// 2) phantom node payments, to get an scid for the phantom node's phantom channel
+mod fake_scid {
+	use bitcoin::hash_types::BlockHash;
+	use bitcoin::hashes::hex::FromHex;
+	use chain::keysinterface::{Sign, KeysInterface};
+	use util::scid_utils;
+
+	use core::convert::TryInto;
+	use core::ops::Deref;
+
+	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 0;
+	const MAINNET_SEGWIT_ACTIVATION_HEIGHT: u32 = 481_824;
+	const MAX_TX_INDEX: u32 = 2_500;
+	const MAX_VOUT: u16 = 3;
+	const MAX_NAMESPACES: u8 = 8;
+	const NAMESPACE_ID_BITMASK: u8 = 0b111;
+
+	/// Fake scids are divided into namespaces, with each namespace having its own randomly-selected
+	/// identifier between [0..7], such that `scid_tx_index % MAX_NAMESPACES == namespace_identifier`.
+	/// This allows us to identify what namespace a fake scid corresponds to upon HTLC receipt, and
+	/// handle the HTLC accordingly.
+	pub(super) enum Namespace {
+		Phantom(u8),
+		// Coming soon: a variant for the zero-conf scid namespace
+	}
+
+	impl Namespace {
+		/// We generate "realistic-looking" random scids here, meaning the scid's block height is
+		/// between segwit activation and the current best known height, and the tx index and output
+		/// index are also selected from a "reasonable" range. We add this logic because it makes it
+		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
+		pub(super) fn get_fake_scid<Signer: Sign, K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, keys_manager: &K) -> u64
+			where K::Target: KeysInterface<Signer = Signer>,
+		{
+			const BLOCKS_PER_DAY: u32 = 144;
+			let scid_namespace = self.as_u8();
+			let rand_bytes = keys_manager.get_secure_random_bytes();
+
+			let mut valid_block_range = if highest_seen_blockheight > highest_seen_blockheight {
+				highest_seen_blockheight - segwit_activation_height(genesis_hash)
+			} else {
+				1
+			};
+			// We want to ensure that this fake channel won't conflict with any transactions we haven't
+			// seen yet, in case `highest_seen_blockheight` is updated before we get full information
+			// about transactions confirmed in the given block.
+			if valid_block_range > BLOCKS_PER_DAY { valid_block_range -= BLOCKS_PER_DAY; }
+
+			let rand_value_for_height = u32::from_be_bytes(rand_bytes[..4].try_into().unwrap());
+			let fake_scid_height = segwit_activation_height(genesis_hash) + rand_value_for_height % valid_block_range;
+
+			let rand_u32 = u32::from_be_bytes(rand_bytes[4..8].try_into().unwrap());
+			let rand_tx_index =  rand_u32 % MAX_TX_INDEX;
+			// Put the tx index into the given `scid_namespace`.
+			let fake_scid_tx_index = ((rand_tx_index & !(NAMESPACE_ID_BITMASK as u32))) + scid_namespace as u32;
+
+			let rand_value_for_vout = u16::from_be_bytes(rand_bytes[8..10].try_into().unwrap());
+			let fake_scid_vout_index = rand_value_for_vout % MAX_VOUT;
+			scid_utils::scid_from_parts(fake_scid_height as u64, fake_scid_tx_index as u64, fake_scid_vout_index as u64).unwrap()
+		}
+
+		fn as_u8(&self) -> u8 {
+			match self {
+				Namespace::Phantom(namespace) => *namespace,
+			}
+		}
+
+		fn phantom(fake_scid_offset: u8) -> Namespace {
+			const PHANTOM_OFFSET: u8 = 0;
+			Namespace::Phantom((fake_scid_offset + PHANTOM_OFFSET) % MAX_NAMESPACES)
+		}
+	}
+
+	pub(super) fn get_phantom_scid<Signer: Sign, K: Deref>(fake_scid_offset: u8, highest_seen_blockheight: u32, genesis_hash: &BlockHash, keys_manager: &K) -> u64
+		where K::Target: KeysInterface<Signer = Signer>,
+	{
+		let namespace = Namespace::phantom(fake_scid_offset);
+		namespace.get_fake_scid(highest_seen_blockheight, genesis_hash, keys_manager)
+	}
+
+	/// Each LDK node uses a random offset for its fake scid namespaces, to make it harder for a third
+	/// party to identify phantom node payments.
+	pub(super) fn get_new_offset<Signer: Sign, K: Deref>(keys_manager: &K) -> u8
+		where K::Target: KeysInterface<Signer = Signer>,
+	{
+		let offset_rand_bytes = keys_manager.get_secure_random_bytes();
+		offset_rand_bytes [0] & NAMESPACE_ID_BITMASK
+	}
+
+	fn segwit_activation_height(genesis: &BlockHash) -> u32 {
+		const MAINNET_GENESIS_STR: &'static str = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+		if BlockHash::from_hex(MAINNET_GENESIS_STR).unwrap() == *genesis {
+			MAINNET_SEGWIT_ACTIVATION_HEIGHT
+		} else {
+			TEST_SEGWIT_ACTIVATION_HEIGHT
+		}
+	}
+
+	/// Returns whether the given fake scid falls into the given namespace.
+	pub(super) fn is_valid_phantom(fake_scid_offset: u8, scid: u64) -> bool {
+		let namespace = Namespace::phantom(fake_scid_offset);
+		scid_utils::tx_index_from_scid(&scid) % MAX_NAMESPACES as u32 == namespace.as_u8() as u32
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use bitcoin::blockdata::constants::genesis_block;
+		use bitcoin::network::constants::Network;
+		use ln::channelmanager::fake_scid::{is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_VOUT, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
+		use util::scid_utils;
+		use util::test_utils;
+		use sync::Arc;
+
+		const TEST_FAKE_SCID_OFFSET: u8 = 0xAB;
+
+		#[test]
+		fn namespace_identifier_is_within_range() {
+			let Namespace::Phantom(ns) = Namespace::phantom(TEST_FAKE_SCID_OFFSET);
+			assert!(ns <= NAMESPACE_ID_BITMASK);
+		}
+
+		#[test]
+		fn test_segwit_activation_height() {
+			let mainnet_genesis = genesis_block(Network::Bitcoin).header.block_hash();
+			assert_eq!(segwit_activation_height(&mainnet_genesis), MAINNET_SEGWIT_ACTIVATION_HEIGHT);
+
+			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
+			assert_eq!(segwit_activation_height(&testnet_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
+
+			let signet_genesis = genesis_block(Network::Signet).header.block_hash();
+			assert_eq!(segwit_activation_height(&signet_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
+
+			let regtest_genesis = genesis_block(Network::Regtest).header.block_hash();
+			assert_eq!(segwit_activation_height(&regtest_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
+		}
+
+		#[test]
+		fn test_is_valid_phantom() {
+			let namespace = Namespace::Phantom(3);
+			let valid_fake_scid = scid_utils::scid_from_parts(0, 11, 0).unwrap();
+			assert!(is_valid_phantom(namespace.as_u8(), valid_fake_scid));
+			let invalid_fake_scid = scid_utils::scid_from_parts(0, 12, 0).unwrap();
+			assert!(!is_valid_phantom(namespace.as_u8(), invalid_fake_scid));
+		}
+
+		#[test]
+		fn test_get_fake_scid() {
+			let mainnet_genesis = genesis_block(Network::Bitcoin).header.block_hash();
+			let seed = [0 as u8; 32];
+			let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
+			let namespace = Namespace::phantom(TEST_FAKE_SCID_OFFSET);
+			let fake_scid = namespace.get_fake_scid(500_000, &mainnet_genesis, &keys_manager);
+
+			let fake_height = scid_utils::block_from_scid(&fake_scid);
+			assert!(fake_height >= MAINNET_SEGWIT_ACTIVATION_HEIGHT);
+			assert!(fake_height <= 500_000);
+
+			let fake_tx_index = scid_utils::tx_index_from_scid(&fake_scid);
+			assert!(fake_tx_index <= MAX_TX_INDEX);
+
+			let fake_vout = fake_scid & scid_utils::MAX_SCID_VOUT_INDEX;
+			assert!(fake_vout <= MAX_VOUT.into());
+		}
+	}
+}
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -972,6 +1140,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	our_network_pubkey: PublicKey,
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
+
+	fake_scid_offset: u8,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
@@ -1690,6 +1860,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
+			fake_scid_offset: fake_scid::get_new_offset(&keys_manager),
 
 			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
@@ -5089,6 +5260,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
+	/// Gets a fake short channel id for use in receiving phantom node payments.
+	///
+	/// A phantom node payment is a payment made to a phantom invoice, which is an invoice that can be
+	/// paid to one of multiple nodes. This works because the invoice officially pays to a fake node
+	/// (the "phantom"), with route hints containing phantom channels. This method is used to retrieve
+	/// the short channel ids for these phantom route hints.
+	pub fn get_phantom_scid(&self) -> u64 {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let best_block = self.best_block.read().unwrap();
+		loop {
+			let scid_candidate = fake_scid::get_phantom_scid(self.fake_scid_offset, best_block.height(), &self.genesis_hash, &self.keys_manager);
+			// Ensure the generated scid doesn't conflict with a real channel.
+			match channel_state.short_to_id.entry(scid_candidate) {
+				hash_map::Entry::Occupied(_) => continue,
+				hash_map::Entry::Vacant(_) => return scid_candidate
+			}
+		}
+	}
+
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
@@ -6220,7 +6410,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(3, pending_outbound_payments, required),
-			(5, self.our_network_pubkey, required)
+			(5, self.our_network_pubkey, required),
+			(7, self.fake_scid_offset, required),
 		});
 
 		Ok(())
@@ -6516,11 +6707,16 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> = None;
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
+		let mut fake_scid_offset: Option<u8> = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
-			(5, received_network_pubkey, option)
+			(5, received_network_pubkey, option),
+			(7, fake_scid_offset, option),
 		});
+		if fake_scid_offset.is_none() {
+			fake_scid_offset = Some(fake_scid::get_new_offset(&args.keys_manager));
+		}
 
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
@@ -6612,6 +6808,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			fake_scid_offset: fake_scid_offset.unwrap(),
 
 			our_network_key: args.keys_manager.get_node_secret(),
 			our_network_pubkey,
