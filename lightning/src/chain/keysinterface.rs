@@ -407,10 +407,27 @@ pub trait KeysInterface {
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
+	/// If the implementor of this trait supports [phantom node payments], then every node that is
+	/// intended to be included in the phantom invoice(s) route hints must return the same value from
+	/// this method.
+	///
 	/// This method must return the same value each time it is called.
+	///
+	///[phantom node payments]: crate::ln::channelmanager::ChannelManager::get_phantom_scid
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 
-	/// Get a secret key for use in receiving phantom node payments.
+	/// Get the phantom node secret key for use in receiving a [phantom node payment].
+	///
+	/// Must return the same value for all `scid`s in a given phantom invoice's route hints.
+	///
+	/// Note that if you are using [`KeysManager`], every additional LDK node after the first one must
+	/// use [`KeysManager::new_multi_receive`] to initialize its `KeysManager` or payments will fail to
+	/// be received.
+	///
+	/// See [`KeysInterface::get_inbound_payment_key_material`] for further requirements on nodes
+	/// supporting phantom node payments.
+	///
+	///[phantom node payment]: crate::ln::channelmanager::ChannelManager::get_phantom_scid
 	fn get_phantom_secret(&self, scid: u64) -> Result<SecretKey, ()>;
 }
 

@@ -5208,6 +5208,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
+	/// Gets a fake short channel id for use in receiving phantom node payments.
+	///
+	/// A phantom node payment is a payment made to a phantom invoice, which is an invoice that can be
+	/// paid to one of multiple nodes. This works because the invoice officially pays to a fake node
+	/// (the "phantom"), with route hints containing phantom channels. This method is used to retrieve
+	/// the short channel ids for these phantom route hints.
+	///
+	/// These scids are not meant to be reused across invoices and should be fetched anew for each new
+	/// invoice.
+	pub fn get_phantom_scid(&self) -> u64 {
+		let best_block = self.best_block.read().unwrap();
+		self.phantom_scid_namespace.get_fake_scid(best_block.height(), &self.genesis_hash, &self.keys_manager)
+	}
+
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());

@@ -1416,6 +1416,20 @@ pub enum CreationError {
 
 	/// The supplied millisatoshi amount was greater than the total bitcoin supply.
 	InvalidAmount,
+
+	/// Route hints were required for this invoice and were missing. Applies to
+	/// [phantom invoices].
+	///
+	/// [phantom invoices]: crate::utils::create_phantom_invoice
+	MissingRouteHints,
+
+	/// For [phantom invoices], short channel ids for phantom route hints are supplied and used to
+	/// retrieve the phantom's private key. This can fail if an scid was not previously retrieved from
+	/// [`ChannelManager::get_phantom_scid`].
+	///
+	/// [phantom invoices]: crate::utils::create_phantom_invoice
+	/// [`ChannelManager::get_phantom_scid`]: lightning::ln::channelmanager::ChannelManager::get_phantom_scid
+	InvalidPhantomScid,
 }
 
 impl Display for CreationError {
@@ -1426,6 +1440,8 @@ impl Display for CreationError {
 			CreationError::TimestampOutOfBounds => f.write_str("The unix timestamp of the supplied date is <0 or can't be represented as `SystemTime`"),
 			CreationError::ExpiryTimeOutOfBounds => f.write_str("The supplied expiry time could cause an overflow if added to a `PositiveTimestamp`"),
 			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
+			CreationError::MissingRouteHints => f.write_str("The invoice required route hints and they weren't provided"),
+			CreationError::InvalidPhantomScid => f.write_str("Failed to retrieve the phantom secret with the supplied phantom scid"),
 		}
 	}
 }
