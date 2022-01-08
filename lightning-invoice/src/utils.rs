@@ -268,7 +268,7 @@ mod tests {
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{Payee, RouteParameters, find_route};
 	use lightning::util::enforcing_trait_impls::EnforcingSigner;
-	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event};
+	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event, PaymentPurpose};
 	use lightning::util::test_utils;
 	use secp256k1::PublicKey;
 
@@ -401,7 +401,27 @@ mod tests {
 		commitment_signed_dance!(nodes[1], nodes[0], &payment_event.commitment_msg, false, true);
 		expect_pending_htlcs_forwardable!(nodes[1]);
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		expect_payment_received!(nodes[1], payment_hash, payment_secret, payment_amt, payment_preimage_opt);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentReceived { payment_hash: ref hash, ref purpose, amt } => {
+				assert_eq!(*hash, payment_hash);
+				assert_eq!(amt, payment_amt);
+				match purpose {
+					PaymentPurpose::InvoicePayment { payment_preimage, payment_secret: secret, .. } => {
+						assert_eq!(*payment_preimage, payment_preimage_opt);
+						assert_eq!(*secret, payment_secret);
+					},
+					_ => panic!("Unexpected payment purpose"),
+				}
+			},
+			_ => panic!("Unexpected event"),
+		}
+		// expect_payment_received!(nodes[1], payment_hash, payment_secret, payment_amt, payment_preimage_opt);
 		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1])[..]), false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
