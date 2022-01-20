@@ -473,6 +473,7 @@ impl Logger for TestLogger {
 
 pub struct TestKeysInterface {
 	pub backing: keysinterface::KeysManager,
+	pub phantom_backing: Option<keysinterface::PhantomKeysManager>,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
@@ -484,7 +485,12 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
-	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial { self.backing.get_inbound_payment_key_material() }
+	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
+		if let Some(phantom) = &self.phantom_backing {
+			return phantom.get_inbound_payment_key_material()
+		}
+		self.backing.get_inbound_payment_key_material()
+	}
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
@@ -532,10 +538,16 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], invoice_type: Invoice) -> Result<RecoverableSignature, ()> {
+		if let Some(phantom) = &self.phantom_backing {
+			return phantom.sign_invoice(hrp_bytes, invoice_data, invoice_type)
+		}
 		self.backing.sign_invoice(hrp_bytes, invoice_data, invoice_type)
 	}
 
 	fn get_phantom_secret(&self) -> Option<SecretKey> {
+		if let Some(phantom) = &self.phantom_backing {
+			return phantom.get_phantom_secret()
+		}
 		self.backing.get_phantom_secret()
 	}
 }
@@ -545,6 +557,7 @@ impl TestKeysInterface {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
 			backing: keysinterface::KeysManager::new(seed, now.as_secs(), now.subsec_nanos()),
+			phantom_backing: None,
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 			disable_revocation_policy_check: false,
