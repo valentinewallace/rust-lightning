@@ -510,6 +510,7 @@ mod tests {
 		fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &FundingLocked) {}
 		fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, _msg: &Shutdown) {}
 		fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &ClosingSigned) {}
+		fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &OnionMessage) {}
 		fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddHTLC) {}
 		fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillHTLC) {}
 		fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailHTLC) {}

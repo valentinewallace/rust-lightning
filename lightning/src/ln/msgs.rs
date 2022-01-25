@@ -280,6 +280,13 @@ pub struct ClosingSigned {
 	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
+/// XXX
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnionMessage {
+	pub blinding: PublicKey,
+	pub(crate) onionmsg: OnionPacket,
+}
+
 /// An update_add_htlc message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateAddHTLC {
@@ -813,6 +820,10 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming closing_signed message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
+	// Onion messages
+	/// Handle an incoming onion_message from the given peer.
+	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
+
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
@@ -1280,6 +1291,11 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	payment_hash,
 	cltv_expiry,
 	onion_routing_packet
+}, {});
+
+impl_writeable_msg!(OnionMessage, {
+	blinding,
+	onionmsg
 }, {});
 
 impl Writeable for FinalOnionHopData {

@@ -159,6 +159,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -1093,7 +1094,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
 			},
-
+			wire::Message::OnionMessage(msg) => {
+				self.message_handler.chan_handler.handle_onion_message(&peer.their_node_id.unwrap(), &msg);
+			},
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
