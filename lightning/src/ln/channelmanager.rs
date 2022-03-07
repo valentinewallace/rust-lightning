@@ -24,6 +24,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -338,6 +339,31 @@ mod inbound_payment {
 		}
 		return Ok(PaymentPreimage(decoded_payment_preimage))
 	}
+}
+
+/// XXX
+pub struct BlindedNode {
+	blinded_pk: PublicKey,
+	encrypted_payload: Vec<u8>,
+}
+
+/// XXX
+pub struct BlindedRoute {
+	introduction_node_pk: PublicKey,
+	blinding_pk: PublicKey,
+	blinded_hops: Vec<BlindedNode>,
+}
+
+/// XXX
+pub struct UserTlv {
+	r#type: u64,
+	value: Vec<u8>,
+}
+
+/// XXX
+pub enum MessageDestination {
+	PublicKey(PublicKey),
+	BlindedRoute(BlindedRoute),
 }
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -2223,7 +2249,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 
-		let next_hop = match onion_utils::decode_next_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash) {
+		let next_hop = match onion_utils::decode_next_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, Some(msg.payment_hash)) {
 			Ok(res) => res,
 			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 				return_malformed_err!(err_msg, err_code);
@@ -2234,7 +2260,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 
 		let pending_forward_info = match next_hop {
-			onion_utils::Hop::Receive(next_hop_data) => {
+			onion_utils::Hop::Receive(onion_utils::Payload::Payment(next_hop_data)) => {
 				// OUR PAYMENT!
 				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
 					Ok(info) => {
@@ -2247,7 +2273,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					Err(ReceiveError { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+			onion_utils::Hop::Forward { next_hop_data: onion_utils::Payload::Payment(next_hop_data), next_hop_hmac, new_packet_bytes } => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {
@@ -2286,7 +2312,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
-			}
+			},
+			_ => panic!() // XXX
 		};
 
 		channel_state = Some(self.channel_state.lock().unwrap());
@@ -2798,6 +2825,61 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	// fn internal_handle_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: OnionDestination, reply_path: Option<Vec<PublicKey>>, user_custom_tlvs: Vec<UserTlv>) -> Result<(), ()> {
+	fn internal_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) -> Result<(), MsgHandleErrInternal> {
+		// TODO: add length check
+		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX get rid of unwrap
+		let shared_secret = {
+			let mut arr = [0; 32];
+			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_key, &node_secret)[..]);
+			arr
+		};
+		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+		hmac.input(&shared_secret[..]);
+		let blinding_factor = Hmac::from_engine(hmac).into_inner();
+		let mut blinded_priv = node_secret.clone();
+		blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
+		let mut blinded_priv_bytes = [0; 32];
+		blinded_priv_bytes.copy_from_slice(&blinded_priv[..]);
+		let next_hop = match onion_utils::decode_next_hop(blinded_priv_bytes, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None) {
+			Ok(res) => res,
+			Err(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("XXX".to_string(), [0; 32])) // XXX
+		};
+		match next_hop {
+			onion_utils::Hop::Receive(next_hop_data) => { unimplemented!(); },
+			onion_utils::Hop::Forward { next_hop_data: onion_utils::Payload::Message(next_hop_data), next_hop_hmac, new_packet_bytes } => {
+				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
+
+				let blinding_factor = {
+					let mut sha = Sha256::engine();
+					sha.input(&new_pubkey.serialize()[..]);
+					sha.input(&shared_secret);
+					Sha256::from_engine(sha).into_inner()
+				};
+
+				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+					Err(e)
+				} else { Ok(new_pubkey) };
+
+				let outgoing_packet = msgs::OnionPacket {
+					version: 0,
+					public_key,
+					hop_data: new_packet_bytes,
+					hmac: next_hop_hmac.clone(),
+				};
+
+				let short_channel_id = match next_hop_data.format {
+					msgs::OnionMsgPayloadFormat::Forward { short_channel_id, .. } => short_channel_id,
+					msgs::OnionMsgPayloadFormat::Receive { .. } => {
+						unimplemented!();
+					},
+				};
+			},
+			_ => panic!() // XXX
+		}
+		Ok(())
+	}
+
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>
@@ -3041,7 +3123,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														arr.copy_from_slice(&SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap())[..]);
 														arr
 													};
-													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, Some(payment_hash)) {
 														Ok(res) => res,
 														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
@@ -3056,13 +3138,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														},
 													};
 													match next_hop {
-														onion_utils::Hop::Receive(hop_data) => {
+														onion_utils::Hop::Receive(onion_utils::Payload::Payment(hop_data)) => {
 															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
 																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
 																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data, Some(phantom_shared_secret))
 															}
 														},
-														_ => panic!(),
+														_ => panic!(), // XXX check
 													}
 												} else {
 													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
@@ -5685,9 +5767,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let _ = handle_error!(self, self.internal_closing_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) {
-	}
-
 	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
@@ -5721,6 +5800,11 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	fn handle_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	fn handle_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_onion_message(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {

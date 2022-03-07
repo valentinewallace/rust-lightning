@@ -27,20 +27,23 @@
 use bitcoin::secp256k1::key::PublicKey;
 use bitcoin::secp256k1::Signature;
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use ln::onion_utils;
 
 use prelude::*;
 use core::fmt;
 use core::fmt::Debug;
-use io::{self, Read};
+use io::{self, Cursor, Read};
 use io_extras::read_to_end;
 
+use util::chacha20::{ChaCha20, ChaChaReader};
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -280,13 +283,6 @@ pub struct ClosingSigned {
 	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
-/// XXX
-#[derive(Clone, Debug, PartialEq)]
-pub struct OnionMessage {
-	pub blinding: PublicKey,
-	pub(crate) onionmsg: OnionPacket,
-}
-
 /// An update_add_htlc message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateAddHTLC {
@@ -300,6 +296,13 @@ pub struct UpdateAddHTLC {
 	pub payment_hash: PaymentHash,
 	/// The expiry height of the HTLC
 	pub cltv_expiry: u32,
+	pub(crate) onion_routing_packet: OnionPacket,
+}
+
+/// XXX
+#[derive(Clone, Debug)]
+pub struct OnionMessage {
+	pub(crate) blinding_key: PublicKey,
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
@@ -820,10 +823,6 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming closing_signed message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
-	// Onion messages
-	/// Handle an incoming onion_message from the given peer.
-	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
-
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
@@ -840,6 +839,10 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 
 	/// Handle an incoming update_fee message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee);
+
+	// Onion messages:
+	/// Handle an incoming onion_message message from the given peer.
+	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
 
 	// Channel-to-announce:
 	/// Handle an incoming announcement_signatures message from the given peer.
@@ -914,6 +917,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 
 mod fuzzy_internal_msgs {
 	use prelude::*;
+	use bitcoin::secp256k1::key::PublicKey;
 	use ln::{PaymentPreimage, PaymentSecret};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
@@ -926,7 +930,7 @@ mod fuzzy_internal_msgs {
 		pub(crate) total_msat: u64,
 	}
 
-	pub(crate) enum OnionHopDataFormat {
+	pub(crate) enum OnionHopDataFormat { // XXX rename to OnionPayloadFormat
 		Legacy { // aka Realm-0
 			short_channel_id: u64,
 		},
@@ -939,13 +943,28 @@ mod fuzzy_internal_msgs {
 		},
 	}
 
-	pub struct OnionHopData {
+	pub struct OnionHopData { // XXX rename to OnionPayload
 		pub(crate) format: OnionHopDataFormat,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 		// 12 bytes of 0-padding for Legacy format
+	}
+
+	pub(crate) enum OnionMsgPayloadFormat {
+		Forward {
+			next_blinding_override: Option<PublicKey>,
+			next_node_id: PublicKey,
+			short_channel_id: u64,
+		},
+		Receive {
+			path_id: [u8; 32],
+		}
+	}
+
+	pub struct OnionMsgPayload {
+		pub(crate) format: OnionMsgPayloadFormat,
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1294,8 +1313,8 @@ impl_writeable_msg!(UpdateAddHTLC, {
 }, {});
 
 impl_writeable_msg!(OnionMessage, {
-	blinding,
-	onionmsg
+	blinding_key,
+	onion_routing_packet,
 }, {});
 
 impl Writeable for FinalOnionHopData {
@@ -1403,6 +1422,176 @@ impl Readable for OnionHopData {
 			amt_to_forward: amt,
 			outgoing_cltv_value: cltv_value,
 		})
+	}
+}
+
+impl Writeable for OnionMsgPayload {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		// match self.format {
+		//   OnionMsgPayload::Forward { short_channel_id } => {
+		//     encode_varint_length_prefixed_tlv!(w, {
+		//       (2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
+		//       (4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+		//       (6, short_channel_id, required)
+		//     });
+		//   },
+		//   OnionMsgPayload::Receive { ref payment_data, ref keysend_preimage } => {
+		//     encode_varint_length_prefixed_tlv!(w, {
+		//       (2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
+		//       (4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+		//       (8, payment_data, option),
+		//       (5482373484, keysend_preimage, option)
+		//     });
+		//   },
+		// }
+		Ok(())
+	}
+}
+
+// pub(crate) struct OnionMsgPayloadReadArgs {
+//   pub(crate) blinding_privkey: SharedSecret,
+//   pub(crate) is_final_payload: bool,
+// }
+
+impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
+	fn read<R: Read>(mut r: &mut R, args: [u8; 32]) -> Result<Self, DecodeError> {
+		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
+		let v: VarInt = Decodable::consensus_decode(&mut r)
+			.map_err(|e| match e {
+				Error::Io(ioe) => DecodeError::from(ioe),
+				_ => DecodeError::InvalidValue
+			})?;
+		const LEGACY_ONION_HOP_FLAG: u64 = 0;
+		if v.0 == LEGACY_ONION_HOP_FLAG {
+			return Err(DecodeError::InvalidValue)
+		}
+
+		let mut rd = FixedLengthReader::new(r, v.0);
+		let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		let mut encrypted_tlvs_opt: Option<Vec<u8>> = Some(Vec::new());
+		{
+			decode_tlv_stream!(&mut rd, {
+				(2, reply_path_bytes, vec_type),
+				(4, encrypted_tlvs_opt, vec_type),
+			});
+		}
+		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+		if encrypted_tlvs_opt == Some(Vec::new()) {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&args); // not sure if this is the right rho
+		let mut chacha = ChaCha20::new(&rho, &[0; 8]);
+		let encrypted_tlvs = encrypted_tlvs_opt.unwrap();
+		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs) };
+
+		let dummy_pk = PublicKey::from_slice(&hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
+		let mut padding: Option<Vec<u8>> = Some(Vec::new()); // XXX maybe these can't be None and even type?
+		let mut short_channel_id: Option<u64> = Some(0);
+		let mut next_node_id: Option<PublicKey> = Some(dummy_pk.clone());
+		let mut path_id: Option<[u8; 32]> = Some([0; 32]);
+		let mut next_blinding_override: Option<PublicKey> = Some(dummy_pk.clone());
+		decode_tlv_stream!(&mut chacha_stream, {
+			(1, padding, vec_type),
+			(2, short_channel_id, option),
+			(4, next_node_id, required),
+			(6, path_id, option),
+			(8, next_blinding_override, option),
+		});
+
+		let valid_forward_fmt = short_channel_id != Some(0) && next_node_id != Some(dummy_pk)
+			&& path_id == Some([0; 32]);
+		let valid_receive_fmt = path_id.unwrap() != [0; 32] && next_node_id == Some(dummy_pk)
+			&& short_channel_id == Some(0) && next_blinding_override == Some(dummy_pk);
+
+		let payload_fmt = if valid_forward_fmt {
+			next_blinding_override = if next_blinding_override != Some(dummy_pk) {
+				next_blinding_override } else { None };
+			OnionMsgPayloadFormat::Forward {
+				short_channel_id: short_channel_id.unwrap(),
+				next_node_id: next_node_id.unwrap(),
+				next_blinding_override,
+			}
+		} else if valid_receive_fmt {
+			OnionMsgPayloadFormat::Receive {
+				path_id: path_id.unwrap(),
+			}
+		} else {
+			return Err(DecodeError::InvalidValue)
+		};
+
+
+
+
+
+		// let payload_format = if args.is_final_payload {
+		//   let mut rd = FixedLengthReader::new(r, v.0);
+		//   let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		//   let mut encrypted_tlvs: Option<Vec<u8>> = Some(Vec::new());
+		//   {
+		//     decode_tlv_stream!(&mut rd, {
+		//       (2, reply_path_bytes, vec_type),
+		//       (4, encrypted_tlvs, vec_type),
+		//     });
+		//   }
+		//   rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+		//   if encrypted_tlvs.is_none() {
+		//     return Err(DecodeError::InvalidValue);
+		//   }
+		//   let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&args[..]); // not sure if this is the right rho
+		//   let mut chacha = ChaCha20::new(&rho, &[0; 8]);
+		//   let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs.unwrap()[..]) };
+    //
+		//   let mut padding: Option<Vec<u8>> = None;
+		//   let mut path_id: Option<[u8; 32]> = None;
+		//   decode_tlv_stream!(&mut chacha_stream, {
+		//     (1, padding, option),
+		//     (6, path_id, required),
+		//   });
+		//   OnionMsgPayloadFormat::Receive {
+		//     path_id,
+		//   }
+		// } else {
+		//   let mut rd = FixedLengthReader::new(r, v.0);
+		//   let mut encrypted_tlvs: Option<Vec<u8>> = None;
+		//   {
+		//     decode_tlv_stream!(&mut rd, {
+		//       (4, encrypted_tlvs, vec_type),
+		//     });
+		//   }
+		//   rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+		//   if encrypted_tlvs.is_none() {
+		//     return Err(DecodeError::InvalidValue);
+		//   }
+		//   let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&args[..]); // not sure if this is the right rho
+		//   let mut chacha = ChaCha20::new(&rho, &[0; 8]);
+		//   let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs.unwrap()[..]) };
+    //
+		//   let mut padding: Option<Vec<u8>> = None;
+		//   let mut short_channel_id: u64 = 0;
+		//   let mut next_node_id: PublicKey;
+		//   let mut next_blinding_override: Option<PublicKey> = None;
+		//   decode_tlv_stream!(&mut chacha_stream, {
+		//     (1, padding, option),
+		//     (2, short_channel_id, required),
+		//     (4, next_node_id, required),
+		//     (8, next_blinding_override, option),
+		//   });
+		//   OnionMsgPayloadFormat::Forward {
+		//     short_channel_id,
+		//     next_node_id,
+		//     next_blinding_override,
+		//   }
+		// };
+      //
+			// decode_tlv_stream!(&mut chacha_stream, {
+			//   (1, padding, option),
+			//   (2, short_channel_id, required),
+			//   (4, next_node_id, option),
+			//   (6, path_id, option),
+			//   (8, next_blinding_override, option),
+			// });
+		Ok(OnionMsgPayload { format: payload_fmt })
 	}
 }
 
