@@ -24,10 +24,9 @@
 //! raw socket events into your non-internet-facing system and then send routing events back to
 //! track the network on the less-secure system.
 
-use bitcoin::secp256k1::key::PublicKey;
-use bitcoin::secp256k1::Signature;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
@@ -1290,6 +1289,7 @@ impl Writeable for OnionPacket {
 
 impl Readable for OnionPacket {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		println!("VMW: reading onionpacket");
 		Ok(OnionPacket {
 			version: Readable::read(r)?,
 			public_key: {
@@ -1456,15 +1456,18 @@ impl Writeable for OnionMsgPayload {
 impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 	fn read<R: Read>(mut r: &mut R, args: [u8; 32]) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
+		println!("VMW: made it 0");
 		let v: VarInt = Decodable::consensus_decode(&mut r)
 			.map_err(|e| match e {
 				Error::Io(ioe) => DecodeError::from(ioe),
 				_ => DecodeError::InvalidValue
 			})?;
+		println!("VMW: made it 1");
 		const LEGACY_ONION_HOP_FLAG: u64 = 0;
 		if v.0 == LEGACY_ONION_HOP_FLAG {
 			return Err(DecodeError::InvalidValue)
 		}
+		println!("VMW: made it 2");
 
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
@@ -1475,6 +1478,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 				(4, encrypted_tlvs_opt, vec_type),
 			});
 		}
+		println!("VMW: made it 3");
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 		if encrypted_tlvs_opt == Some(Vec::new()) {
 			return Err(DecodeError::InvalidValue);
@@ -1485,7 +1489,8 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		let encrypted_tlvs = encrypted_tlvs_opt.unwrap();
 		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs) };
 
-		let dummy_pk = PublicKey::from_slice(&hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
+		let secp_ctx = Secp256k1::new();
+		let dummy_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut padding: Option<Vec<u8>> = Some(Vec::new()); // XXX maybe these can't be None and even type?
 		let mut short_channel_id: Option<u64> = Some(0);
 		let mut next_node_id: Option<PublicKey> = Some(dummy_pk.clone());

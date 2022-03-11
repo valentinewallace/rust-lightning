@@ -900,7 +900,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 										let mut reader = io::Cursor::new(&msg_data[..]);
 										let message_result = wire::read(&mut reader, &*self.custom_message_handler);
 										let message = match message_result {
-											Ok(x) => x,
+											Ok(x) => {
+												println!("VMW: received message of type {}", x.type_id());
+												log_info!(self.logger, "VMW: received message of type {}", x.type_id());
+												x
+											},
 											Err(e) => {
 												match e {
 													// Note that to avoid recursion we never call

@@ -341,30 +341,30 @@ mod inbound_payment {
 	}
 }
 
-/// XXX
-pub struct BlindedNode {
-	blinded_pk: PublicKey,
-	encrypted_payload: Vec<u8>,
-}
-
-/// XXX
-pub struct BlindedRoute {
-	introduction_node_pk: PublicKey,
-	blinding_pk: PublicKey,
-	blinded_hops: Vec<BlindedNode>,
-}
-
-/// XXX
-pub struct UserTlv {
-	r#type: u64,
-	value: Vec<u8>,
-}
-
-/// XXX
-pub enum MessageDestination {
-	PublicKey(PublicKey),
-	BlindedRoute(BlindedRoute),
-}
+// /// XXX
+// pub struct BlindedNode {
+//   blinded_pk: PublicKey,
+//   encrypted_payload: Vec<u8>,
+// }
+//
+// /// XXX
+// pub struct BlindedRoute {
+//   introduction_node_pk: PublicKey,
+//   blinding_pk: PublicKey,
+//   blinded_hops: Vec<BlindedNode>,
+// }
+//
+// /// XXX
+// pub struct UserTlv {
+//   r#type: u64,
+//   value: Vec<u8>,
+// }
+//
+// /// XXX
+// pub enum MessageDestination {
+//   PublicKey(PublicKey),
+//   BlindedRoute(BlindedRoute),
+// }
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2828,6 +2828,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// fn internal_handle_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: OnionDestination, reply_path: Option<Vec<PublicKey>>, user_custom_tlvs: Vec<UserTlv>) -> Result<(), ()> {
 	fn internal_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) -> Result<(), MsgHandleErrInternal> {
 		// TODO: add length check
+		println!("VMW: in internal_onion_message");
+		log_debug!(self.logger, "VMW: in internal_onion_message");
 		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX get rid of unwrap
 		let shared_secret = {
 			let mut arr = [0; 32];
