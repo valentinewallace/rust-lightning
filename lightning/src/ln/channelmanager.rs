@@ -1364,6 +1364,7 @@ macro_rules! handle_error {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
+				println!("VMW: got an err: {:?}", err);
 				#[cfg(debug_assertions)]
 				{
 					// In testing, ensure there are no deadlocks where the lock is already held upon
@@ -2249,7 +2250,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 
-		let next_hop = match onion_utils::decode_next_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, Some(msg.payment_hash)) {
+		let next_hop = match onion_utils::decode_next_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, Some(msg.payment_hash), None) {
 			Ok(res) => res,
 			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 				return_malformed_err!(err_msg, err_code);
@@ -2830,32 +2831,40 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// TODO: add length check
 		println!("VMW: in internal_onion_message");
 		log_debug!(self.logger, "VMW: in internal_onion_message");
-		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX get rid of unwrap
-		let shared_secret = {
+		// let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
+		let shared_secret_for_blinding_factor = {
 			let mut arr = [0; 32];
-			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_key, &node_secret)[..]);
+			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_key, &self.our_network_key)[..]);
 			arr
 		};
+		println!("VMW: enc_tlv_ss at start of internal_onion_msg: {:?}", shared_secret_for_blinding_factor);
 		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-		hmac.input(&shared_secret[..]);
+		hmac.input(&shared_secret_for_blinding_factor[..]);
 		let blinding_factor = Hmac::from_engine(hmac).into_inner();
-		let mut blinded_priv = node_secret.clone();
+		let mut blinded_priv = self.our_network_key.clone();
 		blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
-		let mut blinded_priv_bytes = [0; 32];
-		blinded_priv_bytes.copy_from_slice(&blinded_priv[..]);
-		let next_hop = match onion_utils::decode_next_hop(blinded_priv_bytes, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None) {
+		let onion_decode_shared_secret = {
+			let mut arr = [0; 32];
+			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &blinded_priv)[..]);
+			arr
+		};
+		let next_hop = match onion_utils::decode_next_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None, Some(shared_secret_for_blinding_factor.clone())) {
 			Ok(res) => res,
-			Err(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("XXX".to_string(), [0; 32])) // XXX
+			Err(e) => {
+				println!("VMW: errored decoding next hop: {:?}", e);
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("XXX".to_string(), [0; 32])) // XXX
+			}
 		};
 		match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => { unimplemented!(); },
 			onion_utils::Hop::Forward { next_hop_data: onion_utils::Payload::Message(next_hop_data), next_hop_hmac, new_packet_bytes } => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
+				// XXX next!!!
 				let blinding_factor = {
 					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret);
+					// sha.input(&shared_secret);
 					Sha256::from_engine(sha).into_inner()
 				};
 
@@ -3125,7 +3134,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														arr.copy_from_slice(&SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap())[..]);
 														arr
 													};
-													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, Some(payment_hash)) {
+													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, Some(payment_hash), None) {
 														Ok(res) => res,
 														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
@@ -5805,6 +5814,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	}
 
 	fn handle_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+		println!("VMW: handling onion message in channelmanager");
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_onion_message(counterparty_node_id, msg), *counterparty_node_id);
 	}

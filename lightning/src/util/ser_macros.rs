@@ -192,6 +192,7 @@ macro_rules! decode_tlv_stream {
 					Ok(t) => t,
 				}
 			};
+			println!("VMW: decoding type {}", typ.0);
 
 			// Types must be unique and monotonically increasing:
 			match last_seen_type {
@@ -200,10 +201,12 @@ macro_rules! decode_tlv_stream {
 				},
 				_ => {},
 			}
+			println!("VMW: about to check tlv order");
 			// As we read types, make sure we hit every required type:
 			$({
 				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
+			println!("VMW: checked tlv order");
 			last_seen_type = Some(typ.0);
 
 			// Finally, read the length and value itself:
@@ -218,6 +221,7 @@ macro_rules! decode_tlv_stream {
 					}
 				},)*
 				x if x % 2 == 0 => {
+					println!("VMW: Unknown required feature {}", x);
 					return Err(DecodeError::UnknownRequiredFeature);
 				},
 				_ => {},

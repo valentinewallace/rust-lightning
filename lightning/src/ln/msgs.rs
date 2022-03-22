@@ -302,6 +302,7 @@ pub struct UpdateAddHTLC {
 #[derive(Clone, Debug)]
 pub struct OnionMessage {
 	pub(crate) blinding_key: PublicKey,
+	pub(crate) len: u16,
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
@@ -1290,15 +1291,23 @@ impl Writeable for OnionPacket {
 impl Readable for OnionPacket {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		println!("VMW: reading onionpacket");
+		let version = Readable::read(r)?;
+		let public_key = {
+			let mut buf = [0u8;33];
+			r.read_exact(&mut buf)?;
+			PublicKey::from_slice(&buf)
+		};
+		println!("VMW: about to read hop_data");
+		let hop_data = Readable::read(r)?;
+		println!("VMW: read hop_data");
+		println!("VMW: about to read hmac");
+		let hmac = Readable::read(r)?;
+		println!("VMW: read hmac, returning Ok");
 		Ok(OnionPacket {
-			version: Readable::read(r)?,
-			public_key: {
-				let mut buf = [0u8;33];
-				r.read_exact(&mut buf)?;
-				PublicKey::from_slice(&buf)
-			},
-			hop_data: Readable::read(r)?,
-			hmac: Readable::read(r)?,
+			version,
+			public_key,
+			hop_data,
+			hmac,
 		})
 	}
 }
@@ -1314,6 +1323,7 @@ impl_writeable_msg!(UpdateAddHTLC, {
 
 impl_writeable_msg!(OnionMessage, {
 	blinding_key,
+	len, // XXX handle other length
 	onion_routing_packet,
 }, {});
 
@@ -1454,9 +1464,9 @@ impl Writeable for OnionMsgPayload {
 // }
 
 impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
-	fn read<R: Read>(mut r: &mut R, args: [u8; 32]) -> Result<Self, DecodeError> {
+	fn read<R: Read>(mut r: &mut R, enc_tlv_ss: [u8; 32]) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
-		println!("VMW: made it 0");
+		println!("VMW: made it 0, enc_tlv_ss: {:?}", enc_tlv_ss);
 		let v: VarInt = Decodable::consensus_decode(&mut r)
 			.map_err(|e| match e {
 				Error::Io(ioe) => DecodeError::from(ioe),
@@ -1467,7 +1477,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		if v.0 == LEGACY_ONION_HOP_FLAG {
 			return Err(DecodeError::InvalidValue)
 		}
-		println!("VMW: made it 2");
+		println!("VMW: made it 2, fixed len reader len: {}",v.0);
 
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
@@ -1484,9 +1494,10 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			return Err(DecodeError::InvalidValue);
 		}
 
-		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&args); // not sure if this is the right rho
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss); // not sure if this is the right rho
 		let mut chacha = ChaCha20::new(&rho, &[0; 8]);
 		let encrypted_tlvs = encrypted_tlvs_opt.unwrap();
+		println!("VMW: encrypted tlvs len: {}", encrypted_tlvs.len());
 		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs) };
 
 		let secp_ctx = Secp256k1::new();
@@ -1496,6 +1507,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		let mut next_node_id: Option<PublicKey> = Some(dummy_pk.clone());
 		let mut path_id: Option<[u8; 32]> = Some([0; 32]);
 		let mut next_blinding_override: Option<PublicKey> = Some(dummy_pk.clone());
+		println!("VMW: about to decode tlv stream");
 		decode_tlv_stream!(&mut chacha_stream, {
 			(1, padding, vec_type),
 			(2, short_channel_id, option),
@@ -1503,6 +1515,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
+		println!("VMW: decoded tlv stream");
 
 		let valid_forward_fmt = short_channel_id != Some(0) && next_node_id != Some(dummy_pk)
 			&& path_id == Some([0; 32]);
@@ -1512,6 +1525,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		let payload_fmt = if valid_forward_fmt {
 			next_blinding_override = if next_blinding_override != Some(dummy_pk) {
 				next_blinding_override } else { None };
+			println!("VMW: returning format of Forward");
 			OnionMsgPayloadFormat::Forward {
 				short_channel_id: short_channel_id.unwrap(),
 				next_node_id: next_node_id.unwrap(),

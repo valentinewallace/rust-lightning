@@ -528,6 +528,7 @@ pub(crate) enum Hop {
 }
 
 /// Error returned when we fail to decode the onion packet.
+#[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
 	Malformed {
@@ -541,7 +542,10 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>) -> Result<Hop, OnionDecodeErr> {
+// impl Debug for OnionDecodeErr {
+// }
+
+pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<[u8; 32]>) -> Result<Hop, OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
@@ -562,14 +566,19 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 			Ok(payload) => Ok(Payload::Payment(payload)),
 			Err(e) => Err(e)
 		}
-	} else {
-		match <msgs::OnionMsgPayload as ReadableArgs<[u8; 32]>>::read(&mut chacha_stream, shared_secret) {
+	} else if encrypted_tlv_ss.is_some() {
+		match <msgs::OnionMsgPayload as ReadableArgs<[u8; 32]>>::read(&mut chacha_stream, encrypted_tlv_ss.unwrap()) {
+			// XXX onion message payloads have a different format, may have to read a bigsize first up
+			// there
 			Ok(payload) => Ok(Payload::Message(payload)),
 			Err(e) => Err(e)
 		}
+	}  else {
+		unimplemented!(); // XXX
 	};
 	match payload_read_res {
 		Err(err) => {
+			println!("VMW: unable to decode hop data 1, err: {:?}", err);
 			let error_code = match err {
 				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
 				msgs::DecodeError::UnknownRequiredFeature|
@@ -585,6 +594,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 		Ok(payload) => {
 			let mut hmac = [0; 32];
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
+				println!("VMW: unable to decode hop data 2");
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
 					err_code: 0x4000 | 22,
