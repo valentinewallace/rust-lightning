@@ -71,7 +71,25 @@ mod real_chachapoly {
 		}
 
 		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
-			assert!(input.len() == output.len());
+			if self.decrypt_inner(input, Some(output), tag) {
+				self.cipher.process(input, output);
+				return true
+			}
+			false
+		}
+
+		pub fn decrypt_in_place(&mut self, input: &mut [u8], tag: &[u8]) -> bool {
+			if self.decrypt_inner(input, None, tag) {
+				self.cipher.process_in_place(input);
+				return true
+			}
+			false
+		}
+
+		fn decrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, tag: &[u8]) -> bool {
+			if let Some(output) = output {
+				assert!(input.len() == output.len());
+			}
 			assert!(self.finished == false);
 
 			self.finished = true;
@@ -86,7 +104,11 @@ mod real_chachapoly {
 			let mut calc_tag =  [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
-				self.cipher.process(input, output);
+				// if let Some(output) = output {
+				//   self.cipher.process(input, output);
+				// } else {
+				//   self.cipher.process_in_place(input);
+				// }
 				true
 			} else {
 				false

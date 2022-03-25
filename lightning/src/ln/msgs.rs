@@ -40,6 +40,7 @@ use io::{self, Cursor, Read};
 use io_extras::read_to_end;
 
 use util::chacha20::{ChaCha20, ChaChaReader};
+use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::events::MessageSendEventsProvider;
 use util::logger;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
@@ -1495,10 +1496,12 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		}
 
 		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss); // not sure if this is the right rho
-		let mut chacha = ChaCha20::new(&rho, &[0; 8]);
-		let encrypted_tlvs = encrypted_tlvs_opt.unwrap();
+		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
+		let mut encrypted_tlvs = encrypted_tlvs_opt.unwrap();
 		println!("VMW: encrypted tlvs len: {}", encrypted_tlvs.len());
-		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs) };
+		// let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&encrypted_tlvs) };
+		chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_tlvs.len() - 16], &encrypted_tlvs[encrypted_tlvs.len() - 16..]);
+		let decrypted_tlvs = encrypted_tlvs;
 
 		let secp_ctx = Secp256k1::new();
 		let dummy_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1508,7 +1511,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		let mut path_id: Option<[u8; 32]> = Some([0; 32]);
 		let mut next_blinding_override: Option<PublicKey> = Some(dummy_pk.clone());
 		println!("VMW: about to decode tlv stream");
-		decode_tlv_stream!(&mut chacha_stream, {
+		decode_tlv_stream!(&mut decrypted_tlvs, {
 			(1, padding, vec_type),
 			(2, short_channel_id, option),
 			(4, next_node_id, required),
