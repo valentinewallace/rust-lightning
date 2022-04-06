@@ -542,9 +542,6 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-// impl Debug for OnionDecodeErr {
-// }
-
 pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<[u8; 32]>) -> Result<Hop, OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
@@ -578,7 +575,6 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 	};
 	match payload_read_res {
 		Err(err) => {
-			println!("VMW: unable to decode hop data 1, err: {:?}", err);
 			let error_code = match err {
 				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
 				msgs::DecodeError::UnknownRequiredFeature|
@@ -594,7 +590,6 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 		Ok(payload) => {
 			let mut hmac = [0; 32];
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
-				println!("VMW: unable to decode hop data 2");
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
 					err_code: 0x4000 | 22,

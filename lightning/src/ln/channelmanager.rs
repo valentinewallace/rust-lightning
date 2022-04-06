@@ -2826,20 +2826,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	// fn internal_handle_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: OnionDestination, reply_path: Option<Vec<PublicKey>>, user_custom_tlvs: Vec<UserTlv>) -> Result<(), ()> {
 	fn internal_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) -> Result<(), MsgHandleErrInternal> {
 		// TODO: add length check
-		println!("VMW: in internal_onion_message");
-		log_debug!(self.logger, "VMW: in internal_onion_message");
-		// let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
-		let shared_secret_for_blinding_factor = {
+		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
+		let encrypted_data_ss = {
 			let mut arr = [0; 32];
-			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_key, &self.our_network_key)[..]);
+			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_point, &self.our_network_key)[..]);
 			arr
 		};
-		println!("VMW: enc_tlv_ss at start of internal_onion_msg: {:?}", shared_secret_for_blinding_factor);
 		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-		hmac.input(&shared_secret_for_blinding_factor[..]);
+		hmac.input(&encrypted_data_ss[..]);
 		let blinding_factor = Hmac::from_engine(hmac).into_inner();
 		let mut blinded_priv = self.our_network_key.clone();
 		blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
@@ -2848,23 +2844,32 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &blinded_priv)[..]);
 			arr
 		};
-		let next_hop = match onion_utils::decode_next_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None, Some(shared_secret_for_blinding_factor.clone())) {
+		let next_hop = match onion_utils::decode_next_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None, Some(encrypted_data_ss)) {
 			Ok(res) => res,
 			Err(e) => {
-				println!("VMW: errored decoding next hop: {:?}", e);
 				return Err(MsgHandleErrInternal::send_err_msg_no_close("XXX".to_string(), [0; 32])) // XXX
 			}
 		};
 		match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => { unimplemented!(); },
-			onion_utils::Hop::Forward { next_hop_data: onion_utils::Payload::Message(next_hop_data), next_hop_hmac, new_packet_bytes } => {
+			onion_utils::Hop::Forward {
+				next_hop_data: onion_utils::Payload::Message(msgs::OnionMsgPayload {
+					format: msgs::OnionMsgPayloadFormat::Forward {
+						next_blinding_override,
+						next_node_id,
+						..
+					},
+				}),
+				next_hop_hmac,
+				new_packet_bytes
+			} => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				// XXX next!!!
 				let blinding_factor = {
 					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
-					// sha.input(&shared_secret);
+					sha.input(&onion_decode_shared_secret);
 					Sha256::from_engine(sha).into_inner()
 				};
 
@@ -2879,12 +2884,26 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					hmac: next_hop_hmac.clone(),
 				};
 
-				let short_channel_id = match next_hop_data.format {
-					msgs::OnionMsgPayloadFormat::Forward { short_channel_id, .. } => short_channel_id,
-					msgs::OnionMsgPayloadFormat::Receive { .. } => {
-						unimplemented!();
+				let mut channel_state_lock = self.channel_state.lock().unwrap();
+				let channel_state = &mut *channel_state_lock;
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendOnionMessage {
+					node_id: next_node_id,
+					msg: msgs::OnionMessage {
+						blinding_point: next_blinding_override.unwrap_or_else(|| {
+							let blinding_factor = {
+								let mut sha = Sha256::engine();
+								sha.input(&msg.blinding_point.serialize()[..]); // E(i)
+								sha.input(&encrypted_data_ss[..]);
+								Sha256::from_engine(sha).into_inner()
+							};
+							let mut next_blinding_point = msg.blinding_point.clone();
+							next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]).unwrap();
+							next_blinding_point
+						}),
+						len: 1366, // XXX
+						onion_routing_packet: outgoing_packet,
 					},
-				};
+				});
 			},
 			_ => panic!() // XXX
 		}
@@ -5906,6 +5925,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
+					&events::MessageSendEvent::SendOnionMessage { .. } => false,
 				}
 			});
 		}

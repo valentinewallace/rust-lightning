@@ -1484,6 +1484,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							msg.sync_complete);
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
+					MessageSendEvent::SendOnionMessage { ref node_id, ref msg } => {
+						log_trace!(self.logger, "Handling SendOnionMessage event in peer_handler for node {}", log_pubkey!(node_id));
+						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
+					}
 				}
 			}
 

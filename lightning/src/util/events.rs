@@ -909,7 +909,14 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The reply_channel_range which should be sent.
 		msg: msgs::ReplyChannelRange,
-	}
+	},
+	/// Sends an onion message.
+	SendOnionMessage {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The onion message which should be sent.
+		msg: msgs::OnionMessage,
+	},
 }
 
 /// A trait indicating an object may generate message send events

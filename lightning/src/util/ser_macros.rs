@@ -197,6 +197,7 @@ macro_rules! decode_tlv_stream {
 			// Types must be unique and monotonically increasing:
 			match last_seen_type {
 				Some(t) if typ.0 <= t => {
+					println!("VMW: returning invalid value since type wasn't monotonically increasing");
 					return Err(DecodeError::InvalidValue);
 				},
 				_ => {},
@@ -214,9 +215,13 @@ macro_rules! decode_tlv_stream {
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
 				$($type => {
+					println!("VMW: about to decode_tlv in decode_tlv_stream");
 					decode_tlv!(s, $field, $fieldty);
+					println!("VMW: just decode_tlv'd in decode_tlv_stream");
 					if s.bytes_remain() {
+						println!("VMW: about to eat_remaining");
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
+						println!("VMW: just ate remaining");
 						return Err(DecodeError::InvalidValue);
 					}
 				},)*
