@@ -47,6 +47,7 @@ use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
+use ln::onion_messages::{CustomTlv, ReplyPath};
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
@@ -2851,7 +2852,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		match next_hop {
-			onion_utils::Hop::Receive(next_hop_data) => { unimplemented!(); },
+			onion_utils::Hop::Receive(onion_utils::Payload::Message(msgs::OnionMsgPayload {
+				format: msgs::OnionMsgPayloadFormat::Receive {
+					custom_tlvs, ..
+				}
+			})) => {
+				println!("VMW: received onion message with custom tlvs: {:?}", custom_tlvs);
+			},
 			onion_utils::Hop::Forward {
 				next_hop_data: onion_utils::Payload::Message(msgs::OnionMsgPayload {
 					format: msgs::OnionMsgPayloadFormat::Forward {
@@ -2907,6 +2914,43 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 			_ => panic!() // XXX
 		}
+		Ok(())
+	}
+
+	/// XXX
+	/// * utilize non-None reply paths
+	/// * make recipient a Destination that also works for blinded routes
+	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>, custom_tlvs: Vec<CustomTlv>, reply_path: Option<ReplyPath>) -> Result<(), APIError> {
+		let prng_seed = self.keys_manager.get_secure_random_bytes();
+		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
+		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
+
+		let blinding_point = PublicKey::from_secret_key(&self.secp_ctx, &session_priv);
+		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
+		// let encrypted_data_ss = {
+		//   let mut arr = [0; 32];
+		//   arr.copy_from_slice(&SharedSecret::new(&blinding_point, &self.our_network_key)[..]);
+		//   arr
+		// };
+		let encrypted_data_ss = SharedSecret::new(&blinding_point, &self.our_network_key);
+
+		let (enc_data_onion_keys, onion_packet_keys) = onion_utils::construct_onion_keys_for_onion_msg(&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv, &encrypted_data_ss)
+			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
+		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter().chain(vec![recipient].into_iter()).collect();
+		let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
+		let mut onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path, custom_tlvs)?;
+		// XXX route_size_insane check
+		let onion_packet = onion_utils::construct_onion_message_packet(onion_payloads, enc_data_onion_keys, onion_packet_keys, prng_seed);
+		let mut channel_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_lock;
+		channel_state.pending_msg_events.push(events::MessageSendEvent::SendOnionMessage {
+			node_id: first_hop_pk,
+			msg: msgs::OnionMessage {
+				blinding_point,
+				len: 1366,
+				onion_routing_packet: onion_packet,
+			}
+		});
 		Ok(())
 	}
 

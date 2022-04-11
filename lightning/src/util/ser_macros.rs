@@ -165,11 +165,27 @@ macro_rules! decode_tlv {
 	}};
 }
 
+/// Decode a TLV stream that contains custom TLVs that are unknown to LDK but may be known to the
+/// user.
+macro_rules! decode_tlv_stream_with_custom {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
+		// decode_tlv_stream_inner!($stream, true, {$(($type, $field, $fieldty)),* $(,)*});
+		decode_tlv_stream_inner!($stream, true, {$(($type, $field, $fieldty)),*})
+	}
+}
 macro_rules! decode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
+		decode_tlv_stream_inner!($stream, false, {$(($type, $field, $fieldty)),*});
+	}
+}
+
+macro_rules! decode_tlv_stream_inner {
+	($stream: expr, $expect_custom_tlvs: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
 		use ln::msgs::DecodeError;
+		use ln::onion_messages::CustomTlv;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
+		let mut custom_tlvs: Vec<CustomTlv> = Vec::new();
 		'tlv_read: loop {
 			use util::ser;
 
@@ -226,10 +242,18 @@ macro_rules! decode_tlv_stream {
 					}
 				},)*
 				x if x % 2 == 0 => {
-					println!("VMW: Unknown required feature {}", x);
 					return Err(DecodeError::UnknownRequiredFeature);
 				},
-				_ => {},
+				x => {
+					if $expect_custom_tlvs {
+						let mut value: Option<Vec<u8>> = Some(Vec::new());
+						decode_tlv!(s, value, vec_type);
+						custom_tlvs.push(CustomTlv {
+							typ: x,
+							value: value.unwrap(),
+						});
+					}
+				},
 			}
 			s.eat_remaining()?;
 		}
@@ -237,6 +261,7 @@ macro_rules! decode_tlv_stream {
 		$({
 			check_missing_tlv!(last_seen_type, $type, $field, $fieldty);
 		})*
+		custom_tlvs
 	} }
 }
 

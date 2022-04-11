@@ -915,10 +915,17 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
+/// XXX
+pub trait OnionMessageHandler {
+	/// XXX
+	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
+}
+
 mod fuzzy_internal_msgs {
 	use prelude::*;
 	use bitcoin::secp256k1::key::PublicKey;
 	use ln::{PaymentPreimage, PaymentSecret};
+	use ln::onion_messages::CustomTlv;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -959,7 +966,8 @@ mod fuzzy_internal_msgs {
 			short_channel_id: Option<u64>, // XXX is this ever present?
 		},
 		Receive {
-			path_id: [u8; 32],
+			path_id: Option<[u8; 32]>,
+			custom_tlvs: Vec<CustomTlv>,
 		}
 	}
 
@@ -1435,25 +1443,42 @@ impl Readable for OnionHopData {
 	}
 }
 
-impl Writeable for OnionMsgPayload {
+impl Writeable for (OnionMsgPayload, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// match self.format {
-		//   OnionMsgPayload::Forward { short_channel_id } => {
-		//     encode_varint_length_prefixed_tlv!(w, {
-		//       (2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
-		//       (4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
-		//       (6, short_channel_id, required)
-		//     });
-		//   },
-		//   OnionMsgPayload::Receive { ref payment_data, ref keysend_preimage } => {
-		//     encode_varint_length_prefixed_tlv!(w, {
-		//       (2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
-		//       (4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
-		//       (8, payment_data, option),
-		//       (5482373484, keysend_preimage, option)
-		//     });
-		//   },
-		// }
+		let mut encrypted_data_tlvs = Vec::new();
+		let custom_tlvs = match &self.0.format {
+			OnionMsgPayloadFormat::Forward { next_node_id, .. } => { // XXX write other fields
+				println!("VMW: encoding non-final OnionMsgPayload with ss rho of {:02x?}", self.1);
+				encode_varint_length_prefixed_tlv!(&mut encrypted_data_tlvs, {
+					(4, next_node_id, required)
+				});
+				None
+			},
+			OnionMsgPayloadFormat::Receive { path_id, custom_tlvs } => {
+				println!("VMW: encoding final OnionMsgPayload with ss rho of {:02x?}", self.1);
+				encode_varint_length_prefixed_tlv!(&mut encrypted_data_tlvs, {
+					(6, path_id, option)
+				});
+				Some(custom_tlvs)
+			},
+		};
+		println!("VMW: enrypting encrypted data tlv stream {:02x?}, len: {} with ChaCha20Poly1305", encrypted_data_tlvs, encrypted_data_tlvs.len());
+		let mut chacha = ChaCha20Poly1305RFC::new(&self.1, &[0; 12], &[]);
+		let mut tag = [0; 16];
+		chacha.encrypt_in_place(&mut encrypted_data_tlvs, &mut tag);
+		encrypted_data_tlvs.extend_from_slice(&tag);
+		println!("VMW: encrypted data with tag {:02x?}, len: {} with ChaCha20Poly1305", encrypted_data_tlvs, encrypted_data_tlvs.len());
+		encode_varint_length_prefixed_tlv!(w, {
+			(4, encrypted_data_tlvs, required)
+		});
+		if let Some(custom_tlvs) = custom_tlvs {
+			// custom_tlvs.write(w)?;
+			for tlv in custom_tlvs {
+				encode_varint_length_prefixed_tlv!(w, {
+					(tlv.typ, tlv.value, vec_type)
+				});
+			}
+		}
 		Ok(())
 	}
 }
@@ -1474,12 +1499,14 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
 		let mut encrypted_tlvs_opt: Option<Vec<u8>> = Some(Vec::new());
-		{
-			decode_tlv_stream!(&mut rd, {
+		// let mut custom_tlvs = Vec::new();
+		let custom_tlvs = {
+			decode_tlv_stream_with_custom!(&mut rd, {
 				(2, reply_path_bytes, vec_type),
 				(4, encrypted_tlvs_opt, vec_type),
-			});
-		}
+			})
+		};
+		println!("VMW: decoded first tlvs, encrypted data: {:?}", encrypted_tlvs_opt);
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 		if encrypted_tlvs_opt == Some(Vec::new()) {
 			return Err(DecodeError::InvalidValue);
@@ -1496,6 +1523,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
 		chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
 		let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
+		println!("VMW: decrypted_tlvs: {:?}", decrypted_tlvs);
 
 		let mut _padding: Option<Vec<u8>> = Some(Vec::new());
 		let mut short_channel_id: Option<u64> = None;
@@ -1509,10 +1537,11 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
+		println!("VMW: decoded second set of tlvs");
 
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
-		let valid_recv_fmt = next_node_id.is_none() && path_id.is_some()
-			&& next_blinding_override.is_none() && short_channel_id.is_none();
+		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none() &&
+			short_channel_id.is_none();
 
 		let payload_fmt = if valid_fwd_fmt {
 			OnionMsgPayloadFormat::Forward {
@@ -1522,12 +1551,17 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			}
 		} else if valid_recv_fmt {
 			OnionMsgPayloadFormat::Receive {
-				path_id: path_id.unwrap(),
+				path_id,
+				// reply_path,
+				custom_tlvs,
 			}
 		} else {
 			return Err(DecodeError::InvalidValue)
 		};
-		Ok(OnionMsgPayload { format: payload_fmt })
+		println!("VMW: reading OnionMsgPayload was Ok");
+		Ok(OnionMsgPayload {
+			format: payload_fmt
+		})
 	}
 }
 

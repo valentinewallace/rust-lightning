@@ -70,6 +70,19 @@ mod real_chachapoly {
 			self.mac.raw_result(out_tag);
 		}
 
+		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+			// assert!(input.len() == output.len());
+			assert!(self.finished == false);
+			self.cipher.process_in_place(input_output);
+			self.data_len += input_output.len();
+			self.mac.input(input_output);
+			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
+			self.finished = true;
+			self.mac.input(&self.aad_len.to_le_bytes());
+			self.mac.input(&(self.data_len as u64).to_le_bytes());
+			self.mac.raw_result(out_tag);
+		}
+
 		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
 			if self.decrypt_inner(input, Some(output), tag) {
 				self.cipher.process(input, output);

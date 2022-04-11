@@ -24,6 +24,7 @@ pub mod functional_test_utils;
 
 pub mod channelmanager;
 pub mod msgs;
+pub mod onion_messages;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;

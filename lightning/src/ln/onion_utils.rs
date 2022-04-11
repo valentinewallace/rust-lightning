@@ -10,6 +10,7 @@
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channelmanager::HTLCSource;
 use ln::msgs;
+use ln::onion_messages::{CustomTlv};
 use routing::network_graph::NetworkUpdate;
 use routing::router::RouteHop;
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -98,6 +99,107 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 	Ok(())
 }
 
+
+// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+#[inline]
+pub(super) fn construct_onion_keys_callback_onion_msgs_1<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey)> (secp_ctx: &Secp256k1<T>, path: Vec<&PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+	let mut blinded_priv = session_priv.clone();
+	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+	for (idx, pk) in path.iter().enumerate() {
+		let shared_secret = SharedSecret::new(pk, &blinded_priv);
+
+		let mut sha = Sha256::engine();
+		sha.input(&blinded_pub.serialize()[..]);
+		sha.input(&shared_secret[..]);
+		let blinding_factor = Sha256::from_engine(sha).into_inner();
+
+		let ephemeral_pubkey = blinded_pub;
+
+		blinded_priv.mul_assign(&blinding_factor)?;
+		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+		callback(shared_secret, blinding_factor, ephemeral_pubkey);
+	}
+
+	Ok(())
+}
+
+// var e = sessionKey
+// val (blindedHops, blindingKeys) = publicKeys.zip(payloads).map { case (publicKey, payload) =>
+// val blindingKey = e.publicKey
+// val sharedSecret = computeSharedSecret(publicKey, e)
+// val blindedPublicKey = blind(publicKey, generateKey("blinded_node_id", sharedSecret))
+// val rho = generateKey("rho", sharedSecret)
+// val (encryptedPayload, mac) = ChaCha20Poly1305.encrypt(rho, zeroes(12), payload, ByteVector.empty)
+// e = e.multiply(PrivateKey(Crypto.sha256(blindingKey.value ++ sharedSecret.bytes)))
+// (BlindedNode(blindedPublicKey, encryptedPayload ++ mac), blindingKey)
+#[inline]
+pub(super) fn construct_onion_keys_callback_onion_msgs_2<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(SharedSecret, [u8; 32], PublicKey)> (secp_ctx: &Secp256k1<T>, path: Vec<&PublicKey>, session_priv: &SecretKey, encrypted_data_ss: &SharedSecret, mut callback: FType) -> Result<(), secp256k1::Error> {
+	let mut blinded_priv = session_priv.clone();
+	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+	for (idx, pk) in path.into_iter().enumerate() {
+		let ephemeral_pubkey = blinded_pub;
+
+		let enc_data_shared_secret = SharedSecret::new(pk, &blinded_priv);
+		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+		hmac.input(&enc_data_shared_secret[..]);
+		let blinding_factor = Hmac::from_engine(hmac).into_inner();
+		let mut onion_packet_blinded_pub = pk.clone();
+		onion_packet_blinded_pub.mul_assign(&secp_ctx, &blinding_factor)?;
+		// ss to decrypt the onion packet
+		let onion_packet_shared_secret = SharedSecret::new(&onion_packet_blinded_pub, &blinded_priv);
+
+		// marshall next hop's blinded_priv
+		let blinding_factor = {
+			let mut sha = Sha256::engine();
+			sha.input(&ephemeral_pubkey.serialize()[..]);
+			sha.input(&onion_packet_shared_secret);
+			Sha256::from_engine(sha).into_inner()
+		};
+		blinded_priv.mul_assign(&blinding_factor)?;
+		blinded_pub.mul_assign(&secp_ctx, &blinding_factor)?;
+
+		callback(onion_packet_shared_secret, blinding_factor, ephemeral_pubkey);
+	}
+
+	Ok(())
+}
+pub(super) fn construct_onion_keys_for_onion_msg<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, path: Vec<&PublicKey>, session_priv: &SecretKey, encrypted_data_ss: &SharedSecret) -> Result<(Vec<OnionKeys>, Vec<OnionKeys>), secp256k1::Error> {
+	let mut res_1 = Vec::with_capacity(path.len());
+	let mut res_2 = Vec::with_capacity(path.len());
+
+	construct_onion_keys_callback_onion_msgs_1(secp_ctx, path.clone(), session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey| {
+		let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret[..]);
+
+		println!("VMW: in construct_onion_keys_callback, ss rho for encrypting encrypteddata: {:02x?}", rho);
+		res_1.push(OnionKeys {
+			#[cfg(test)]
+			shared_secret,
+			#[cfg(test)]
+			blinding_factor: _blinding_factor,
+			ephemeral_pubkey,
+			rho,
+			mu,
+		});
+	})?;
+
+	construct_onion_keys_callback_onion_msgs_2(secp_ctx, path, session_priv, encrypted_data_ss, |shared_secret, _blinding_factor, ephemeral_pubkey| {
+		let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret[..]);
+
+		res_2.push(OnionKeys {
+			#[cfg(test)]
+			shared_secret,
+			#[cfg(test)]
+			blinding_factor: _blinding_factor,
+			ephemeral_pubkey,
+			rho,
+			mu,
+		});
+	})?;
+	Ok((res_1, res_2))
+}
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.len());
@@ -116,6 +218,26 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 		});
 	})?;
 
+	Ok(res)
+}
+
+/// XXX
+pub(super) fn build_onion_message_payloads(mut path: Vec<PublicKey>, custom_tlvs: Vec<CustomTlv>) -> Result<Vec<msgs::OnionMsgPayload>, APIError> {
+	let mut res = Vec::with_capacity(path.len() + 1);
+	for pk in path.drain(..) {
+		res.push(msgs::OnionMsgPayload {
+			format: msgs::OnionMsgPayloadFormat::Forward {
+				next_node_id: pk,
+				next_blinding_override: None,
+				short_channel_id: None,
+			}
+		})
+	};
+	res.push(msgs::OnionMsgPayload {
+		format: msgs::OnionMsgPayloadFormat::Receive {
+			custom_tlvs, path_id: None // XXX non-None path_id
+		}
+	});
 	Ok(res)
 }
 
@@ -205,7 +327,18 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, Some(associated_data))
+}
+
+/// XXX merge with similar fn
+pub(super) fn construct_onion_message_packet(payloads: Vec<msgs::OnionMsgPayload>, enc_data_onion_keys: Vec<OnionKeys>, onion_packet_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
+	let mut packet_data = [0; ONION_DATA_LEN];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
+	let writeable_payloads = payloads.into_iter().zip(enc_data_onion_keys.iter()).map(|(payload, key)| (payload, key.rho.clone())).collect();
+
+	construct_onion_packet_with_init_noise(writeable_payloads, onion_packet_keys, packet_data, None)
 }
 
 #[cfg(test)]
@@ -217,11 +350,11 @@ pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, Some(associated_data))
 }
 
 /// panics if route_size_insane(paylods)
-fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; ONION_DATA_LEN], associated_data: &PaymentHash) -> msgs::OnionPacket {
+fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; ONION_DATA_LEN], associated_data: Option<&PaymentHash>) -> msgs::OnionPacket {
 	let filler = {
 		const ONION_HOP_DATA_LEN: usize = 65; // We may decrease this eventually after TLV is common
 		let mut res = Vec::with_capacity(ONION_HOP_DATA_LEN * (payloads.len() - 1));
@@ -264,7 +397,9 @@ fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, 
 
 		let mut hmac = HmacEngine::<Sha256>::new(&keys.mu);
 		hmac.input(&packet_data);
-		hmac.input(&associated_data.0[..]);
+		if let Some(associated_data) = associated_data {
+			hmac.input(&associated_data.0[..]);
+		}
 		hmac_res = Hmac::from_engine(hmac).into_inner();
 	}
 
@@ -573,6 +708,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 	}  else {
 		unimplemented!(); // XXX
 	};
+	println!("VMW: matching on payload read res, is_err {}", payload_read_res.is_err());
 	match payload_read_res {
 		Err(err) => {
 			let error_code = match err {
