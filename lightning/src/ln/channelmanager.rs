@@ -2835,12 +2835,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			arr.copy_from_slice(&SharedSecret::new(&msg.blinding_point, &self.our_network_key)[..]);
 			arr
 		};
-		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-		hmac.input(&encrypted_data_ss[..]);
-		let blinding_factor = Hmac::from_engine(hmac).into_inner();
-		let mut blinded_priv = self.our_network_key.clone();
-		blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
 		let onion_decode_shared_secret = {
+			let blinding_factor = {
+				let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+				hmac.input(&encrypted_data_ss[..]);
+				Hmac::from_engine(hmac).into_inner()
+			};
+			let mut blinded_priv = self.our_network_key.clone();
+			blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
 			let mut arr = [0; 32];
 			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &blinded_priv)[..]);
 			arr
@@ -2857,7 +2859,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					custom_tlvs, ..
 				}
 			})) => {
-				println!("VMW: received onion message with custom tlvs: {:?}", custom_tlvs);
+				println!("VMW: received onion message!! custom tlvs: {:?}", custom_tlvs);
 			},
 			onion_utils::Hop::Forward {
 				next_hop_data: onion_utils::Payload::Message(msgs::OnionMsgPayload {
@@ -2883,6 +2885,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
 					Err(e)
 				} else { Ok(new_pubkey) };
+				println!("VMW: forwarding onion message, blinding factor for final packet's public key: {:02x?}, final packet public key: {:02x?}", blinding_factor, public_key);
 
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
@@ -2901,6 +2904,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								let mut sha = Sha256::engine();
 								sha.input(&msg.blinding_point.serialize()[..]); // E(i)
 								sha.input(&encrypted_data_ss[..]);
+								// sha.input(&onion_decode_shared_secret[..]); // VMW: just made this change
 								Sha256::from_engine(sha).into_inner()
 							};
 							let mut next_blinding_point = msg.blinding_point.clone();
@@ -2920,25 +2924,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// XXX
 	/// * utilize non-None reply paths
 	/// * make recipient a Destination that also works for blinded routes
-	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>, custom_tlvs: Vec<CustomTlv>, reply_path: Option<ReplyPath>) -> Result<(), APIError> {
+	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>, reply_path: Option<ReplyPath>) -> Result<(), APIError> {
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let blinding_point = PublicKey::from_secret_key(&self.secp_ctx, &session_priv);
 		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
-		// let encrypted_data_ss = {
-		//   let mut arr = [0; 32];
-		//   arr.copy_from_slice(&SharedSecret::new(&blinding_point, &self.our_network_key)[..]);
-		//   arr
-		// };
 		let encrypted_data_ss = SharedSecret::new(&blinding_point, &self.our_network_key);
 
 		let (enc_data_onion_keys, onion_packet_keys) = onion_utils::construct_onion_keys_for_onion_msg(&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv, &encrypted_data_ss)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
 		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter().chain(vec![recipient].into_iter()).collect();
 		let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
-		let mut onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path, custom_tlvs)?;
+		let mut onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path)?;
 		// XXX route_size_insane check
 		let onion_packet = onion_utils::construct_onion_message_packet(onion_payloads, enc_data_onion_keys, onion_packet_keys, prng_seed);
 		let mut channel_lock = self.channel_state.lock().unwrap();
