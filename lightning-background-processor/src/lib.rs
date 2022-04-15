@@ -15,7 +15,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
-use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 use lightning::util::events::{Event, EventHandler, EventsProvider};
@@ -182,6 +182,7 @@ impl BackgroundProcessor {
 		P: 'static + Deref + Send + Sync,
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
 		CMH: 'static + Deref + Send + Sync,
+		OMH: 'static + Deref + Send + Sync,
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		CMP: 'static + Send + ChannelManagerPersister<Signer, CW, T, K, F, L>,
@@ -189,7 +190,7 @@ impl BackgroundProcessor {
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
 		NG: 'static + Deref<Target = NetGraphMsgHandler<G, CA, L>> + Send + Sync,
 		UMH: 'static + Deref + Send + Sync,
-		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
+		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH>> + Send + Sync,
 	>(
 		persister: CMP, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		net_graph_msg_handler: Option<NG>, peer_manager: PM, logger: L
@@ -204,6 +205,7 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
+		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
 	{

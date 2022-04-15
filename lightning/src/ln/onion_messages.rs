@@ -10,19 +10,16 @@
 //! XXX
 
 use bitcoin::secp256k1::key::PublicKey;
-use chain::keysinterface::KeysInterface;
+use chain::keysinterface::{KeysInterface, KeysManager, Sign};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 
 use core::ops::Deref;
+use sync::Arc;
 
 /// XXX
-pub struct OnionMessager<K: Deref>
-	where K::Target: KeysInterface,
-{
-	keys_manager: K,
-	pending_msg_events: Vec<MessageSendEvent>,
-	custom_messages_received: Vec<CustomOnionPayload>,
-}
+pub type SimpleArcOnionMessager = OnionMessager<Arc<KeysManager>>;
+/// XXX
+pub type SimpleRefOnionMessager<'a> = OnionMessager<&'a KeysManager>;
 
 struct CustomOnionPayload {
 	custom_tlvs: Vec<CustomTlv>,
@@ -38,15 +35,29 @@ pub struct CustomTlv {
 }
 
 /// XXX
-pub enum Destination {
-	/// XXX
-	Node(PublicKey),
-	/// XXX
-	BlindedRoute(BlindedRoute)
+pub struct OnionMessager<Signer: Sign, K: Deref>
+	where K::Target: KeysInterface<Signer = Signer>
+{
+	keys_manager: K,
+	pending_msg_events: Vec<MessageSendEvent>,
+	custom_messages_received: Vec<CustomOnionPayload>,
 }
 
-/// XXX
-pub struct BlindedRoute {}
+impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
+	where K::Target: KeysInterface<Signer = Signer>,
+{
+	/// XXX
+	pub fn new(keys_manager: K) -> Self {
+		OnionMessager {
+			keys_manager,
+			pending_msg_events: Vec::new(),
+			custom_messages_received: Vec::new(),
+		}
+	}
+}
 
-/// XXX
-pub struct ReplyPath {}
+impl OnionMessageHandler for OnionMessager {
+	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+	}
+}
+

@@ -840,10 +840,6 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming update_fee message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee);
 
-	// Onion messages:
-	/// Handle an incoming onion_message message from the given peer.
-	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
-
 	// Channel-to-announce:
 	/// Handle an incoming announcement_signatures message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
@@ -917,8 +913,9 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 
 /// XXX
 pub trait OnionMessageHandler {
-	/// XXX
+	/// Handle an incoming onion_message message from the given peer.
 	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
+
 }
 
 mod fuzzy_internal_msgs {

@@ -47,7 +47,6 @@ use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
-use ln::onion_messages::{CustomTlv, ReplyPath};
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
@@ -2874,7 +2873,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			} => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
-				// XXX next!!!
 				let blinding_factor = {
 					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
@@ -2885,7 +2883,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
 					Err(e)
 				} else { Ok(new_pubkey) };
-				println!("VMW: forwarding onion message, blinding factor for final packet's public key: {:02x?}, final packet public key: {:02x?}", blinding_factor, public_key);
 
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
@@ -2904,7 +2901,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								let mut sha = Sha256::engine();
 								sha.input(&msg.blinding_point.serialize()[..]); // E(i)
 								sha.input(&encrypted_data_ss[..]);
-								// sha.input(&onion_decode_shared_secret[..]); // VMW: just made this change
 								Sha256::from_engine(sha).into_inner()
 							};
 							let mut next_blinding_point = msg.blinding_point.clone();
@@ -2924,7 +2920,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// XXX
 	/// * utilize non-None reply paths
 	/// * make recipient a Destination that also works for blinded routes
-	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>, reply_path: Option<ReplyPath>) -> Result<(), APIError> {
+	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>) -> Result<(), APIError> {
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
@@ -2933,13 +2929,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
 		let encrypted_data_ss = SharedSecret::new(&blinding_point, &self.our_network_key);
 
-		let (enc_data_onion_keys, onion_packet_keys) = onion_utils::construct_onion_keys_for_onion_msg(&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv, &encrypted_data_ss)
+		let (encrypted_data_keys, onion_packet_keys) = onion_utils::construct_onion_message_keys(
+			&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
-		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter().chain(vec![recipient].into_iter()).collect();
+		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter()
+			.chain(vec![recipient].into_iter()).collect();
 		let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
 		let mut onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path)?;
 		// XXX route_size_insane check
-		let onion_packet = onion_utils::construct_onion_message_packet(onion_payloads, enc_data_onion_keys, onion_packet_keys, prng_seed);
+		let onion_packet = onion_utils::construct_onion_message_packet(
+			onion_payloads, encrypted_data_keys, onion_packet_keys, prng_seed);
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
 		channel_state.pending_msg_events.push(events::MessageSendEvent::SendOnionMessage {
@@ -5875,12 +5874,12 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) {
-		println!("VMW: handling onion message in channelmanager");
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let _ = handle_error!(self, self.internal_onion_message(counterparty_node_id, msg), *counterparty_node_id);
-	}
-
+	// fn handle_onion_message(&self, counterparty_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+	//   println!("VMW: handling onion message in channelmanager");
+	//   let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+	//   let _ = handle_error!(self, self.internal_onion_message(counterparty_node_id, msg), *counterparty_node_id);
+	// }
+  //
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);

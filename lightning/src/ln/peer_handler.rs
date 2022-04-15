@@ -19,8 +19,9 @@ use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, LightningError, RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler, LightningError, OnionMessageHandler, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
+use ln::onion_messages::{SimpleArcOnionMessager, SimpleRefOnionMessager};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
@@ -74,6 +75,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+}
+impl OnionMessageHandler for IgnoringMessageHandler {
+	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 }
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
@@ -159,7 +163,6 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -192,6 +195,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
+	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
@@ -199,9 +203,11 @@ impl Deref for ErroringMessageHandler {
 }
 
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler<CM: Deref, RM: Deref> where
+pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 		CM::Target: ChannelMessageHandler,
-		RM::Target: RoutingMessageHandler {
+		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
+{
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
 	///
@@ -213,6 +219,12 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 	///
 	/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 	pub route_handler: RM,
+
+	/// A memssage handler which handles onion messages. Using this is just an [`OnionMessager`]
+	/// object or an [`IgnoringMessageHandler`].
+	///
+	/// [`OnionMessager`]: crate::ln::onion_messages::OnionMessager
+	pub onion_message_handler: OM,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -377,7 +389,7 @@ struct PeerHolder<Descriptor: SocketDescriptor> {
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<L>, Arc<IgnoringMessageHandler>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<L>, SimpleArcOnionMessager, Arc<IgnoringMessageHandler>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -385,7 +397,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, SimpleRefOnionMessager<'c>, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
@@ -406,12 +418,13 @@ pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L>
 /// you're using lightning-net-tokio.
 ///
 /// [`read_event`]: PeerManager::read_event
-pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> where
+pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
-	message_handler: MessageHandler<CM, RM>,
+	message_handler: MessageHandler<CM, RM, OM>,
 	peers: Mutex<PeerHolder<Descriptor>>,
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
@@ -447,9 +460,11 @@ macro_rules! encode_msg {
 	}}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler> where
 		CM::Target: ChannelMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger {
+	/// XXX update docs for onion message handler
 	/// Constructs a new PeerManager with the given ChannelMessageHandler. No routing message
 	/// handler is used and network graph messages are ignored.
 	///
@@ -457,15 +472,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
+			onion_message_handler,
 		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger {
 	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message
@@ -481,6 +497,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
+			onion_message_handler: IgnoringMessageHandler{},
 		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
@@ -496,15 +513,16 @@ impl core::fmt::Display for OptionalFromDebugger<'_> {
 	}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, L, CMH> where
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
-	pub fn new(message_handler: MessageHandler<CM, RM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -1098,9 +1116,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
 			},
-			wire::Message::OnionMessage(msg) => {
-				self.message_handler.chan_handler.handle_onion_message(&peer.their_node_id.unwrap(), &msg);
-			},
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
@@ -1165,6 +1180,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			},
 			wire::Message::GossipTimestampFilter(_msg) => {
 				// TODO: handle message
+			},
+
+			// Onion messages:
+			wire::Message::OnionMessage(msg) => {
+				self.message_handler.onion_message_handler.handle_onion_message(&peer.their_node_id.unwrap(), &msg);
 			},
 
 			// Unknown messages:
