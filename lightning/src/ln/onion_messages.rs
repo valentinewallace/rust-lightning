@@ -9,17 +9,19 @@
 
 //! XXX
 
+use ln::msgs;
+use ln::msgs::OnionMessageHandler;
 use bitcoin::secp256k1::key::PublicKey;
-use chain::keysinterface::{KeysInterface, KeysManager, Sign};
+use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 
 use core::ops::Deref;
 use sync::Arc;
 
 /// XXX
-pub type SimpleArcOnionMessager = OnionMessager<Arc<KeysManager>>;
+pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>>;
 /// XXX
-pub type SimpleRefOnionMessager<'a> = OnionMessager<&'a KeysManager>;
+pub type SimpleRefOnionMessager<'a> = OnionMessager<InMemorySigner, &'a KeysManager>;
 
 struct CustomOnionPayload {
 	custom_tlvs: Vec<CustomTlv>,
@@ -56,7 +58,9 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 	}
 }
 
-impl OnionMessageHandler for OnionMessager {
+impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
+	where K::Target: KeysInterface<Signer = Signer>
+{
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
 	}
 }
