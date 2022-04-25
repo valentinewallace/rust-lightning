@@ -342,18 +342,41 @@ mod inbound_payment {
 	}
 }
 
-// /// XXX
-// pub struct BlindedNode {
-//   blinded_pk: PublicKey,
-//   encrypted_payload: Vec<u8>,
-// }
-//
-// /// XXX
-// pub struct BlindedRoute {
-//   introduction_node_pk: PublicKey,
-//   blinding_pk: PublicKey,
-//   blinded_hops: Vec<BlindedNode>,
-// }
+/// XXX
+pub struct BlindedNode {
+	pub blinded_node_id: PublicKey,
+	pub encrypted_payload: Vec<u8>,
+}
+
+/// XXX
+pub struct BlindedRoute {
+	pub introduction_node_id: PublicKey,
+	pub blinding_point: PublicKey,
+	pub blinded_hops: Vec<BlindedNode>,
+}
+
+/// XXX
+pub enum Destination {
+	Node(PublicKey),
+	BlindedRoute(BlindedRoute),
+}
+
+impl Destination {
+	fn node_id(&self) -> PublicKey {
+		match self {
+			Destination::Node(pk) => pk.clone(),
+			Destination::BlindedRoute(BlindedRoute { introduction_node_id, .. }) => {
+				introduction_node_id.clone()
+			}
+		}
+	}
+	fn blinded_route(self) -> Option<BlindedRoute> {
+		match self {
+			Destination::Node(_) => None,
+			Destination::BlindedRoute(route) => Some(route),
+		}
+	}
+}
 //
 // /// XXX
 // pub struct UserTlv {
@@ -2921,10 +2944,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	pub fn get_blinded_route_to_us(&self, intermediate_nodes: Vec<PublicKey>) -> Result<BlindedRoute, APIError> {
+
+		Err(APIError::APIMisuseError{err: "XXX".to_string()})
+	}
+
 	/// XXX
-	/// * utilize non-None reply paths
-	/// * make recipient a Destination that also works for blinded routes
-	pub fn send_onion_message(&self, recipient: PublicKey, intermediate_nodes: Vec<PublicKey>, reply_path: Option<ReplyPath>) -> Result<(), APIError> {
+	/// * utilize reply paths
+	pub fn send_onion_message(&self, recipient: Destination, intermediate_nodes: Vec<PublicKey>) -> Result<(), APIError> {
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
@@ -2933,13 +2960,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
 		let encrypted_data_ss = SharedSecret::new(&blinding_point, &self.our_network_key);
 
-		let (enc_data_onion_keys, onion_packet_keys) = onion_utils::construct_onion_keys_for_onion_msg(&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv, &encrypted_data_ss)
+		let last_known_node_id = recipient.node_id();
+		let (enc_data_onion_keys, onion_packet_keys) = onion_utils::construct_onion_keys_for_onion_msg(&self.secp_ctx, intermediate_nodes.iter().chain(vec![last_known_node_id].iter()).collect(), &session_priv, &encrypted_data_ss)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
-		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter().chain(vec![recipient].into_iter()).collect();
+		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter().chain(vec![last_known_node_id].into_iter()).collect();
 		let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
-		let mut onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path)?;
+		// let mut intermediate_payloads = onion_utils::build_intermediate_onion_message_payloads(onion_payloads_path)?;
+		let blinded_route = recipient.blinded_route();
+		let mut blinded_path = onion_utils::blinded_path(onion_payloads_path, enc_data_onion_keys, blinded_route).unwrap();
+
 		// XXX route_size_insane check
-		let onion_packet = onion_utils::construct_onion_message_packet(onion_payloads, enc_data_onion_keys, onion_packet_keys, prng_seed);
+		// this will next no longer take the enc_data keys, and instead a list of encoded packets
+		let onion_packet = onion_utils::construct_onion_message_packet(blinded_path, onion_packet_keys, prng_seed);
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
 		channel_state.pending_msg_events.push(events::MessageSendEvent::SendOnionMessage {
