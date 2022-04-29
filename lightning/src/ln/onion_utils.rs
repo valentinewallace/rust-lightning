@@ -105,7 +105,7 @@ pub(super) fn onion_msg_keys_callback_enc_data<T: secp256k1::Signing, FType: FnM
 	let mut msg_blinding_point_priv = session_priv.clone();
 	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
 
-	for (idx, pk) in path.iter().enumerate() {
+	for pk in path.iter() {
 		let encrypted_data_ss = SharedSecret::new(pk, &msg_blinding_point_priv);
 
 		let msg_blinding_point_blinding_factor = {
@@ -130,7 +130,7 @@ pub(super) fn onion_message_keys_callback<T: secp256k1::Signing + secp256k1::Ver
 	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
 	let mut onion_packet_pubkey = msg_blinding_point.clone();
 
-	for (idx, pk) in path.into_iter().enumerate() {
+	for pk in path.into_iter() {
 		let encrypted_data_ss = SharedSecret::new(pk, &msg_blinding_point_priv);
 
 		let onion_packet_blinding_factor = {
@@ -218,14 +218,13 @@ pub(super) fn build_onion_message_payloads(mut path: Vec<PublicKey>) -> Result<V
 			format: msgs::OnionMsgPayloadFormat::Forward {
 				next_node_id: pk,
 				next_blinding_override: None,
-				short_channel_id: None,
 			}
 		})
 	};
 	res.push(msgs::OnionMsgPayload {
 		format: msgs::OnionMsgPayloadFormat::Receive {
 			path_id: None, // XXX non-None path_id
-			custom_tlvs: Vec::new(), // We don't support sending custom TLVs yet
+			// custom_tlvs: Vec::new(), // We don't support sending custom TLVs yet
 		}
 	});
 	Ok(res)

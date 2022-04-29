@@ -912,17 +912,15 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 /// XXX
-pub trait OnionMessageHandler {
+pub trait OnionMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming onion_message message from the given peer.
 	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
-
 }
 
 mod fuzzy_internal_msgs {
 	use prelude::*;
 	use bitcoin::secp256k1::key::PublicKey;
 	use ln::{PaymentPreimage, PaymentSecret};
-	use ln::onion_messages::CustomTlv;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -960,11 +958,9 @@ mod fuzzy_internal_msgs {
 		Forward {
 			next_blinding_override: Option<PublicKey>,
 			next_node_id: PublicKey,
-			short_channel_id: Option<u64>, // XXX is this ever present?
 		},
 		Receive {
 			path_id: Option<[u8; 32]>,
-			custom_tlvs: Vec<CustomTlv>,
 		}
 	}
 
@@ -1479,15 +1475,13 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		}
 
 		let mut rd = FixedLengthReader::new(r, v.0);
-		let mut reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
 		let mut encrypted_tlvs_opt: Option<Vec<u8>> = Some(Vec::new());
 		// let mut custom_tlvs = Vec::new();
-		let custom_tlvs = {
-			decode_tlv_stream_with_custom!(&mut rd, {
-				(2, reply_path_bytes, vec_type),
-				(4, encrypted_tlvs_opt, vec_type),
-			})
-		};
+		decode_tlv_stream!(&mut rd, {
+			(2, _reply_path_bytes, vec_type),
+			(4, encrypted_tlvs_opt, vec_type),
+		});
 		// println!("VMW: decoded first tlvs, encrypted data: {:02x?}", encrypted_tlvs_opt);
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 		if encrypted_tlvs_opt == Some(Vec::new()) {
@@ -1529,13 +1523,12 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			OnionMsgPayloadFormat::Forward {
 				next_node_id: next_node_id.unwrap(),
 				next_blinding_override,
-				short_channel_id,
 			}
 		} else if valid_recv_fmt {
 			OnionMsgPayloadFormat::Receive {
 				path_id,
 				// reply_path,
-				custom_tlvs,
+				// custom_tlvs,
 			}
 		} else {
 			return Err(DecodeError::InvalidValue)

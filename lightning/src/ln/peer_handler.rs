@@ -388,7 +388,7 @@ struct PeerHolder<Descriptor: SocketDescriptor> {
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<L>, SimpleArcOnionMessager, Arc<IgnoringMessageHandler>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessager>, Arc<L>, Arc<IgnoringMessageHandler>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -1300,6 +1300,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			let mut peers_lock = self.peers.lock().unwrap();
 			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
 			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
+			events_generated.append(&mut self.message_handler.onion_message_handler.get_and_clear_pending_msg_events());
 			let peers = &mut *peers_lock;
 			macro_rules! get_peer_for_forwarding {
 				($node_id: expr) => {
@@ -1504,6 +1505,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
 					MessageSendEvent::SendOnionMessage { ref node_id, ref msg } => {
+						println!("VMW: sending onion msg");
 						log_trace!(self.logger, "Handling SendOnionMessage event in peer_handler for node {}", log_pubkey!(node_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}

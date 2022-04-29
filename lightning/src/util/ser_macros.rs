@@ -165,27 +165,11 @@ macro_rules! decode_tlv {
 	}};
 }
 
-/// Decode a TLV stream that contains custom TLVs that are unknown to LDK but may be known to the
-/// user.
-macro_rules! decode_tlv_stream_with_custom {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
-		// decode_tlv_stream_inner!($stream, true, {$(($type, $field, $fieldty)),* $(,)*});
-		decode_tlv_stream_inner!($stream, true, {$(($type, $field, $fieldty)),*})
-	}
-}
 macro_rules! decode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
-		decode_tlv_stream_inner!($stream, false, {$(($type, $field, $fieldty)),*});
-	}
-}
-
-macro_rules! decode_tlv_stream_inner {
-	($stream: expr, $expect_custom_tlvs: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
 		use ln::msgs::DecodeError;
-		use ln::onion_messages::CustomTlv;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
-		let mut custom_tlvs: Vec<CustomTlv> = Vec::new();
 		'tlv_read: loop {
 			use util::ser;
 
@@ -208,22 +192,18 @@ macro_rules! decode_tlv_stream_inner {
 					Ok(t) => t,
 				}
 			};
-			println!("VMW: decoding type {}", typ.0);
 
 			// Types must be unique and monotonically increasing:
 			match last_seen_type {
 				Some(t) if typ.0 <= t => {
-					println!("VMW: returning invalid value since type wasn't monotonically increasing");
 					return Err(DecodeError::InvalidValue);
 				},
 				_ => {},
 			}
-			println!("VMW: about to check tlv order");
 			// As we read types, make sure we hit every required type:
 			$({
 				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
-			println!("VMW: checked tlv order");
 			last_seen_type = Some(typ.0);
 
 			// Finally, read the length and value itself:
@@ -231,29 +211,16 @@ macro_rules! decode_tlv_stream_inner {
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
 				$($type => {
-					println!("VMW: about to decode_tlv in decode_tlv_stream");
 					decode_tlv!(s, $field, $fieldty);
-					println!("VMW: just decode_tlv'd in decode_tlv_stream");
 					if s.bytes_remain() {
-						println!("VMW: about to eat_remaining");
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
-						println!("VMW: just ate remaining");
 						return Err(DecodeError::InvalidValue);
 					}
 				},)*
 				x if x % 2 == 0 => {
 					return Err(DecodeError::UnknownRequiredFeature);
 				},
-				x => {
-					if $expect_custom_tlvs {
-						let mut value: Option<Vec<u8>> = Some(Vec::new());
-						decode_tlv!(s, value, vec_type);
-						custom_tlvs.push(CustomTlv {
-							typ: x,
-							value: value.unwrap(),
-						});
-					}
-				},
+				_ => {},
 			}
 			s.eat_remaining()?;
 		}
@@ -261,7 +228,6 @@ macro_rules! decode_tlv_stream_inner {
 		$({
 			check_missing_tlv!(last_seen_type, $type, $field, $fieldty);
 		})*
-		custom_tlvs
 	} }
 }
 
