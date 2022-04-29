@@ -65,13 +65,13 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 
 		let blinding_point = PublicKey::from_secret_key(&self.secp_ctx, &session_priv);
 
-		let (encrypted_data_keys, onion_packet_keys) = onion_utils::construct_onion_message_keys(
+		let (encrypted_data_keys, onion_packet_keys) = construct_path_keys(
 			&self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
 		let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter()
 			.chain(vec![recipient].into_iter()).collect();
 		let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
-		let onion_payloads = onion_utils::build_onion_message_payloads(onion_payloads_path)?;
+		let onion_payloads = build_onion_message_payloads(onion_payloads_path)?;
 		// XXX route_size_insane check
 		let onion_packet = onion_utils::construct_onion_message_packet(
 			onion_payloads, encrypted_data_keys, onion_packet_keys, prng_seed);
@@ -191,5 +191,92 @@ where K::Target: KeysInterface<Signer = Signer>
 		mem::swap(&mut ret, &mut *pending_msg_events);
 		ret
 	}
+}
+
+#[inline]
+fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, path: Vec<&PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+	let mut msg_blinding_point_priv = session_priv.clone();
+	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
+	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
+	let mut onion_packet_pubkey = msg_blinding_point.clone();
+
+	for pk in path.into_iter() {
+		let encrypted_data_ss = SharedSecret::new(pk, &msg_blinding_point_priv);
+
+		let onion_packet_blinding_factor = {
+			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+			hmac.input(&encrypted_data_ss[..]);
+			Hmac::from_engine(hmac).into_inner()
+		};
+		let mut blinded_hop_pk = pk.clone();
+		blinded_hop_pk.mul_assign(secp_ctx, &onion_packet_blinding_factor)?;
+		let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
+
+		callback(onion_packet_ss, onion_packet_blinding_factor, onion_packet_pubkey, encrypted_data_ss);
+
+		let msg_blinding_point_blinding_factor = {
+			let mut sha = Sha256::engine();
+			sha.input(&msg_blinding_point.serialize()[..]);
+			sha.input(&encrypted_data_ss[..]);
+			Sha256::from_engine(sha).into_inner()
+		};
+
+		msg_blinding_point_priv.mul_assign(&msg_blinding_point_blinding_factor)?;
+		msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
+
+		let onion_packet_pubkey_blinding_factor = {
+			let mut sha = Sha256::engine();
+			sha.input(&onion_packet_pubkey.serialize()[..]);
+			sha.input(&onion_packet_ss[..]);
+			Sha256::from_engine(sha).into_inner()
+		};
+		onion_packet_pubkey.mul_assign(secp_ctx, &onion_packet_pubkey_blinding_factor)?;
+		onion_packet_pubkey_priv.mul_assign(&onion_packet_pubkey_blinding_factor)?;
+	}
+	Ok(())
+}
+
+fn construct_path_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, path: Vec<&PublicKey>, session_priv: &SecretKey) -> Result<(Vec<[u8; 32]>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
+	let mut encrypted_data_keys = Vec::with_capacity(path.len());
+	let mut onion_packet_keys = Vec::with_capacity(path.len());
+
+	keys_callback(secp_ctx, path.clone(), session_priv, |onion_packet_ss, _blinding_factor, ephemeral_pubkey, encrypted_data_ss| {
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_data_ss[..]);
+		encrypted_data_keys.push(rho);
+
+		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(&onion_packet_ss[..]);
+		onion_packet_keys.push(onion_utils::OnionKeys {
+			#[cfg(test)]
+			shared_secret: onion_packet_ss,
+			#[cfg(test)]
+			blinding_factor: _blinding_factor,
+			ephemeral_pubkey,
+			rho,
+			mu,
+		});
+
+	})?;
+
+	Ok((encrypted_data_keys, onion_packet_keys))
+}
+
+/// XXX
+pub(super) fn build_onion_message_payloads(mut path: Vec<PublicKey>) -> Result<Vec<msgs::OnionMsgPayload>, APIError> {
+	let mut res = Vec::with_capacity(path.len() + 1);
+	for pk in path.drain(..) {
+		res.push(msgs::OnionMsgPayload {
+			format: msgs::OnionMsgPayloadFormat::Forward {
+				next_node_id: pk,
+				next_blinding_override: None,
+			}
+		})
+	};
+	res.push(msgs::OnionMsgPayload {
+		format: msgs::OnionMsgPayloadFormat::Receive {
+			path_id: None, // XXX non-None path_id
+			// custom_tlvs: Vec::new(), // We don't support sending custom TLVs yet
+		}
+	});
+	Ok(res)
 }
 
