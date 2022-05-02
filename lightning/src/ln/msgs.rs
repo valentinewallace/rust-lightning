@@ -1436,28 +1436,29 @@ impl Readable for OnionHopData {
 	}
 }
 
-impl Writeable for (OnionMsgPayload, [u8; 32]) {
+impl Writeable for OnionMsgPayload {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let mut encrypted_data_tlvs = Vec::new();
-		match &self.0.format {
-			OnionMsgPayloadFormat::Forward { next_node_id, .. } => { // XXX write other fields
-				encode_tlv_stream!(&mut encrypted_data_tlvs, {
-					(4, next_node_id, required)
+		let mut tlvs = Vec::new();
+		match &self.format {
+			OnionMsgPayloadFormat::Forward { next_node_id, next_blinding_override } => { // XXX write other fields
+				encode_tlv_stream!(&mut tlvs, {
+					(4, next_node_id, required),
+					(8, next_blinding_override, option)
 				});
 			},
 			OnionMsgPayloadFormat::Receive { path_id, .. } => {
-				encode_tlv_stream!(&mut encrypted_data_tlvs, {
+				encode_tlv_stream!(&mut tlvs, {
 					(6, path_id, option)
 				});
 			},
 		};
-		let mut chacha = ChaCha20Poly1305RFC::new(&self.1, &[0; 12], &[]);
-		let mut tag = [0; 16];
-		chacha.encrypt_in_place(&mut encrypted_data_tlvs, &mut tag);
-		encrypted_data_tlvs.extend_from_slice(&tag);
-		encode_varint_length_prefixed_tlv!(w, {
-			(4, encrypted_data_tlvs, vec_type)
-		});
+		// let mut chacha = ChaCha20Poly1305RFC::new(self.1, &[0; 12], &[]);
+		// let mut tag = [0; 16];
+		// chacha.encrypt_in_place(&mut encrypted_data_tlvs, &mut tag);
+		// encrypted_data_tlvs.extend_from_slice(&tag);
+		// encode_varint_length_prefixed_tlv!(w, {
+		//   (4, encrypted_data_tlvs, vec_type)
+		// });
 		Ok(())
 	}
 }
