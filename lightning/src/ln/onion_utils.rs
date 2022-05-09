@@ -210,14 +210,13 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 }
 
 // pub(super) fn construct_onion_message_packet(payloads: Vec<msgs::OnionMsgPayload>, encrypted_data_keys: Vec<[u8; 32]>, onion_packet_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
-pub(super) fn construct_onion_message_packet(blinded_payloads: Vec<&Vec<u8>>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
+pub(super) fn construct_onion_message_packet(payloads: Vec<&Vec<u8>>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
-	// let writeable_payloads = payloads.into_iter().zip(encrypted_data_keys.into_iter()).collect();
 
-	construct_onion_packet_with_init_noise(blinded_payloads, onion_keys, packet_data, None)
+	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, None)
 }
 
 #[cfg(test)]
