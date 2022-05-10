@@ -1469,15 +1469,19 @@ impl Writeable for (OnionMsgPayload, [u8; 32], bool) { // XXX no more bool
 
 impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 	fn read<R: Read>(mut r: &mut R, enc_tlv_ss: [u8; 32]) -> Result<Self, DecodeError> {
+		println!("VMW: in ReadableArgs for OnionMsgPayload");
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
 		let v: VarInt = Decodable::consensus_decode(&mut r)
 			.map_err(|e| match e {
 				Error::Io(ioe) => DecodeError::from(ioe),
 				_ => DecodeError::InvalidValue
 			})?;
+		println!("VMW: failed to consensus_decode reader");
 		if v.0 == 0 { // 0-length payload
+			println!("VMW: v.0 was 0, erroring");
 			return Err(DecodeError::InvalidValue)
 		}
+		println!("VMW: about to decode first set of tlvs");
 
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
@@ -1487,7 +1491,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			(2, _reply_path_bytes, vec_type),
 			(4, encrypted_tlvs_opt, vec_type),
 		});
-		// println!("VMW: decoded first tlvs, encrypted data: {:02x?}", encrypted_tlvs_opt);
+		println!("VMW: decoded first tlvs, encrypted data: {:02x?}", encrypted_tlvs_opt);
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 		if encrypted_tlvs_opt == Some(Vec::new()) {
 			return Err(DecodeError::InvalidValue);
@@ -1504,7 +1508,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 		tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
 		chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
 		let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
-		// println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
+		println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
 
 		let mut _padding: Option<Vec<u8>> = Some(Vec::new());
 		let mut short_channel_id: Option<u64> = None;
@@ -1518,7 +1522,7 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
-		// println!("VMW: decoded second set of tlvs");
+		println!("VMW: decoded second set of tlvs");
 
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none() &&

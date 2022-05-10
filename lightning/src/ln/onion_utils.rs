@@ -210,7 +210,7 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 }
 
 // pub(super) fn construct_onion_message_packet(payloads: Vec<msgs::OnionMsgPayload>, encrypted_data_keys: Vec<[u8; 32]>, onion_packet_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
-pub(super) fn construct_onion_message_packet(payloads: Vec<&Vec<u8>>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
+pub(super) fn construct_onion_message_packet(payloads: Vec<Vec<u8>>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -233,6 +233,7 @@ pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<
 
 /// panics if route_size_insane(paylods)
 fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; ONION_DATA_LEN], associated_data: Option<&PaymentHash>) -> msgs::OnionPacket {
+	println!("VMW: in construct_onion_packet, num payloads: {}", payloads.len());
 	let filler = {
 		const ONION_HOP_DATA_LEN: usize = 65; // We may decrease this eventually after TLV is common
 		let mut res = Vec::with_capacity(ONION_HOP_DATA_LEN * (payloads.len() - 1));
@@ -601,7 +602,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 				_ => 0x2000 | 2, // Should never happen
 			};
 			return Err(OnionDecodeErr::Relay {
-				err_msg: "Unable to decode our hop data",
+				err_msg: "Unable to decode our hop data 1",
 				err_code: error_code,
 			});
 		},
@@ -609,7 +610,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 			let mut hmac = [0; 32];
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
 				return Err(OnionDecodeErr::Relay {
-					err_msg: "Unable to decode our hop data",
+					err_msg: "Unable to decode our hop data 2",
 					err_code: 0x4000 | 22,
 				});
 			}
