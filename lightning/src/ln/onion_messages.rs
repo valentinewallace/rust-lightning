@@ -361,7 +361,6 @@ fn blinded_route(blinding_secret: SecretKey, intermediate_nodes: Vec<PublicKey>,
 		}
 	};
 	Ok((BlindedRoute {
-		introduction_node_id,
 		blinding_point,
 		blinded_hops,
 	}, onion_packet_keys))
