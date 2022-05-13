@@ -315,6 +315,7 @@ struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
 	event: OnchainEvent,
+	transaction: Option<Transaction>,
 }
 
 impl OnchainEventEntry {
@@ -395,6 +396,7 @@ impl Writeable for OnchainEventEntry {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.txid, required),
+			(1, self.transaction, option),
 			(2, self.height, required),
 			(4, self.event, required),
 		});
@@ -405,15 +407,17 @@ impl Writeable for OnchainEventEntry {
 impl MaybeReadable for OnchainEventEntry {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let mut txid = Default::default();
+		let mut transaction = None;
 		let mut height = 0;
 		let mut event = None;
 		read_tlv_fields!(reader, {
 			(0, txid, required),
+			(1, transaction, option),
 			(2, height, required),
 			(4, event, ignorable),
 		});
 		if let Some(ev) = event {
-			Ok(Some(Self { txid, height, event: ev }))
+			Ok(Some(Self { txid, transaction, height, event: ev }))
 		} else {
 			Ok(None)
 		}
@@ -1670,8 +1674,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 /// as long as we examine both the current counterparty commitment transaction and, if it hasn't
 /// been revoked yet, the previous one, we we will never "forget" to resolve an HTLC.
 macro_rules! fail_unbroadcast_htlcs {
-	($self: expr, $commitment_tx_type: expr, $commitment_txid_confirmed: expr,
+	($self: expr, $commitment_tx_type: expr, $commitment_txid_confirmed: expr, $commitment_tx_confirmed: expr,
 	 $commitment_tx_conf_height: expr, $confirmed_htlcs_list: expr, $logger: expr) => { {
+		debug_assert_eq!($commitment_tx_confirmed.txid(), $commitment_txid_confirmed);
+
 		macro_rules! check_htlc_fails {
 			($txid: expr, $commitment_tx: expr) => {
 				if let Some(ref latest_outpoints) = $self.counterparty_claimable_outpoints.get($txid) {
@@ -1711,6 +1717,7 @@ macro_rules! fail_unbroadcast_htlcs {
 							});
 							let entry = OnchainEventEntry {
 								txid: $commitment_txid_confirmed,
+								transaction: Some($commitment_tx_confirmed.clone()),
 								height: $commitment_tx_conf_height,
 								event: OnchainEvent::HTLCUpdate {
 									source: (**source).clone(),
@@ -2142,13 +2149,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
 				if let Some(per_commitment_data) = per_commitment_option {
-					fail_unbroadcast_htlcs!(self, "revoked_counterparty", commitment_txid, height,
+					fail_unbroadcast_htlcs!(self, "revoked_counterparty", commitment_txid, tx, height,
 						per_commitment_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
 				} else {
 					debug_assert!(false, "We should have per-commitment option for any recognized old commitment txn");
-					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, height,
+					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
 						[].iter().map(|reference| *reference), logger);
 				}
 			}
@@ -2166,7 +2173,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
 			log_info!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
-			fail_unbroadcast_htlcs!(self, "counterparty", commitment_txid, height,
+			fail_unbroadcast_htlcs!(self, "counterparty", commitment_txid, tx, height,
 				per_commitment_data.iter().map(|(htlc, htlc_source)|
 					(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 				), logger);
@@ -2325,7 +2332,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
 			append_onchain_update!(res, to_watch);
-			fail_unbroadcast_htlcs!(self, "latest holder", commitment_txid, height,
+			fail_unbroadcast_htlcs!(self, "latest holder", commitment_txid, tx, height,
 				self.current_holder_commitment_tx.htlc_outputs.iter()
 				.map(|(htlc, _, htlc_source)| (htlc, htlc_source.as_ref())), logger);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
@@ -2335,7 +2342,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				let res = self.get_broadcasted_holder_claims(holder_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
 				append_onchain_update!(res, to_watch);
-				fail_unbroadcast_htlcs!(self, "previous holder", commitment_txid, height,
+				fail_unbroadcast_htlcs!(self, "previous holder", commitment_txid, tx, height,
 					holder_tx.htlc_outputs.iter().map(|(htlc, _, htlc_source)| (htlc, htlc_source.as_ref())),
 					logger);
 			}
@@ -2501,6 +2508,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					let txid = tx.txid();
 					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 						txid,
+						transaction: Some((*tx).clone()),
 						height: height,
 						event: OnchainEvent::FundingSpendConfirmation {
 							on_local_output_csv: balance_spendable_csv,
@@ -2919,7 +2927,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								let outbound_htlc = $holder_tx == htlc_output.offered;
 								if !outbound_htlc || revocation_sig_claim {
 									self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-										txid: tx.txid(), height,
+										txid: tx.txid(), height, transaction: Some(tx.clone()),
 										event: OnchainEvent::HTLCSpendConfirmation {
 											commitment_tx_output_idx: input.previous_output.vout,
 											preimage: if accepted_preimage_claim || offered_preimage_claim {
@@ -2971,6 +2979,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.txid(),
 							height,
+							transaction: Some(tx.clone()),
 							event: OnchainEvent::HTLCSpendConfirmation {
 								commitment_tx_output_idx: input.previous_output.vout,
 								preimage: Some(payment_preimage),
@@ -2991,6 +3000,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						} else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.txid(),
+							transaction: Some(tx.clone()),
 							height,
 							event: OnchainEvent::HTLCSpendConfirmation {
 								commitment_tx_output_idx: input.previous_output.vout,
@@ -3017,6 +3027,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					});
 					let entry = OnchainEventEntry {
 						txid: tx.txid(),
+						transaction: Some(tx.clone()),
 						height,
 						event: OnchainEvent::HTLCUpdate {
 							source, payment_hash,
@@ -3090,6 +3101,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		if let Some(spendable_output) = spendable_output {
 			let entry = OnchainEventEntry {
 				txid: tx.txid(),
+				transaction: Some(tx.clone()),
 				height: height,
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
