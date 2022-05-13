@@ -1469,27 +1469,46 @@ impl Writeable for OnionMsgPayload { // XXX no more bool
 	}
 }
 
-impl ReadableArgs<[u8; 32]> for EncryptedData {
-	fn read<R: Read>(mut r: &mut R, encrypted_data_ss: [u8; 32]) -> Result<Self, DecodeError> {
-		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss);
-		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-		let mut encrypted_tlvs = encrypted_tlvs_opt.unwrap();
-		if encrypted_tlvs.len() < 16 {
-			return Err(DecodeError::InvalidValue);
+impl Writeable for EncryptedData {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			EncryptedData::Receive { path_id } => {
+				encode_tlv_stream!(writer, {
+					(6, path_id, option)
+				});
+			},
+			EncryptedData::Forward { next_node_id, next_blinding_override } => {
+				encode_tlv_stream!(writer, {
+					(4, next_node_id, required),
+					(8, next_blinding_override, option)
+				});
+			},
 		}
-		let encrypted_len = encrypted_tlvs.len() - 16;
-		let mut tag = [0; 16];
-		tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
-		chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
-		let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
-		println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
+		Ok(())
+	}
+}
+
+impl Readable for EncryptedData {
+	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
+		// let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss);
+		// let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
+		// let mut encrypted_tlvs = encrypted_tlvs_opt.unwrap();
+		// if encrypted_tlvs.len() < 16 {
+		//   return Err(DecodeError::InvalidValue);
+		// }
+		// let encrypted_len = encrypted_tlvs.len() - 16;
+		// let mut tag = [0; 16];
+		// tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
+		// chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
+		// let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
+		// println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
 
 		let mut _padding: Option<Vec<u8>> = Some(Vec::new());
 		let mut short_channel_id: Option<u64> = None;
 		let mut next_node_id: Option<PublicKey> = None;
 		let mut path_id: Option<[u8; 32]> = None;
 		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut decrypted_tlvs, {
+		decode_tlv_stream!(&mut r, {
 			(1, _padding, vec_type),
 			(2, short_channel_id, option),
 			(4, next_node_id, option),
@@ -1503,12 +1522,12 @@ impl ReadableArgs<[u8; 32]> for EncryptedData {
 			short_channel_id.is_none();
 
 		let payload_fmt = if valid_fwd_fmt {
-			OnionMsgPayloadFormat::Forward {
+			EncryptedData::Forward {
 				next_node_id: next_node_id.unwrap(),
 				next_blinding_override,
 			}
 		} else if valid_recv_fmt {
-			OnionMsgPayloadFormat::Receive {
+			EncryptedData::Receive {
 				path_id,
 				// reply_path,
 				// custom_tlvs,
@@ -1517,9 +1536,7 @@ impl ReadableArgs<[u8; 32]> for EncryptedData {
 			return Err(DecodeError::InvalidValue)
 		};
 		println!("VMW: reading OnionMsgPayload was Ok");
-		Ok(OnionMsgPayload {
-			format: payload_fmt
-		})
+		Ok(payload_fmt)
 	}
 }
 
@@ -1532,7 +1549,6 @@ impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
 				Error::Io(ioe) => DecodeError::from(ioe),
 				_ => DecodeError::InvalidValue
 			})?;
-		println!("VMW: failed to consensus_decode reader");
 		if v.0 == 0 { // 0-length payload
 			println!("VMW: v.0 was 0, erroring");
 			return Err(DecodeError::InvalidValue)
