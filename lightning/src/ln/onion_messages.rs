@@ -49,10 +49,6 @@ fn build_payloads(blinded_route: &BlindedRoute) -> Result<Vec<msgs::OnionMsgPayl
 		let payload = msgs::OnionMsgPayload {
 			encrypted_data: blinded_node.encrypted_payload.clone()
 		};
-		// let mut res = Vec::new();
-		// let _ = encode_varint_length_prefixed_tlv!(&mut res, {
-		//   (4, blinded_node.encrypted_payload, vec_type)
-		// });
 		final_res.push(payload);
 	}
 	Ok(final_res)
@@ -79,17 +75,11 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (blinded_route, onion_packet_keys) = blinded_route(blinding_secret, intermediate_nodes, recipient).unwrap(); // XXX no unwrap
 
-		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
-		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
-		let onion_packet_payloads = build_payloads(&blinded_route).unwrap();
-
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
-		// let onion_packet = onion_utils::construct_onion_message_packet(blinded_route.blinded_hops.iter().map(|blinded_node| &blinded_node.encrypted_payload).collect(), onion_packet_keys, prng_seed);
+		let onion_packet_payloads = build_payloads(&blinded_route).unwrap();
 		let onion_packet = onion_utils::construct_onion_message_packet(onion_packet_payloads, onion_packet_keys, prng_seed);
 
 		// XXX route_size_insane check
-		// this will next no longer take the enc_data keys, and instead a list of encoded packets
-		// let onion_packet = onion_utils::construct_onion_message_packet(blinded_path, onion_packet_keys, prng_seed);
 		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
 		pending_msg_events.push(MessageSendEvent::SendOnionMessage {
 			node_id: blinded_route.introduction_node_id,
@@ -99,26 +89,6 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 				onion_routing_packet: onion_packet,
 			}
 		});
-		// let (encrypted_data_keys, onion_packet_keys) = construct_path_keys(
-		//   &self.secp_ctx, intermediate_nodes.iter().chain(vec![recipient].iter()).collect(), &session_priv)
-		//   .map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
-		// let mut onion_payloads_path: Vec<PublicKey> = intermediate_nodes.into_iter()
-		//   .chain(vec![recipient].into_iter()).collect();
-		// let first_hop_pk: PublicKey = onion_payloads_path.remove(0);
-		// let onion_payloads = build_onion_message_payloads(onion_payloads_path)?;
-		// // XXX route_size_insane check
-		// let onion_packet = onion_utils::construct_onion_message_packet(
-		//   onion_payloads, encrypted_data_keys, onion_packet_keys, prng_seed);
-		// let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
-		// println!("VMW: queueing onion message in pending_msg_events");
-		// pending_msg_events.push(MessageSendEvent::SendOnionMessage {
-		//   node_id: first_hop_pk,
-		//   msg: msgs::OnionMessage {
-		//     blinding_point,
-		//     len: 1366,
-		//     onion_routing_packet: onion_packet,
-		//   }
-		// });
 		Ok(())
 	}
 }
@@ -127,13 +97,11 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 	where K::Target: KeysInterface<Signer = Signer>
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
-		println!("VMW: received onion message");
 		// TODO: add length check
 		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
 		let encrypted_data_ss = {
 			let mut arr = [0; 32];
 			let ss = SharedSecret::new(&msg.blinding_point, &node_secret);
-			println!("VMW: encrypted data shared secret: {:?}", ss);
 			arr.copy_from_slice(&ss);
 			arr
 		};
@@ -147,7 +115,6 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 			blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
 			let mut arr = [0; 32];
 			let ss = SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &blinded_priv);
-			println!("VMW: onion decode shared secret: {:?}", ss);
 			arr.copy_from_slice(&ss[..]);
 			arr
 		};
@@ -254,7 +221,6 @@ where K::Target: KeysInterface<Signer = Signer>
 }
 
 fn decrypt_encrypted_data(encrypted_data: Vec<u8>, encrypted_data_ss: [u8; 32]) -> Vec<u8> {
-	println!("VMW: start of decrypt_encrypted_data, encrypted_data_ss: {:02x?}", encrypted_data_ss);
 	let mut encrypted_data = encrypted_data.clone();
 	let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_data_ss);
 	let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
@@ -266,14 +232,12 @@ fn decrypt_encrypted_data(encrypted_data: Vec<u8>, encrypted_data_ss: [u8; 32]) 
 }
 
 fn encrypt_encrypted_data(encrypted_data: Vec<u8>, encrypted_data_ss: SharedSecret) -> Vec<u8> {
-	println!("VMW: start of encrypt_encrypted_data, unencrypted encrypted_data: {:02x?}, encrypted_data_ss: {:02x?}", encrypted_data, encrypted_data_ss);
 	let mut encrypted_data = encrypted_data.clone();
 	let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_data_ss[..]);
 	let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
 	let mut tag = [0; 16];
 	chacha.encrypt_in_place(&mut encrypted_data, &mut tag);
 	encrypted_data.extend_from_slice(&tag);
-	println!("VMW: encrypted encrypted_data: {:02x?}", encrypted_data);
 	encrypted_data
 }
 
@@ -301,11 +265,11 @@ impl BlindedRoute {
 	pub fn new<Signer: Sign, K: Deref>(node_pks: Vec<PublicKey>, keys_manager: K) -> Self
 		where K::Target: KeysInterface<Signer = Signer>,
 	{
-		println!("VMW: creating blinded route, # node_pks: {}", node_pks.len());
 		let secp_ctx = Secp256k1::new();
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let (encrypted_data_keys, _onion_packet_keys, blinded_node_pks) = construct_path_keys(&secp_ctx, node_pks.clone().iter().collect(), Vec::new(), &blinding_secret).unwrap(); // XXX no unwrap
+		// NOTE: changed this line w/o testing
+		let (encrypted_data_keys, _, blinded_node_pks) = construct_path_keys(&secp_ctx, node_pks.clone(), Vec::new(), &blinding_secret).unwrap(); // XXX no unwrap
 		let mut blinded_hops = Vec::with_capacity(node_pks.len());
 		for (idx, pk) in node_pks.iter().skip(1).enumerate() {
 			let encrypted_data = (msgs::EncryptedData::Forward {
@@ -318,12 +282,15 @@ impl BlindedRoute {
 				encrypted_payload,
 			});
 		}
+
+		// Add the recipient final payload.
 		let encrypted_data = (msgs::EncryptedData::Receive { path_id: Some([42; 32]) }).encode();
 		let encrypted_payload = encrypt_encrypted_data(encrypted_data, encrypted_data_keys[encrypted_data_keys.len() - 1]);
 		blinded_hops.push(BlindedNode {
 			blinded_node_id: blinded_node_pks[blinded_node_pks.len() - 1].clone(),
 			encrypted_payload
 		});
+
 		BlindedRoute {
 			introduction_node_id: node_pks[0].clone(),
 			blinding_point: PublicKey::from_secret_key(&secp_ctx, &blinding_secret),
@@ -358,49 +325,73 @@ impl Destination {
 }
 
 fn blinded_route(blinding_secret: SecretKey, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(BlindedRoute, Vec<onion_utils::OnionKeys>), ()> {
-	let (unblinded_last_hop_pk, unblinded_last_hop_next_blinding, blinded_pks) = match destination {
-		Destination::Node(pk) => (pk.clone(), None, Vec::new()),
-		Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, ref blinded_hops }) =>
-			(introduction_node_id.clone(), Some(blinding_point.clone()), blinded_hops.iter().map(|hop| hop.blinded_node_id.clone()).collect()),
-	};
-
-	let secp_ctx = Secp256k1::new();
-	let (encrypted_data_keys, onion_packet_keys, blinded_node_pks) = construct_path_keys(
-		&secp_ctx,
-		intermediate_nodes.iter().chain(vec![&unblinded_last_hop_pk].into_iter()).collect(),
-		blinded_pks, &blinding_secret).unwrap(); // XXX no unwrap
-
-	let unblinded_intermediate_pks: Vec<(&PublicKey, Option<PublicKey>)> =
-		intermediate_nodes.iter().map(|pk| (pk, None))
-		.chain(vec![(&unblinded_last_hop_pk, unblinded_last_hop_next_blinding)].into_iter())
-		.skip(1)
-		.collect();
-	println!("VMW: unblinded intermediate pks: {:?}, encrypted_data_keys: {:02x?}", unblinded_intermediate_pks, encrypted_data_keys);
-	let mut blinded_hops = Vec::new();
-	for (idx, (pk, next_blinding_override)) in unblinded_intermediate_pks.iter().enumerate() {
-		let encrypted_data = (msgs::EncryptedData::Forward {
-			next_node_id: *pk.clone(),
-			next_blinding_override: *next_blinding_override,
-		}).encode();
-		let encrypted_payload = encrypt_encrypted_data(encrypted_data, encrypted_data_keys[idx]);
-		blinded_hops.push(BlindedNode {
-			blinded_node_id: blinded_node_pks[idx].clone(),
-			encrypted_payload,
+	// Create EncryptedDatas for the intermediate hops' payloads, minus the last one if we're sending
+	// to a Destination::Node.
+	let mut encrypted_datas = Vec::new();
+	for pk in intermediate_nodes.iter().skip(1) {
+		encrypted_datas.push(msgs::EncryptedData::Forward {
+			next_node_id: pk.clone(),
+			next_blinding_override: None,
 		});
 	}
 
+	match destination {
+		// If we're sending to a Destination::Node, add the last intermediate payload and the final
+		// recipient payload.
+		Destination::Node(pk) => {
+			encrypted_datas.push(msgs::EncryptedData::Forward {
+				next_node_id: pk.clone(),
+				next_blinding_override: None,
+			});
+			encrypted_datas.push(msgs::EncryptedData::Receive {
+				path_id: None,
+			});
+		},
+		// If we're sending to a Destination::BlindedRoute and there is at least one unblinded
+		// intermediate hop, add the last unblinded intermediate hop's payload.
+		Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, ref blinded_hops }) => {
+			if intermediate_nodes.len() != 0 {
+				// The last intermediate_node payload ...
+				// XXX I think this is broken
+				encrypted_datas.remove(encrypted_datas.len() - 1);
+				encrypted_datas.push(msgs::EncryptedData::Forward {
+					next_node_id: introduction_node_id.clone(),
+					next_blinding_override: Some(blinding_point.clone()),
+				});
+			}
+		}
+	}
+
+	let mut unblinded_pks = intermediate_nodes.clone();
+	if let Destination::Node(pk) = destination {
+		unblinded_pks.push(pk.clone());
+	}
+	let blinded_pks = match destination {
+		Destination::Node(_) => Vec::new(),
+		Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) =>
+			blinded_hops.iter().map(|hop| hop.blinded_node_id.clone()).collect()
+	};
+	let secp_ctx = Secp256k1::new();
+	let (encrypted_data_keys, onion_packet_keys, blinded_node_pks) = construct_path_keys(
+		&secp_ctx,
+		unblinded_pks,
+		blinded_pks, &blinding_secret).unwrap(); // XXX no unwrap
+
+	let mut blinded_hops = Vec::new();
+	for (idx, payload) in encrypted_datas.into_iter().enumerate() {
+		let encoded_payload = payload.encode();
+		let encrypted_payload = encrypt_encrypted_data(encoded_payload, encrypted_data_keys[idx]);
+		blinded_hops.push(BlindedNode {
+			blinded_node_id: blinded_node_pks[idx].clone(),
+			encrypted_payload,
+		})
+	}
 	if let Destination::BlindedRoute(BlindedRoute { blinded_hops: ref hops, .. }) = destination {
 		for hop in hops {
 			blinded_hops.push(hop.clone()); // XXX no clone
 		}
-	} else {
-		let encrypted_data = (msgs::EncryptedData::Receive { path_id: Some([42; 32]) }).encode();
-		let encrypted_payload = encrypt_encrypted_data(encrypted_data, encrypted_data_keys[encrypted_data_keys.len() - 1]);
-		blinded_hops.push(BlindedNode {
-			blinded_node_id: blinded_node_pks[blinded_node_pks.len() - 1].clone(),
-			encrypted_payload
-		});
 	}
+
 	// XXX test the case of 0 intermediate hops and a Destination::Node
 	let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
 		(intermediate_nodes[0].clone(), PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
@@ -419,7 +410,7 @@ fn blinded_route(blinding_secret: SecretKey, intermediate_nodes: Vec<PublicKey>,
 }
 
 #[inline]
-fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: Vec<&PublicKey>, blinded_path: Vec<PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: Vec<PublicKey>, blinded_path: Vec<PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
 	let mut msg_blinding_point_priv = session_priv.clone();
 	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
 	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
@@ -440,7 +431,6 @@ fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(P
 			unblinded_pk
 		};
 		let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
-		println!("VMW: constructing onion keys, onion packet ss: {:?}, encrypted data ss: {:?}", onion_packet_ss, encrypted_data_ss);
 
 		callback(blinded_hop_pk, onion_packet_ss, onion_packet_blinding_factor, onion_packet_pubkey, encrypted_data_ss);
 
@@ -467,7 +457,7 @@ fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(P
 }
 
 // fn construct_path_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, path: &Vec<PublicKey>, session_priv: &SecretKey) -> Result<(Vec<[u8; 32]>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
-fn construct_path_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, unblinded_path: Vec<&PublicKey>, blinded_path: Vec<PublicKey>, session_priv: &SecretKey) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>, Vec<PublicKey>), secp256k1::Error> {
+fn construct_path_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, unblinded_path: Vec<PublicKey>, blinded_path: Vec<PublicKey>, session_priv: &SecretKey) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>, Vec<PublicKey>), secp256k1::Error> {
 	let mut encrypted_data_keys = Vec::with_capacity(unblinded_path.len() + blinded_path.len());
 	let mut onion_packet_keys = Vec::with_capacity(unblinded_path.len() + blinded_path.len());
 	let mut blinded_node_pks = Vec::with_capacity(unblinded_path.len() + blinded_path.len());
