@@ -12,9 +12,14 @@
 
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
-	use util::chacha20::ChaCha20;
+	use ln::onion_messages;
+	use util::chacha20::{BLOCK_SIZE, ChaCha20};
 	use util::poly1305::Poly1305;
+	use util::ser::{Writeable, Writer};
 	use bitcoin::hashes::cmp::fixed_time_eq;
+
+	// use io;
+	use io::{self, Write};
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -57,6 +62,26 @@ mod real_chachapoly {
 			}
 		}
 
+		pub(crate) fn encode_and_encrypt<W: Writer>(&mut self, input: &onion_messages::ControlTlvs, output: &mut W) -> Result<(), io::Error> {
+			assert!(self.finished == false);
+			let len = input.serialized_length();
+			let mut encrypted_block = [0 as u8; 100];
+			let mut slice: &mut [u8] = &mut encrypted_block;
+			input.write(&mut slice)?;
+			self.cipher.process_in_place(&mut encrypted_block[0..len]);
+
+			self.data_len += len;
+			self.mac.input(&mut encrypted_block[0..len]);
+			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
+			self.finished = true;
+			self.mac.input(&self.aad_len.to_le_bytes());
+			self.mac.input(&(self.data_len as u64).to_le_bytes());
+			let mut tag = [0; 16];
+			self.mac.raw_result(&mut tag);
+			(&mut tag).write(output)?;
+			Ok(())
+		}
+
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
@@ -71,7 +96,6 @@ mod real_chachapoly {
 		}
 
 		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
-			// assert!(input.len() == output.len());
 			assert!(self.finished == false);
 			self.cipher.process_in_place(input_output);
 			self.data_len += input_output.len();

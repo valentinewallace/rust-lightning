@@ -67,7 +67,7 @@ mod real_chacha {
 		}
 	}
 
-	const BLOCK_SIZE: usize = 64;
+	pub const BLOCK_SIZE: usize = 64;
 
 	#[derive(Clone,Copy)]
 	struct ChaChaState {
@@ -273,7 +273,8 @@ mod real_chacha {
 	}
 }
 #[cfg(not(fuzzing))]
-pub use self::real_chacha::ChaCha20;
+pub use self::real_chacha::{BLOCK_SIZE, ChaCha20};
+
 
 #[cfg(fuzzing)]
 mod fuzzy_chacha {
