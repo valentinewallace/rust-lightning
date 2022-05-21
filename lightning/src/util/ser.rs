@@ -89,6 +89,32 @@ impl Writer for LengthCalculatingWriter {
 	}
 }
 
+pub(crate) struct Len34Writer(pub ([u8; 35], usize));
+impl Writer for Len34Writer {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
+		for byte in buf {
+			self.0.0[self.0.1] = *byte;
+			self.0.1 += 1;
+		}
+		// self.0.copy_from_slice(buf);
+		Ok(())
+	}
+}
+
+pub(crate) struct Len68Writer(pub ([u8; 70], usize));
+impl Writer for Len68Writer {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
+		for byte in buf {
+			self.0.0[self.0.1] = *byte;
+			self.0.1 += 1;
+		}
+		// self.0.copy_from_slice(buf);
+		Ok(())
+	}
+}
+
 /// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
 pub(crate) struct FixedLengthReader<R: Read> {
@@ -480,6 +506,9 @@ impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
+impl_array!(50); // for channel id & hmac
+impl_array!(35); // for channel id & hmac
+impl_array!(70); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data

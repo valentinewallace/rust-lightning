@@ -15,7 +15,7 @@ mod real_chachapoly {
 	use ln::onion_messages;
 	use util::chacha20::{BLOCK_SIZE, ChaCha20};
 	use util::poly1305::Poly1305;
-	use util::ser::{Writeable, Writer};
+	use util::ser::{Writeable, Writer, Len34Writer, Len68Writer};
 	use bitcoin::hashes::cmp::fixed_time_eq;
 
 	// use io;
@@ -64,14 +64,31 @@ mod real_chachapoly {
 
 		pub(crate) fn encode_and_encrypt<W: Writer>(&mut self, input: &onion_messages::ControlTlvs, output: &mut W) -> Result<(), io::Error> {
 			assert!(self.finished == false);
-			let len = input.serialized_length();
-			let mut encrypted_block = [0 as u8; 100];
-			let mut slice: &mut [u8] = &mut encrypted_block;
-			input.write(&mut slice)?;
-			self.cipher.process_in_place(&mut encrypted_block[0..len]);
-
-			self.data_len += len;
-			self.mac.input(&mut encrypted_block[0..len]);
+			// let len = input.serialized_length() - 16;
+			macro_rules! encode_and_encrypt_block {
+				($block: expr) => {
+					input.write(&mut $block)?;
+					self.cipher.process_in_place(&mut $block.0.0);
+					(&mut $block.0.0).write(output)?;
+					self.data_len += $block.0.0.len();
+					self.mac.input(&mut $block.0.0);
+				}
+			}
+			match input {
+				onion_messages::ControlTlvs::Receive { path_id: Some(_) } => {
+					let mut block = Len34Writer(([0 as u8; 1 + 1 + 33], 0));
+					encode_and_encrypt_block!(block);
+				},
+				onion_messages::ControlTlvs::Receive { path_id: None } => {},
+				onion_messages::ControlTlvs::Forward { next_blinding_override: Some(_), .. } => {
+					let mut block = Len68Writer(([0 as u8; 1 + 1 + 33 + 1 + 1 + 33], 0));
+					encode_and_encrypt_block!(block);
+				},
+				onion_messages::ControlTlvs::Forward { next_blinding_override: None, .. } => {
+					let mut block = Len34Writer(([0 as u8; 1 + 1 + 33], 0));
+					encode_and_encrypt_block!(block);
+				},
+			}
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.finished = true;
 			self.mac.input(&self.aad_len.to_le_bytes());

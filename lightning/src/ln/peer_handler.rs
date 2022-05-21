@@ -1505,7 +1505,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
 					MessageSendEvent::SendOnionMessage { ref node_id, ref msg } => {
-						println!("VMW: sending onion msg");
+						println!("VMW: sending onion msg to {:?}", node_id);
 						log_trace!(self.logger, "Handling SendOnionMessage event in peer_handler for node {}", log_pubkey!(node_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
