@@ -110,7 +110,6 @@ impl Writer for Len68Writer {
 			self.0.0[self.0.1] = *byte;
 			self.0.1 += 1;
 		}
-		// self.0.copy_from_slice(buf);
 		Ok(())
 	}
 }
@@ -506,9 +505,10 @@ impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
-impl_array!(50); // for channel id & hmac
-impl_array!(35); // for channel id & hmac
-impl_array!(70); // for channel id & hmac
+impl_array!(50);
+impl_array!(35);
+impl_array!(70);
+impl_array!(1);
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data

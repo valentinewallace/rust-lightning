@@ -21,11 +21,11 @@ use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
 use util::chacha20poly1305rfc::{ChaChaPoly1305Reader, ChaCha20Poly1305RFC};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::ser::{self, BigSize, FixedLengthReader, Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{self, BigSize, FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
-use io::{self, Cursor, Read};
+use io::{self, Read};
 use sync::{Arc, Mutex};
 
 pub(crate) struct Payload {
@@ -38,15 +38,12 @@ impl Writeable for Payload {
 			EncryptedTlvs::Blinded(encrypted_bytes) => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(4, encrypted_bytes, vec_type)
-				});
+				})
 			},
 			EncryptedTlvs::Unblinded((control_tlvs, ss)) => {
-				BigSize(1 + 1 + control_tlvs.serialized_length() as u64 + 16).write(w)?;
-				BigSize(4).write(w)?;
-				BigSize(control_tlvs.serialized_length() as u64 + 16).write(w)?;
-				let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&ss[..]);
-				let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-				chacha.encode_and_encrypt(&control_tlvs, w)?;
+				encode_varint_length_prefixed_tlv!(w, {
+					(4, control_tlvs, (chacha, ss))
+				})
 			}
 		}
 		Ok(())
@@ -66,6 +63,7 @@ impl ReadableArgs<SharedSecret> for Payload {
 		}
 
 		let mut rd = FixedLengthReader::new(r, v.0);
+		// TODO: support reply paths
 		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
 		let mut control_tlvs: Option<ControlTlvs> = None;
 		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_tlvs_ss[..]);
@@ -118,6 +116,13 @@ impl Writeable for ControlTlvs {
 			},
 		}
 		Ok(())
+	}
+
+	fn serialized_length(&self) -> usize {
+		let mut len_calc = LengthCalculatingWriter(0);
+		self.write(&mut len_calc).expect("No in-memory data may fail to serialize");
+		// We'll never serialize without the tag, so add 16 bytes here
+		len_calc.0 + 16
 	}
 }
 
@@ -182,7 +187,7 @@ impl BlindedRoute {
 		let secp_ctx = Secp256k1::new();
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let (encrypted_data_keys, _, blinded_node_pks) = construct_path_keys(&secp_ctx, &node_pks, None, &blinding_secret).unwrap(); // XXX no unwrap
+		let (encrypted_data_keys, _, blinded_node_pks) = construct_sending_keys(&secp_ctx, &node_pks, None, &blinding_secret).unwrap(); // XXX no unwrap
 		let mut blinded_hops = Vec::with_capacity(node_pks.len());
 		for (idx, pk) in node_pks.iter().skip(1).enumerate() {
 			let encrypted_data = (msgs::EncryptedData::Forward {
@@ -266,7 +271,7 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 					(introduction_node_id.clone(), blinding_point.clone()),
 			}
 		};
-		let (encrypted_data_keys, onion_packet_keys, _) = construct_path_keys(
+		let (encrypted_data_keys, onion_packet_keys, _) = construct_sending_keys(
 			&self.secp_ctx,
 			&intermediate_nodes,
 			Some(&destination), &blinding_secret).unwrap(); // XXX no unwrap
@@ -452,7 +457,7 @@ fn encrypt_encrypted_data(encrypted_data: Vec<u8>, encrypted_data_ss: SharedSecr
 	let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_data_ss[..]);
 	let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
 	let mut tag = [0; 16];
-	chacha.encrypt_in_place(&mut encrypted_data, &mut tag);
+	chacha.encrypt_in_place(&mut encrypted_data, Some(&mut tag));
 	encrypted_data.extend_from_slice(&tag);
 	encrypted_data
 }
@@ -521,7 +526,7 @@ fn keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(P
 	Ok(())
 }
 
-fn construct_path_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: Option<&Destination>, session_priv: &SecretKey) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>, Vec<PublicKey>), secp256k1::Error> {
+fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: Option<&Destination>, session_priv: &SecretKey) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>, Vec<PublicKey>), secp256k1::Error> {
 	let mut encrypted_data_keys = Vec::with_capacity(unblinded_path.len());
 	let mut onion_packet_keys = Vec::with_capacity(unblinded_path.len());
 	let mut blinded_node_pks = Vec::with_capacity(unblinded_path.len());

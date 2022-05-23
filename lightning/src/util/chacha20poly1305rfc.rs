@@ -10,6 +10,7 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
+use util::ser::{Writeable, Writer};
 use io;
 
 #[cfg(not(fuzzing))]
@@ -115,13 +116,19 @@ mod real_chachapoly {
 			self.mac.raw_result(out_tag);
 		}
 
-		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: Option<&mut [u8]>) {
 			assert!(self.finished == false);
 			self.cipher.process_in_place(input_output);
 			self.data_len += input_output.len();
 			self.mac.input(input_output);
-			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
+			if let Some(tag) = out_tag {
+				self.get_tag(tag);
+			}
+		}
+
+		pub fn get_tag(&mut self, out_tag: &mut [u8]) {
 			self.finished = true;
+			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 			self.mac.raw_result(out_tag);
@@ -193,11 +200,27 @@ pub(crate) struct ChaChaPoly1305Reader<'a, R: io::Read> {
 impl<'a, R: io::Read> io::Read for ChaChaPoly1305Reader<'a, R> {
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		let res = self.read.read(dest)?;
-		println!("VMW: just read from R into dest: {:02x?}", dest);
 		if res > 0 {
 			self.chacha.decrypt_in_place(&mut dest[0..res], None);
 		}
 		Ok(res)
+	}
+}
+
+pub(crate) struct ChaChaPoly1305Writer<'a, W: Writer> {
+	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	pub write: &'a mut W,
+}
+
+impl<'a, W: Writer> Writer for ChaChaPoly1305Writer<'a, W> {
+	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
+		println!("VMW: writing to chachapoly, src: {:02x?}", src);
+		for byte in src.iter() {
+			let mut encrypted_byte = [*byte];
+			self.chacha.encrypt_in_place(&mut encrypted_byte, None);
+			encrypted_byte.write(self.write)?;
+		}
+		Ok(())
 	}
 }
 
