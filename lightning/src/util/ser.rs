@@ -599,6 +599,7 @@ impl Readable for Vec<u8> {
 		Ok(ret)
 	}
 }
+
 impl Writeable for Vec<Signature> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

@@ -21,13 +21,55 @@ use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
 use util::chacha20poly1305rfc::{ChaChaPoly1305Reader, ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::ser::{FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer};
+use util::ser::{BigSize, FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
 use io::{self, Read};
 use sync::{Arc, Mutex};
 
+pub(crate) struct Packet {
+	/// We don't want to disconnect a peer just because they provide a bogus public key, so we hold a
+	/// Result instead of a PublicKey as we'd like.
+	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
+	// Unlike the onion packets used for payments, onion message packets can greater than 1300 bytes.
+	pub(crate) hop_data: Vec<u8>,
+	pub(crate) hmac: [u8; 32],
+}
+
+impl Writeable for Packet {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		BigSize(self.hop_data.len() as u64).write(w)?;
+		match self.public_key {
+			Ok(pubkey) => pubkey.write(w)?,
+			Err(_) => [0u8;33].write(w)?,
+		}
+		w.write_all(&self.hop_data)?;
+		self.hmac.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for Packet {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let hop_data_len = Readable::read(r)?;
+		let public_key = {
+			let mut buf = [0u8;33];
+			r.read_exact(&mut buf)?;
+			PublicKey::from_slice(&buf)
+		};
+		let hop_data = Readable::read(r)?;
+		println!("VMW: read hop_data");
+		println!("VMW: about to read hmac");
+		let hmac = Readable::read(r)?;
+		println!("VMW: read hmac, returning Ok");
+		Ok(Packet {
+			public_key,
+			hop_data,
+			hmac,
+		})
+	}
+}
 pub(crate) struct Payload {
 	encrypted_tlvs: EncryptedTlvs,
 }
