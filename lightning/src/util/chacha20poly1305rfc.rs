@@ -10,6 +10,8 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
+use io;
+
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
 	use ln::onion_messages;
@@ -95,6 +97,7 @@ mod real_chachapoly {
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 			let mut tag = [0; 16];
 			self.mac.raw_result(&mut tag);
+			println!("VMW: in encode_and_encrypt, writing tag: {:02x?}", tag);
 			(&mut tag).write(output)?;
 			Ok(())
 		}
@@ -125,14 +128,14 @@ mod real_chachapoly {
 		}
 
 		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
-			if self.decrypt_inner(input, Some(output), tag) {
+			if self.decrypt_inner(input, Some(output), Some(tag)) {
 				self.cipher.process(input, output);
 				return true
 			}
 			false
 		}
 
-		pub fn decrypt_in_place(&mut self, input: &mut [u8], tag: &[u8]) -> bool {
+		pub fn decrypt_in_place(&mut self, input: &mut [u8], tag: Option<&[u8]>) -> bool {
 			if self.decrypt_inner(input, None, tag) {
 				self.cipher.process_in_place(input);
 				return true
@@ -140,23 +143,32 @@ mod real_chachapoly {
 			false
 		}
 
-		fn decrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, tag: &[u8]) -> bool {
+
+		fn decrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, tag: Option<&[u8]>) -> bool {
 			if let Some(output) = output {
 				assert!(input.len() == output.len());
 			}
 			assert!(self.finished == false);
 
-			self.finished = true;
 
 			self.mac.input(input);
 
 			self.data_len += input.len();
+
+			if let Some(tag) = tag {
+				return self.finish_and_check_tag(tag)
+			}
+			true
+		}
+
+		pub fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
+			self.finished = true;
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
-
 			let mut calc_tag =  [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
+			// println!("VMW: in check_tag, expected_tag: {:02x?}, actual tag: {:02x?}", tag, calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
 				// if let Some(output) = output {
 				//   self.cipher.process(input, output);
@@ -172,6 +184,22 @@ mod real_chachapoly {
 }
 #[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
+
+pub(crate) struct ChaChaPoly1305Reader<'a, R: io::Read> {
+	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	pub read: R,
+}
+
+impl<'a, R: io::Read> io::Read for ChaChaPoly1305Reader<'a, R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
+		let res = self.read.read(dest)?;
+		println!("VMW: just read from R into dest: {:02x?}", dest);
+		if res > 0 {
+			self.chacha.decrypt_in_place(&mut dest[0..res], None);
+		}
+		Ok(res)
+	}
+}
 
 #[cfg(fuzzing)]
 mod fuzzy_chachapoly {

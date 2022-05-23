@@ -526,7 +526,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 pub(crate) enum Payload {
 	Payment(msgs::OnionHopData),
-	Message(msgs::OnionMsgPayload),
+	Message(onion_messages::Payload),
 }
 
 /// Data decrypted from the onion payload.
@@ -560,7 +560,7 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<[u8; 32]>) -> Result<Hop, OnionDecodeErr> {
+pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<Hop, OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	println!("VMW: using mu {:02x?} to check onion packet hmac", mu);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
@@ -583,7 +583,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 			Err(e) => Err(e)
 		}
 	} else if encrypted_tlv_ss.is_some() {
-		match <msgs::OnionMsgPayload as ReadableArgs<[u8; 32]>>::read(&mut chacha_stream, encrypted_tlv_ss.unwrap()) {
+		match <onion_messages::Payload as ReadableArgs<SharedSecret>>::read(&mut chacha_stream, encrypted_tlv_ss.unwrap()) {
 			// XXX onion message payloads have a different format, may have to read a bigsize first up
 			// there
 			Ok(payload) => Ok(Payload::Message(payload)),
@@ -602,6 +602,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
 				_ => 0x2000 | 2, // Should never happen
 			};
+			println!("VMW: erroring, err {:?}", err);
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data 1",
 				err_code: error_code,
