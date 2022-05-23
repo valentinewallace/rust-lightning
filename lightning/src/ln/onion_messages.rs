@@ -32,17 +32,17 @@ pub(crate) struct Payload {
 	encrypted_tlvs: EncryptedTlvs,
 }
 
-impl Writeable for Payload {
+impl Writeable for (Payload, SharedSecret) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match &self.encrypted_tlvs {
+		match &self.0.encrypted_tlvs {
 			EncryptedTlvs::Blinded(encrypted_bytes) => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(4, encrypted_bytes, vec_type)
 				})
 			},
-			EncryptedTlvs::Unblinded((control_tlvs, ss)) => {
+			EncryptedTlvs::Unblinded(control_tlvs) => {
 				encode_varint_length_prefixed_tlv!(w, {
-					(4, control_tlvs, (chacha, ss))
+					(4, control_tlvs, (chacha, self.1))
 				})
 			}
 		}
@@ -79,14 +79,14 @@ impl ReadableArgs<SharedSecret> for Payload {
 		}
 
 		Ok(Payload {
-			encrypted_tlvs: EncryptedTlvs::Unblinded((control_tlvs.unwrap(), encrypted_tlvs_ss)),
+			encrypted_tlvs: EncryptedTlvs::Unblinded(control_tlvs.unwrap()),
 		})
 	}
 }
 
 pub(crate) enum EncryptedTlvs {
 	Blinded(Vec<u8>),
-	Unblinded((ControlTlvs, SharedSecret)),
+	Unblinded(ControlTlvs),
 }
 
 #[derive(Debug)]
@@ -337,7 +337,7 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 				encrypted_tlvs
 			})) => {
 				match encrypted_tlvs {
-					EncryptedTlvs::Unblinded((ControlTlvs::Receive { path_id }, _)) => {
+					EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id }) => {
 						println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
 					},
 					_ => unreachable!() // XXX
@@ -345,7 +345,7 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 			},
 			onion_utils::Hop::Forward {
 				next_hop_data: onion_utils::Payload::Message(Payload {
-					encrypted_tlvs: EncryptedTlvs::Unblinded((control_tlvs, _)),
+					encrypted_tlvs: EncryptedTlvs::Unblinded(control_tlvs),
 				}),
 				next_hop_hmac,
 				new_packet_bytes
@@ -414,49 +414,49 @@ where K::Target: KeysInterface<Signer = Signer>
 	}
 }
 
-fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<SharedSecret>) -> Vec<Payload> {
+fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<SharedSecret>) -> Vec<(Payload, SharedSecret)> {
 	let num_intermediate_nodes = intermediate_nodes.len();
 	let num_payloads = num_intermediate_nodes + destination.num_hops();
 	assert!(encrypted_tlvs_keys.len() >= intermediate_nodes.len() + 1);
 	let mut payloads = Vec::with_capacity(num_payloads);
 	let mut enc_tlv_keys = encrypted_tlvs_keys.drain(..);
 	for pk in intermediate_nodes.into_iter().skip(1) {
-		payloads.push(Payload {
-			encrypted_tlvs: EncryptedTlvs::Unblinded((ControlTlvs::Forward {
+		payloads.push((Payload {
+			encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward {
 				next_node_id: pk,
 				next_blinding_override: None,
-			}, enc_tlv_keys.next().unwrap()))
-		});
+			})
+		}, enc_tlv_keys.next().unwrap()));
 	}
 	match destination {
 		Destination::Node(pk) => {
 			if num_intermediate_nodes != 0 {
-				payloads.push(Payload {
-					encrypted_tlvs: EncryptedTlvs::Unblinded((ControlTlvs::Forward {
+				payloads.push((Payload {
+					encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward {
 						next_node_id: pk,
 						next_blinding_override: None,
-					}, enc_tlv_keys.next().unwrap()))
-				});
+					})
+				}, enc_tlv_keys.next().unwrap()));
 			}
-			payloads.push(Payload {
-				encrypted_tlvs: EncryptedTlvs::Unblinded((ControlTlvs::Receive {
+			payloads.push((Payload {
+				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive {
 					path_id: None,
-				}, enc_tlv_keys.next().unwrap()))
-			});
+				})
+			}, enc_tlv_keys.next().unwrap()));
 		},
 		Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, blinded_hops }) => {
 			if num_intermediate_nodes != 0 {
-				payloads.push(Payload {
-					encrypted_tlvs: EncryptedTlvs::Unblinded((ControlTlvs::Forward {
+				payloads.push((Payload {
+					encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward {
 						next_node_id: introduction_node_id,
 						next_blinding_override: Some(blinding_point),
-					}, enc_tlv_keys.next().unwrap()))
-				});
+					})
+				}, enc_tlv_keys.next().unwrap()));
 			}
 			for hop in blinded_hops {
-				payloads.push(Payload {
+				payloads.push((Payload {
 					encrypted_tlvs: EncryptedTlvs::Blinded(hop.encrypted_payload),
-				});
+				}, enc_tlv_keys.next().unwrap()));
 			}
 		}
 	}

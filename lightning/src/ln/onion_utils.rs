@@ -210,7 +210,7 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, Some(associated_data))
 }
 
-pub(super) fn construct_onion_message_packet(payloads: Vec<onion_messages::Payload>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
+pub(super) fn construct_onion_message_packet(payloads: Vec<(onion_messages::Payload, SharedSecret)>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
 // pub(super) fn construct_onion_message_packet(payloads: Vec<Vec<u8>>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
