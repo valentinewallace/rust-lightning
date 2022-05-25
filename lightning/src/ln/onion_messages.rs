@@ -21,25 +21,30 @@ use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
 use util::chacha20poly1305rfc::{ChaChaPoly1305Reader, ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::ser::{BigSize, FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer};
+use util::ser::{FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
 use io::{self, Read};
 use sync::{Arc, Mutex};
 
+pub(crate) const SMALL_PACKET_LEN: usize = 1300;
+pub(crate) const BIG_PACKET_LEN: usize = 32768;
+
+#[derive(Clone, Debug)]
 pub(crate) struct Packet {
+	pub(crate) version: u8,
 	/// We don't want to disconnect a peer just because they provide a bogus public key, so we hold a
 	/// Result instead of a PublicKey as we'd like.
 	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
-	// Unlike the onion packets used for payments, onion message packets can greater than 1300 bytes.
+	// Unlike the onion packets used for payments, onion message packets can have payloads greater than 1300 bytes.
 	pub(crate) hop_data: Vec<u8>,
 	pub(crate) hmac: [u8; 32],
 }
 
 impl Writeable for Packet {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		BigSize(self.hop_data.len() as u64).write(w)?;
+		self.version.write(w)?;
 		match self.public_key {
 			Ok(pubkey) => pubkey.write(w)?,
 			Err(_) => [0u8;33].write(w)?,
@@ -50,20 +55,26 @@ impl Writeable for Packet {
 	}
 }
 
-impl Readable for Packet {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let hop_data_len = Readable::read(r)?;
+impl ReadableArgs<u16> for Packet {
+	fn read<R: Read>(r: &mut R, len: u16) -> Result<Self, DecodeError> {
+		if len < 66 {
+			return Err(DecodeError::InvalidValue)
+		}
+		let version = Readable::read(r)?;
 		let public_key = {
 			let mut buf = [0u8;33];
 			r.read_exact(&mut buf)?;
 			PublicKey::from_slice(&buf)
 		};
-		let hop_data = Readable::read(r)?;
-		println!("VMW: read hop_data");
-		println!("VMW: about to read hmac");
+		// 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+		let mut hop_data = vec![0; (len - 66).into()];
+		for i in 0..len - 66 {
+			let byte: u8 = Readable::read(r)?;
+			hop_data[i as usize] = byte;
+		}
 		let hmac = Readable::read(r)?;
-		println!("VMW: read hmac, returning Ok");
 		Ok(Packet {
+			version,
 			public_key,
 			hop_data,
 			hmac,
@@ -413,10 +424,10 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 					Err(e)
 				} else { Ok(new_pubkey) };
 
-				let outgoing_packet = msgs::OnionPacket {
+				let outgoing_packet = Packet {
 					version: 0,
 					public_key,
-					hop_data: new_packet_bytes,
+					hop_data: new_packet_bytes.to_vec(),
 					hmac: next_hop_hmac.clone(),
 				};
 

@@ -31,6 +31,7 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use ln::onion_messages;
 use ln::onion_utils;
 
 use prelude::*;
@@ -303,7 +304,7 @@ pub struct UpdateAddHTLC {
 pub struct OnionMessage {
 	pub(crate) blinding_point: PublicKey,
 	pub(crate) len: u16,
-	pub(crate) onion_routing_packet: OnionPacket,
+	pub(crate) onion_routing_packet: onion_messages::Packet,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
@@ -1322,11 +1323,27 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	onion_routing_packet
 }, {});
 
-impl_writeable_msg!(OnionMessage, {
-	blinding_point,
-	len, // XXX handle other length
-	onion_routing_packet,
-}, {});
+impl Readable for OnionMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let blinding_point: PublicKey = Readable::read(r)?;
+		let len: u16 = Readable::read(r)?;
+		let onion_routing_packet: onion_messages::Packet = <onion_messages::Packet as ReadableArgs<u16>>::read(r, len)?;
+		Ok(Self {
+			blinding_point,
+			len,
+			onion_routing_packet,
+		})
+	}
+}
+
+impl Writeable for OnionMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.blinding_point.write(w)?;
+		self.len.write(w)?;
+		self.onion_routing_packet.write(w)?;
+		Ok(())
+	}
+}
 
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

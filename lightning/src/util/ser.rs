@@ -89,31 +89,6 @@ impl Writer for LengthCalculatingWriter {
 	}
 }
 
-pub(crate) struct Len34Writer(pub ([u8; 35], usize));
-impl Writer for Len34Writer {
-	#[inline]
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
-		for byte in buf {
-			self.0.0[self.0.1] = *byte;
-			self.0.1 += 1;
-		}
-		// self.0.copy_from_slice(buf);
-		Ok(())
-	}
-}
-
-pub(crate) struct Len68Writer(pub ([u8; 70], usize));
-impl Writer for Len68Writer {
-	#[inline]
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
-		for byte in buf {
-			self.0.0[self.0.1] = *byte;
-			self.0.1 += 1;
-		}
-		Ok(())
-	}
-}
-
 /// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
 pub(crate) struct FixedLengthReader<R: Read> {
