@@ -609,8 +609,13 @@ pub(crate) enum Payload {
 	Message(onion_messages::Payload),
 }
 
+enum NextPacketBytes {
+	Payment([u8; 20*65]),
+	Message(Vec<u8>),
+}
+
 /// Data decrypted from the onion payload.
-pub(crate) enum Hop {
+enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
 	Receive(Payload),
@@ -621,7 +626,7 @@ pub(crate) enum Hop {
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
-		new_packet_bytes: [u8; 20*65],
+		new_packet_bytes: NextPacketBytes,
 	},
 }
 
@@ -640,9 +645,34 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<Hop, OnionDecodeErr> {
+pub(crate) fn decode_next_message_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], encrypted_tlvs_ss: SharedSecret) -> Result<(onion_messages::Payload, Option<([u8; 32], Vec<u8>)>), OnionDecodeErr> {
+	match decode_next_hop(shared_secret, hop_data, hmac_bytes, None, Some(encrypted_tlvs_ss)) {
+		Ok(Hop::Receive(Payload::Message(payload))) => Ok((payload, None)),
+		Ok(Hop::Forward {
+			next_hop_data: Payload::Message(payload),
+			next_hop_hmac,
+			new_packet_bytes: NextPacketBytes::Message(next_hop_bytes)
+		}) => Ok((payload, Some((next_hop_hmac, next_hop_bytes)))),
+		Err(e) => Err(e),
+		_ => unreachable!()
+	}
+}
+
+pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<(msgs::OnionHopData, Option<([u8; 32], [u8; 20*65])>), OnionDecodeErr> {
+	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), None) {
+		Ok(Hop::Receive(Payload::Payment(payload))) => Ok((payload, None)),
+		Ok(Hop::Forward {
+			next_hop_data: Payload::Payment(payload),
+			next_hop_hmac,
+			new_packet_bytes: NextPacketBytes::Payment(next_hop_bytes)
+		}) => Ok((payload, Some((next_hop_hmac, next_hop_bytes)))),
+		Err(e) => Err(e),
+		_ => unreachable!()
+	}
+}
+
+fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<Hop, OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
-	println!("VMW: using mu {:02x?} to check onion packet hmac", mu);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
 	if let Some(payment_hash) = payment_hash {
@@ -714,8 +744,15 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 				}
 				return Ok(Hop::Receive(payload));
 			} else {
-				let mut new_packet_bytes = [0; 20*65];
-				let read_pos = chacha_stream.read(&mut new_packet_bytes).unwrap();
+				let (mut new_packet_bytes, read_pos) = if payment_hash.is_some() {
+					let mut new_packet_bytes = [0 as u8; 20*65];
+					let read_pos = chacha_stream.read(&mut new_packet_bytes).unwrap();
+					(NextPacketBytes::Payment(new_packet_bytes), read_pos)
+				} else {
+					let mut new_packet_bytes = vec![0 as u8; hop_data.len()];
+					let read_pos = chacha_stream.read(&mut new_packet_bytes).unwrap();
+					(NextPacketBytes::Message(new_packet_bytes), read_pos)
+				};
 				#[cfg(debug_assertions)]
 				{
 					// Check two things:
@@ -727,7 +764,10 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 				}
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
-				chacha_stream.chacha.process_in_place(&mut new_packet_bytes[read_pos..]);
+				match new_packet_bytes {
+					NextPacketBytes::Payment(ref mut bytes) => chacha_stream.chacha.process_in_place(&mut bytes[read_pos..]),
+					NextPacketBytes::Message(ref mut bytes) => chacha_stream.chacha.process_in_place(&mut bytes[read_pos..]),
+				}
 				return Ok(Hop::Forward {
 					next_hop_data: payload,
 					next_hop_hmac: hmac,

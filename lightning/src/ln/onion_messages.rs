@@ -378,39 +378,13 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 			arr.copy_from_slice(&ss[..]);
 			arr
 		};
-		let next_hop = match onion_utils::decode_next_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, None, Some(encrypted_data_ss)) {
-			Ok(res) => res,
-			Err(e) => {
-				println!("VMW: errored in decode_next_hop: {:?}", e); // XXX logger instead
-				return
-			}
-		};
-		match next_hop {
-			onion_utils::Hop::Receive(onion_utils::Payload::Message(Payload {
-				encrypted_tlvs
-			})) => {
-				match encrypted_tlvs {
-					EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id }) => {
-						println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
-					},
-					_ => unreachable!() // XXX
-				}
+		match onion_utils::decode_next_message_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, encrypted_data_ss) {
+			Ok((Payload { encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id })}, None)) => {
+				println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
 			},
-			onion_utils::Hop::Forward {
-				next_hop_data: onion_utils::Payload::Message(Payload {
-					encrypted_tlvs: EncryptedTlvs::Unblinded(control_tlvs),
-				}),
-				next_hop_hmac,
-				new_packet_bytes
-			} => {
-				let (next_node_id, next_blinding_override) = match control_tlvs {
-					ControlTlvs::Receive { path_id } => {
-						println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
-						return
-					},
-					ControlTlvs::Forward { next_node_id, next_blinding_override} =>
-						(next_node_id, next_blinding_override)
-				};
+			Ok((Payload {
+				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward { next_node_id, next_blinding_override }),
+			}, Some((next_hop_hmac, new_packet_bytes)))) => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {
@@ -439,8 +413,8 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 							let blinding_factor = {
 								let mut sha = Sha256::engine();
 								sha.input(&msg.blinding_point.serialize()[..]); // E(i)
-													sha.input(&encrypted_data_ss[..]);
-													Sha256::from_engine(sha).into_inner()
+														sha.input(&encrypted_data_ss[..]);
+														Sha256::from_engine(sha).into_inner()
 							};
 							let mut next_blinding_point = msg.blinding_point.clone();
 							next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]).unwrap();
@@ -451,8 +425,13 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 					},
 				});
 			},
-			_ => panic!() // XXX
-		}
+			Err(e) => {
+				println!("VMW: errored in decode_next_hop: {:?}", e); // XXX logger instead
+			},
+			_ => {
+				println!("VMW: received nonsense onion message");
+			}, // XXX logger instead
+		};
 	}
 }
 
