@@ -340,31 +340,6 @@ mod inbound_payment {
 	}
 }
 
-// /// XXX
-// pub struct BlindedNode {
-//   blinded_pk: PublicKey,
-//   encrypted_payload: Vec<u8>,
-// }
-//
-// /// XXX
-// pub struct BlindedRoute {
-//   introduction_node_pk: PublicKey,
-//   blinding_pk: PublicKey,
-//   blinded_hops: Vec<BlindedNode>,
-// }
-//
-// /// XXX
-// pub struct UserTlv {
-//   r#type: u64,
-//   value: Vec<u8>,
-// }
-//
-// /// XXX
-// pub enum MessageDestination {
-//   PublicKey(PublicKey),
-//   BlindedRoute(BlindedRoute),
-// }
-
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should

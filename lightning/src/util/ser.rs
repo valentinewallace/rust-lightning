@@ -475,15 +475,12 @@ macro_rules! impl_array {
 	);
 }
 
+impl_array!(1); // XXX
 impl_array!(3); // for rgb
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
-impl_array!(50);
-impl_array!(35);
-impl_array!(70);
-impl_array!(1);
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data
@@ -574,7 +571,6 @@ impl Readable for Vec<u8> {
 		Ok(ret)
 	}
 }
-
 impl Writeable for Vec<Signature> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

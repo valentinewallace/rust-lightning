@@ -933,7 +933,7 @@ mod fuzzy_internal_msgs {
 		pub(crate) total_msat: u64,
 	}
 
-	pub(crate) enum OnionHopDataFormat { // XXX rename to OnionPayloadFormat
+	pub(crate) enum OnionHopDataFormat {
 		Legacy { // aka Realm-0
 			short_channel_id: u64,
 		},
@@ -946,27 +946,13 @@ mod fuzzy_internal_msgs {
 		},
 	}
 
-	pub struct OnionHopData { // XXX rename to OnionPayload
+	pub struct OnionHopData {
 		pub(crate) format: OnionHopDataFormat,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 		// 12 bytes of 0-padding for Legacy format
-	}
-
-	pub(crate) enum EncryptedData {
-		Forward {
-			next_blinding_override: Option<PublicKey>,
-			next_node_id: PublicKey,
-		},
-		Receive {
-			path_id: Option<[u8; 32]>,
-		}
-	}
-
-	pub struct OnionMsgPayload {
-		pub(crate) encrypted_data: Vec<u8>,
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1449,195 +1435,6 @@ impl Readable for OnionHopData {
 			format,
 			amt_to_forward: amt,
 			outgoing_cltv_value: cltv_value,
-		})
-	}
-}
-
-
-// impl Writeable for (OnionMsgPayload, [u8; 32], bool) { // XXX no more bool
-impl Writeable for OnionMsgPayload { // XXX no more bool
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// let mut encrypted_data_tlvs = Vec::new();
-		// match &self.0.format {
-		//   OnionMsgPayloadFormat::Forward { next_node_id, next_blinding_override } => { // XXX write other fields
-		//     encode_tlv_stream!(&mut encrypted_data_tlvs, {
-		//       (4, next_node_id, required),
-		//       (8, next_blinding_override, option)
-		//     });
-		//   },
-		//   OnionMsgPayloadFormat::Receive { path_id, .. } => {
-		//     encode_tlv_stream!(&mut encrypted_data_tlvs, {
-		//       (6, path_id, option)
-		//     });
-		//   },
-		// };
-		// let mut chacha = ChaCha20Poly1305RFC::new(&self.1, &[0; 12], &[]);
-		// let mut tag = [0; 16];
-		// chacha.encrypt_in_place(&mut encrypted_data_tlvs, &mut tag);
-		// encrypted_data_tlvs.extend_from_slice(&tag);
-		// if self.2 {
-			encode_varint_length_prefixed_tlv!(w, {
-				(4, self.encrypted_data, vec_type)
-			});
-		// } else {
-		//   encrypted_data_tlvs.write(w)?;
-		// }
-		Ok(())
-	}
-}
-
-impl Writeable for EncryptedData {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		match self {
-			EncryptedData::Receive { path_id } => {
-				encode_tlv_stream!(writer, {
-					(6, path_id, option)
-				});
-			},
-			EncryptedData::Forward { next_node_id, next_blinding_override } => {
-				encode_tlv_stream!(writer, {
-					(4, next_node_id, required),
-					(8, next_blinding_override, option)
-				});
-			},
-		}
-		Ok(())
-	}
-}
-
-impl Readable for EncryptedData {
-	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		// let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss);
-		// let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-		// let mut encrypted_tlvs = encrypted_tlvs_opt.unwrap();
-		// if encrypted_tlvs.len() < 16 {
-		//   return Err(DecodeError::InvalidValue);
-		// }
-		// let encrypted_len = encrypted_tlvs.len() - 16;
-		// let mut tag = [0; 16];
-		// tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
-		// chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
-		// let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
-		// println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
-
-		let mut _padding: Option<Vec<u8>> = Some(Vec::new());
-		let mut short_channel_id: Option<u64> = None;
-		let mut next_node_id: Option<PublicKey> = None;
-		let mut path_id: Option<[u8; 32]> = None;
-		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut r, {
-			(1, _padding, vec_type),
-			(2, short_channel_id, option),
-			(4, next_node_id, option),
-			(6, path_id, option),
-			(8, next_blinding_override, option),
-		});
-		println!("VMW: decoded second set of tlvs");
-
-		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
-		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none() &&
-			short_channel_id.is_none();
-
-		let payload_fmt = if valid_fwd_fmt {
-			EncryptedData::Forward {
-				next_node_id: next_node_id.unwrap(),
-				next_blinding_override,
-			}
-		} else if valid_recv_fmt {
-			EncryptedData::Receive {
-				path_id,
-				// reply_path,
-				// custom_tlvs,
-			}
-		} else {
-			return Err(DecodeError::InvalidValue)
-		};
-		println!("VMW: reading OnionMsgPayload was Ok");
-		Ok(payload_fmt)
-	}
-}
-
-impl ReadableArgs<[u8; 32]> for OnionMsgPayload {
-	fn read<R: Read>(mut r: &mut R, enc_tlv_ss: [u8; 32]) -> Result<Self, DecodeError> {
-		println!("VMW: in ReadableArgs for OnionMsgPayload");
-		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
-		let v: VarInt = Decodable::consensus_decode(&mut r)
-			.map_err(|e| match e {
-				Error::Io(ioe) => DecodeError::from(ioe),
-				_ => DecodeError::InvalidValue
-			})?;
-		if v.0 == 0 { // 0-length payload
-			println!("VMW: v.0 was 0, erroring");
-			return Err(DecodeError::InvalidValue)
-		}
-		println!("VMW: about to decode first set of tlvs");
-
-		let mut rd = FixedLengthReader::new(r, v.0);
-		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
-		let mut encrypted_tlvs_opt: Option<Vec<u8>> = Some(Vec::new());
-		// let mut custom_tlvs = Vec::new();
-		decode_tlv_stream!(&mut rd, {
-			(2, _reply_path_bytes, vec_type),
-			(4, encrypted_tlvs_opt, vec_type),
-		});
-		println!("VMW: decoded first tlvs, encrypted data: {:02x?}", encrypted_tlvs_opt);
-		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
-		// TODO is this below check accurate/needed?
-		// if encrypted_tlvs_opt == Some(Vec::new()) {
-		//   return Err(DecodeError::InvalidValue);
-		// }
-
-		// let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&enc_tlv_ss);
-		// let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-		// let mut encrypted_tlvs = encrypted_tlvs_opt.unwrap();
-		// if encrypted_tlvs.len() < 16 {
-		//   return Err(DecodeError::InvalidValue);
-		// }
-		// let encrypted_len = encrypted_tlvs.len() - 16;
-		// let mut tag = [0; 16];
-		// tag.copy_from_slice(&encrypted_tlvs[encrypted_len..]);
-		// chacha.decrypt_in_place(&mut encrypted_tlvs[0..encrypted_len], &tag);
-		// let mut decrypted_tlvs = Cursor::new(&encrypted_tlvs[0..encrypted_len]);
-		// println!("VMW: decrypted_tlvs: {:02x?}", decrypted_tlvs);
-    //
-		// let mut _padding: Option<Vec<u8>> = Some(Vec::new());
-		// let mut short_channel_id: Option<u64> = None;
-		// let mut next_node_id: Option<PublicKey> = None;
-		// let mut path_id: Option<[u8; 32]> = None;
-		// let mut next_blinding_override: Option<PublicKey> = None;
-		// decode_tlv_stream!(&mut decrypted_tlvs, {
-		//   (1, _padding, vec_type),
-		//   (2, short_channel_id, option),
-		//   (4, next_node_id, option),
-		//   (6, path_id, option),
-		//   (8, next_blinding_override, option),
-		// });
-		// println!("VMW: decoded second set of tlvs");
-    //
-		// let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
-		// let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none() &&
-		//   short_channel_id.is_none();
-    //
-		// let payload_fmt = if valid_fwd_fmt {
-		//   OnionMsgPayloadFormat::Forward {
-		//     next_node_id: next_node_id.unwrap(),
-		//     next_blinding_override,
-		//   }
-		// } else if valid_recv_fmt {
-		//   OnionMsgPayloadFormat::Receive {
-		//     path_id,
-		//     // reply_path,
-		//     // custom_tlvs,
-		//   }
-		// } else {
-		//   return Err(DecodeError::InvalidValue)
-		// };
-		// println!("VMW: reading OnionMsgPayload was Ok");
-		// Ok(OnionMsgPayload {
-		//   format: payload_fmt
-		// })
-		Ok(OnionMsgPayload {
-			encrypted_data: encrypted_tlvs_opt.unwrap(),
 		})
 	}
 }
