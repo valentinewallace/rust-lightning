@@ -99,7 +99,6 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 	Ok(())
 }
 
-
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.len());
@@ -185,6 +184,7 @@ fn shift_arr_right(arr: &mut [u8; ONION_DATA_LEN], amt: usize) {
 		arr[i] = 0;
 	}
 }
+
 #[inline]
 fn shift_vec_right(vec: &mut Vec<u8>, amt: usize) {
 	for i in (amt..vec.len()).rev() {
@@ -223,9 +223,9 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 pub(super) fn construct_onion_message_packet(payloads: Vec<(onion_messages::Payload, SharedSecret)>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> onion_messages::Packet {
 	let payloads_serialized_len = payloads.iter()
 		.fold(0, |total, next_payload| total + next_payload.serialized_length() + 32 /* HMAC */ );
-	let hop_data_len = if payloads_serialized_len <= 1300 {
+	let hop_data_len = if payloads_serialized_len <= onion_messages::SMALL_PACKET_LEN {
 		onion_messages::SMALL_PACKET_LEN
-	} else if payloads_serialized_len <= 32768 {
+	} else if payloads_serialized_len <= onion_messages::BIG_PACKET_LEN {
 		onion_messages::BIG_PACKET_LEN
 	} else { payloads_serialized_len };
 
@@ -604,7 +604,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 	} else { unreachable!(); }
 }
 
-pub(crate) enum Payload {
+enum Payload {
 	Payment(msgs::OnionHopData),
 	Message(onion_messages::Payload),
 }
@@ -690,6 +690,7 @@ pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], 
 }
 
 fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<(Payload, Option<([u8; 32], NextPacketBytes)>), OnionDecodeErr> {
+	assert!(payment_hash.is_some() && encrypted_tlv_ss.is_none() || payment_hash.is_none() && encrypted_tlv_ss.is_some());
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
@@ -706,19 +707,17 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 	let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
 	let payload_read_res = if payment_hash.is_some() {
-		match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) { // XXX clean up and below
+		match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
 			Ok(payload) => Ok(Payload::Payment(payload)),
 			Err(e) => Err(e)
 		}
 	} else if encrypted_tlv_ss.is_some() {
 		match <onion_messages::Payload as ReadableArgs<SharedSecret>>::read(&mut chacha_stream, encrypted_tlv_ss.unwrap()) {
-			// XXX onion message payloads have a different format, may have to read a bigsize first up
-			// there
 			Ok(payload) => Ok(Payload::Message(payload)),
 			Err(e) => Err(e)
 		}
 	} else {
-		unimplemented!(); // XXX
+		unreachable!(); // We already asserted that one of these is `Some`
 	};
 	match payload_read_res {
 		Err(err) => {
@@ -730,7 +729,7 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 				_ => 0x2000 | 2, // Should never happen
 			};
 			return Err(OnionDecodeErr::Relay {
-				err_msg: "Unable to decode our hop data 1",
+				err_msg: "Unable to decode our hop data",
 				err_code: error_code,
 			});
 		},

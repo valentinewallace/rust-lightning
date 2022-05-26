@@ -21,6 +21,7 @@ use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
 use util::chacha20poly1305rfc::{ChaChaPoly1305Reader, ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
+use util::logger::Logger;
 use util::ser::{FixedLengthReader, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer};
 
 use core::mem;
@@ -119,11 +120,9 @@ impl ReadableArgs<SharedSecret> for Payload {
 		// TODO: support reply paths
 		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
 		let mut control_tlvs: Option<ControlTlvs> = None;
-		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_tlvs_ss[..]);
-		let mut chacha_poly = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
 		decode_tlv_stream!(&mut rd, {
 			(2, _reply_path_bytes, vec_type),
-			(4, control_tlvs, (chacha, chacha_poly))
+			(4, control_tlvs, (chacha, encrypted_tlvs_ss))
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 
@@ -142,7 +141,6 @@ pub(crate) enum EncryptedTlvs {
 	Unblinded(ControlTlvs),
 }
 
-#[derive(Debug)]
 pub(crate) enum ControlTlvs {
 	Receive {
 		path_id: Option<[u8; 32]>,
@@ -214,7 +212,6 @@ impl Readable for ControlTlvs {
 }
 
 /// XXX
-#[derive(Clone)]
 pub struct BlindedNode {
 	/// XXX
 	pub blinded_node_id: PublicKey,
@@ -243,6 +240,7 @@ impl BlindedRoute {
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (mut encrypted_data_keys, mut blinded_node_pks) = construct_blinded_route_keys(&secp_ctx, &node_pks, &blinding_secret).map_err(|_| ())?;
 		let mut blinded_hops = Vec::with_capacity(node_pks.len());
+		debug_assert_eq!(encrypted_data_keys.len(), blinded_node_pks.len());
 		let mut enc_tlvs_keys = encrypted_data_keys.drain(..);
 		let mut blinded_pks = blinded_node_pks.drain(..);
 
@@ -301,25 +299,29 @@ impl Destination {
 }
 
 /// XXX
-pub struct OnionMessager<Signer: Sign, K: Deref>
-	where K::Target: KeysInterface<Signer = Signer>
+pub struct OnionMessager<Signer: Sign, K: Deref, L: Deref>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
 {
 	keys_manager: K,
+	logger: L,
 	pending_msg_events: Mutex<Vec<MessageSendEvent>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
 {
 	/// XXX
-	pub fn new(keys_manager: K) -> Self {
+	pub fn new(keys_manager: K, logger: L) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 		OnionMessager {
 			keys_manager,
 			pending_msg_events: Mutex::new(Vec::new()),
 			secp_ctx,
+			logger,
 		}
 	}
 
@@ -344,7 +346,7 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let onion_packet = onion_utils::construct_onion_message_packet(payloads, onion_packet_keys, prng_seed);
 
-		// XXX route_size_insane check
+		// TODO route_size_insane check
 		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
 		pending_msg_events.push(MessageSendEvent::SendOnionMessage {
 			node_id: introduction_node_id,
@@ -358,12 +360,18 @@ impl<Signer: Sign, K: Deref> OnionMessager<Signer, K>
 	}
 }
 
-impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
-	where K::Target: KeysInterface<Signer = Signer>
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessager<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
-		// TODO: add length check
-		let node_secret = self.keys_manager.get_node_secret(Recipient::Node).unwrap(); // XXX no unwrap
+		let node_secret = match self.keys_manager.get_node_secret(Recipient::Node) {
+			Ok(secret) => secret,
+			Err(e) => {
+				log_trace!(self.logger, "Failed to compute blinded public key: {:?}", e);
+				return
+			}
+		};
 		let encrypted_data_ss = SharedSecret::new(&msg.blinding_point, &node_secret);
 		let onion_decode_shared_secret = {
 			let blinding_factor = {
@@ -372,8 +380,15 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 				Hmac::from_engine(hmac).into_inner()
 			};
 			let mut blinded_priv = node_secret.clone();
-			blinded_priv.mul_assign(&blinding_factor).unwrap(); // XXX no unwrap
+			if let Err(e) = blinded_priv.mul_assign(&blinding_factor) {
+				log_trace!(self.logger, "Failed to compute blinded public key: {}", e);
+				return
+			}
 			let mut arr = [0; 32];
+			if let Err(_) = msg.onion_routing_packet.public_key {
+				log_trace!(self.logger, "Failed to accept/forward incoming onion message: invalid ephemeral pubkey");
+				return
+			}
 			let ss = SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &blinded_priv);
 			arr.copy_from_slice(&ss[..]);
 			arr
@@ -382,7 +397,7 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 			Ok(onion_utils::MessageHop::Receive(Payload {
 				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id })
 			})) => {
-				println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
+				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
 			},
 			Ok(onion_utils::MessageHop::Forward {
 				next_hop_data: Payload {
@@ -414,34 +429,40 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 				pending_msg_events.push(MessageSendEvent::SendOnionMessage {
 					node_id: next_node_id,
 					msg: msgs::OnionMessage {
-						blinding_point: next_blinding_override.unwrap_or_else(|| {
-							let blinding_factor = {
-								let mut sha = Sha256::engine();
-								sha.input(&msg.blinding_point.serialize()[..]); // E(i)
-														sha.input(&encrypted_data_ss[..]);
-														Sha256::from_engine(sha).into_inner()
-							};
-							let mut next_blinding_point = msg.blinding_point.clone();
-							next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]).unwrap();
-							next_blinding_point
-						}),
-						len: 1366, // XXX
+						blinding_point: match next_blinding_override {
+							Some(blinding_point) => blinding_point,
+							None => {
+								let blinding_factor = {
+									let mut sha = Sha256::engine();
+									sha.input(&msg.blinding_point.serialize()[..]);
+									sha.input(&encrypted_data_ss[..]);
+									Sha256::from_engine(sha).into_inner()
+								};
+								let mut next_blinding_point = msg.blinding_point.clone();
+								if let Err(e) = next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+									return
+								}
+								next_blinding_point
+							},
+						},
+						len: new_packet_bytes.len() as u16 + 66,
 						onion_routing_packet: outgoing_packet,
 					},
 				});
 			},
 			Err(e) => {
-				println!("VMW: errored in decode_next_hop: {:?}", e); // XXX logger instead
+				log_trace!(self.logger, "Errored decoding onion message packet: {:?}", e);
 			},
-			_ => {
-				println!("VMW: received nonsense onion message");
-			}, // XXX logger instead
+			_ => {}, // This is unreachable unless someone encoded an onion message very weirdly, in which
+			         // case it should be fine to just drop it
 		};
 	}
 }
 
-impl<Signer: Sign, K: Deref> MessageSendEventsProvider for OnionMessager<Signer, K>
-where K::Target: KeysInterface<Signer = Signer>
+impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessager<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
@@ -454,7 +475,7 @@ where K::Target: KeysInterface<Signer = Signer>
 fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<SharedSecret>) -> Vec<(Payload, SharedSecret)> {
 	let num_intermediate_nodes = intermediate_nodes.len();
 	let num_payloads = num_intermediate_nodes + destination.num_hops();
-	assert!(encrypted_tlvs_keys.len() >= intermediate_nodes.len() + 1);
+	assert_eq!(encrypted_tlvs_keys.len(), num_payloads);
 	let mut payloads = Vec::with_capacity(num_payloads);
 	let mut enc_tlv_keys = encrypted_tlvs_keys.drain(..);
 	for pk in intermediate_nodes.into_iter().skip(1) {
@@ -566,8 +587,8 @@ fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FTyp
 }
 
 fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey)
--> Result<(Vec<SharedSecret>, Vec<PublicKey>), secp256k1::Error> {
+	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey
+) -> Result<(Vec<SharedSecret>, Vec<PublicKey>), secp256k1::Error> {
 	let mut encrypted_data_keys = Vec::with_capacity(unblinded_path.len());
 	let mut blinded_node_pks = Vec::with_capacity(unblinded_path.len());
 
@@ -579,7 +600,9 @@ fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>
 	Ok((encrypted_data_keys, blinded_node_pks))
 }
 
-fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: &Destination, session_priv: &SecretKey) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
+fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: &Destination, session_priv: &SecretKey
+) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut encrypted_data_keys = Vec::with_capacity(num_hops);
 	let mut onion_packet_keys = Vec::with_capacity(num_hops);
@@ -603,9 +626,9 @@ fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(secp_
 }
 
 /// XXX
-pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>>;
+pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>, Arc<Logger>>;
 /// XXX
-pub type SimpleRefOnionMessager<'a> = OnionMessager<InMemorySigner, &'a KeysManager>;
+pub type SimpleRefOnionMessager<'a, 'b> = OnionMessager<InMemorySigner, &'a KeysManager, &'b Logger>;
 
 #[cfg(test)]
 mod tests {

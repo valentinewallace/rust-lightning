@@ -93,7 +93,7 @@ impl Writer for LengthCalculatingWriter {
 /// forward to ensure we always consume exactly the fixed length specified.
 pub(crate) struct FixedLengthReader<R: Read> {
 	read: R,
-	pub(crate) bytes_read: u64,
+	bytes_read: u64,
 	pub(crate) total_bytes: u64,
 }
 impl<R: Read> FixedLengthReader<R> {
@@ -475,7 +475,7 @@ macro_rules! impl_array {
 	);
 }
 
-impl_array!(1); // XXX
+impl_array!(1); // for ChaChaPoly1305Writer to write one byte at a time
 impl_array!(3); // for rgb
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2

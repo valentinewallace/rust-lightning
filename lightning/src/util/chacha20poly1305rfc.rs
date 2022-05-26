@@ -165,7 +165,6 @@ pub(crate) struct ChaChaPoly1305Writer<'a, W: Writer> {
 
 impl<'a, W: Writer> Writer for ChaChaPoly1305Writer<'a, W> {
 	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
-		println!("VMW: writing to chachapoly, src: {:02x?}", src);
 		for byte in src.iter() {
 			let mut encrypted_byte = [*byte];
 			self.chacha.encrypt_in_place(&mut encrypted_byte, None);

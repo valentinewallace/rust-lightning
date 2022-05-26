@@ -12,7 +12,6 @@ macro_rules! encode_tlv {
 		encode_tlv!($stream, $type, $field, required)
 	};
 	($stream: expr, $type: expr, $field: expr, (chacha, $ss: expr)) => {
-
 		use util::chacha20poly1305rfc::{ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -172,18 +171,20 @@ macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
 		decode_tlv!($reader, $field, required)
 	}};
-	($reader: expr, $field: ident, (chacha, $chacha: expr)) => {{
+	($reader: expr, $field: ident, (chacha, $ss: expr)) => {{
 		// We start by decoding the field itself minus the 16-byte tag.
 		if $reader.total_bytes < 16 { return Err(DecodeError::InvalidValue) }
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&$ss[..]);
+		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
 		let decrypted_len = $reader.total_bytes - 16;
 		let s = ser::FixedLengthReader::new(&mut $reader, decrypted_len);
-		let mut chacha_stream = ChaChaPoly1305Reader { chacha: &mut $chacha, read: s };
+		let mut chacha_stream = ChaChaPoly1305Reader { chacha: &mut chacha, read: s };
 		$field = Some(ser::Readable::read(&mut chacha_stream)?);
 
 		let mut tag = [0 as u8; 16];
 		let mut s = ser::FixedLengthReader::new(&mut $reader, 16);
 		s.read(&mut tag)?;
-		if !$chacha.finish_and_check_tag(&tag) {
+		if !chacha.finish_and_check_tag(&tag) {
 			return Err(DecodeError::InvalidValue)
 		}
 	}};

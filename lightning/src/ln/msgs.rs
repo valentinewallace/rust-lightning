@@ -1275,24 +1275,15 @@ impl Writeable for OnionPacket {
 
 impl Readable for OnionPacket {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		// println!("VMW: reading onionpacket");
-		let version = Readable::read(r)?;
-		let public_key = {
-			let mut buf = [0u8;33];
-			r.read_exact(&mut buf)?;
-			PublicKey::from_slice(&buf)
-		};
-		// println!("VMW: about to read hop_data");
-		let hop_data = Readable::read(r)?;
-		// println!("VMW: read hop_data");
-		// println!("VMW: about to read hmac");
-		let hmac = Readable::read(r)?;
-		// println!("VMW: read hmac, returning Ok");
 		Ok(OnionPacket {
-			version,
-			public_key,
-			hop_data,
-			hmac,
+			version: Readable::read(r)?,
+			public_key: {
+				let mut buf = [0u8;33];
+				r.read_exact(&mut buf)?;
+				PublicKey::from_slice(&buf)
+			},
+			hop_data: Readable::read(r)?,
+			hmac: Readable::read(r)?,
 		})
 	}
 }

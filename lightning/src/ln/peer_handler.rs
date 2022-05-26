@@ -396,7 +396,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, SimpleRefOnionMessager<'c>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, SimpleRefOnionMessager<'c, 'f>, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
@@ -917,11 +917,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 										let mut reader = io::Cursor::new(&msg_data[..]);
 										let message_result = wire::read(&mut reader, &*self.custom_message_handler);
 										let message = match message_result {
-											Ok(x) => {
-												println!("VMW: received message of type {}", x.type_id());
-												log_info!(self.logger, "VMW: received message of type {}", x.type_id());
-												x
-											},
+											Ok(x) => x,
 											Err(e) => {
 												match e {
 													// Note that to avoid recursion we never call
@@ -1115,6 +1111,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
 			},
+
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
@@ -1181,7 +1178,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// TODO: handle message
 			},
 
-			// Onion messages:
+			// Onion message:
 			wire::Message::OnionMessage(msg) => {
 				self.message_handler.onion_message_handler.handle_onion_message(&peer.their_node_id.unwrap(), &msg);
 			},
@@ -1505,7 +1502,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
 					MessageSendEvent::SendOnionMessage { ref node_id, ref msg } => {
-						println!("VMW: sending onion msg to {:?}", node_id);
 						log_trace!(self.logger, "Handling SendOnionMessage event in peer_handler for node {}", log_pubkey!(node_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}

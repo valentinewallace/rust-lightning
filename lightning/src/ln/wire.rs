@@ -173,19 +173,7 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 			Ok(Message::ClosingSigned(Readable::read(buffer)?))
 		},
 		msgs::OnionMessage::TYPE => {
-			println!("VMW: got onion message type in wire");
-			let res = Readable::read(buffer);
-			match res {
-				Ok(msg) => {
-					let onionmsg: msgs::OnionMessage = msg;
-					println!("VMW: len in msgs::OnionMessage: {}", onionmsg.len);
-					Ok(Message::OnionMessage(onionmsg))
-				},
-				Err(e) => {
-					println!("VMW: got onion message type in wire: {:?}", e);
-					Err(e)
-				}
-			}
+			Ok(Message::OnionMessage(Readable::read(buffer)?))
 		},
 		msgs::UpdateAddHTLC::TYPE => {
 			Ok(Message::UpdateAddHTLC(Readable::read(buffer)?))
