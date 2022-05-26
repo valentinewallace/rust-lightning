@@ -350,7 +350,7 @@ impl Destination {
 
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
 /// used to retrieve invoices and fulfill invoice requests from offers.
-pub struct OnionMessager<Signer: Sign, K: Deref, L: Deref>
+pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
@@ -363,7 +363,7 @@ pub struct OnionMessager<Signer: Sign, K: Deref, L: Deref>
 	// custom_handler: CustomHandler, // handles custom onion messages
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
@@ -372,7 +372,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
 	pub fn new(keys_manager: K, logger: L) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
-		OnionMessager {
+		OnionMessenger {
 			keys_manager,
 			pending_msg_events: Mutex::new(Vec::new()),
 			secp_ctx,
@@ -415,7 +415,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
 	}
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessager<Signer, K, L>
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
@@ -503,7 +503,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessager<Sig
 	}
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessager<Signer, K, L>
+impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
@@ -681,10 +681,10 @@ fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(
 
 /// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
 /// [`SimpleArcPeerManager`]. See their docs for more details.
-pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>, Arc<Logger>>;
+pub type SimpleArcOnionMessenger = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<Logger>>;
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
-pub type SimpleRefOnionMessager<'a, 'b> = OnionMessager<InMemorySigner, &'a KeysManager, &'b Logger>;
+pub type SimpleRefOnionMessenger<'a, 'b> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b Logger>;
 
 #[cfg(test)]
 mod tests {

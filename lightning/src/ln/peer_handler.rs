@@ -21,7 +21,7 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, LightningError, OnionMessageHandler, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use ln::onion_messages::{SimpleArcOnionMessager, SimpleRefOnionMessager};
+use ln::onion_messages::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
@@ -219,10 +219,10 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 	/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 	pub route_handler: RM,
 
-	/// A message handler which handles onion messages. Using this is just an [`OnionMessager`] object
+	/// A message handler which handles onion messages. Using this is just an [`OnionMessenger`] object
 	/// or an [`IgnoringMessageHandler`].
 	///
-	/// [`OnionMessager`]: crate::ln::onion_messages::OnionMessager
+	/// [`OnionMessenger`]: crate::ln::onion_messages::OnionMessenger
 	pub onion_message_handler: OM,
 }
 
@@ -388,7 +388,7 @@ struct PeerHolder<Descriptor: SocketDescriptor> {
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessager>, Arc<L>, Arc<IgnoringMessageHandler>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger>, Arc<L>, Arc<IgnoringMessageHandler>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -396,7 +396,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, SimpleRefOnionMessager<'c, 'f>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, SimpleRefOnionMessenger<'c, 'f>, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
