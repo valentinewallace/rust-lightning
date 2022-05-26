@@ -1338,7 +1338,6 @@ macro_rules! handle_error {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
-				println!("VMW: got an err: {:?}", err);
 				#[cfg(debug_assertions)]
 				{
 					// In testing, ensure there are no deadlocks where the lock is already held upon
@@ -2235,7 +2234,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 
 		let pending_forward_info = match next_hop {
-			(next_hop_data, None) => {
+			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
 				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
 					Ok(info) => {
@@ -2248,7 +2247,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					Err(ReceiveError { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			(next_hop_data, Some((next_hop_hmac, new_packet_bytes))) => {
+			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {
@@ -3057,7 +3056,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														},
 													};
 													match next_hop {
-														(hop_data, None) => {
+														onion_utils::Hop::Receive(hop_data) => {
 															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
 																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
 																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data, Some(phantom_shared_secret))

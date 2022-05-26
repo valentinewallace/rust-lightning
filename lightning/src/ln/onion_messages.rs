@@ -379,12 +379,17 @@ impl<Signer: Sign, K: Deref> OnionMessageHandler for OnionMessager<Signer, K>
 			arr
 		};
 		match onion_utils::decode_next_message_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, encrypted_data_ss) {
-			Ok((Payload { encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id })}, None)) => {
+			Ok(onion_utils::MessageHop::Receive(Payload {
+				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id })
+			})) => {
 				println!("VMW: received onion message!! path_id: {:?}", path_id); // XXX logger instead
 			},
-			Ok((Payload {
-				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward { next_node_id, next_blinding_override }),
-			}, Some((next_hop_hmac, new_packet_bytes)))) => {
+			Ok(onion_utils::MessageHop::Forward {
+				next_hop_data: Payload {
+					encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward { next_node_id, next_blinding_override }),
+				},
+				next_hop_hmac, new_packet_bytes
+			}) => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {

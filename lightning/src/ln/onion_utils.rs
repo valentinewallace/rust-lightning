@@ -615,18 +615,32 @@ enum NextPacketBytes {
 }
 
 /// Data decrypted from the onion payload.
-enum Hop {
-	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
-	/// verifying the incoming payment.
-	Receive(Payload),
+pub(crate) enum MessageHop {
+	/// This onion payload was for us, not for forwarding to a next-hop.
+	Receive(onion_messages::Payload),
 	/// This onion payload needs to be forwarded to a next-hop.
 	Forward {
 		/// Onion payload data used in forwarding the payment.
-		next_hop_data: Payload,
+		next_hop_data: onion_messages::Payload,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
-		new_packet_bytes: NextPacketBytes,
+		new_packet_bytes: Vec<u8>,
+	},
+}
+/// Data decrypted from the onion payload.
+pub(crate) enum Hop {
+	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
+	/// verifying the incoming payment.
+	Receive(msgs::OnionHopData),
+	/// This onion payload needs to be forwarded to a next-hop.
+	Forward {
+		/// Onion payload data used in forwarding the payment.
+		next_hop_data: msgs::OnionHopData,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Bytes of the onion packet we're forwarding.
+		new_packet_bytes: [u8; 20*65],
 	},
 }
 
@@ -645,33 +659,37 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_message_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], encrypted_tlvs_ss: SharedSecret) -> Result<(onion_messages::Payload, Option<([u8; 32], Vec<u8>)>), OnionDecodeErr> {
+pub(crate) fn decode_next_message_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], encrypted_tlvs_ss: SharedSecret) -> Result<MessageHop, OnionDecodeErr> {
 	match decode_next_hop(shared_secret, hop_data, hmac_bytes, None, Some(encrypted_tlvs_ss)) {
-		Ok(Hop::Receive(Payload::Message(payload))) => Ok((payload, None)),
-		Ok(Hop::Forward {
-			next_hop_data: Payload::Message(payload),
-			next_hop_hmac,
-			new_packet_bytes: NextPacketBytes::Message(next_hop_bytes)
-		}) => Ok((payload, Some((next_hop_hmac, next_hop_bytes)))),
+		Ok((Payload::Message(next_hop_data), None)) => Ok(MessageHop::Receive(next_hop_data)),
+		Ok((Payload::Message(next_hop_data), Some((next_hop_hmac, NextPacketBytes::Message(new_packet_bytes))))) => {
+			Ok(MessageHop::Forward {
+				next_hop_data,
+				next_hop_hmac,
+				new_packet_bytes
+			})
+		},
 		Err(e) => Err(e),
 		_ => unreachable!()
 	}
 }
 
-pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<(msgs::OnionHopData, Option<([u8; 32], [u8; 20*65])>), OnionDecodeErr> {
+pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
 	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), None) {
-		Ok(Hop::Receive(Payload::Payment(payload))) => Ok((payload, None)),
-		Ok(Hop::Forward {
-			next_hop_data: Payload::Payment(payload),
-			next_hop_hmac,
-			new_packet_bytes: NextPacketBytes::Payment(next_hop_bytes)
-		}) => Ok((payload, Some((next_hop_hmac, next_hop_bytes)))),
+		Ok((Payload::Payment(next_hop_data), None)) => Ok(Hop::Receive(next_hop_data)),
+		Ok((Payload::Payment(next_hop_data), Some((next_hop_hmac, NextPacketBytes::Payment(new_packet_bytes))))) => {
+			Ok(Hop::Forward {
+				next_hop_data,
+				next_hop_hmac,
+				new_packet_bytes
+			})
+		},
 		Err(e) => Err(e),
 		_ => unreachable!()
 	}
 }
 
-fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<Hop, OnionDecodeErr> {
+fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<(Payload, Option<([u8; 32], NextPacketBytes)>), OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
@@ -702,7 +720,6 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 	} else {
 		unimplemented!(); // XXX
 	};
-	println!("VMW: matching on payload read res, is_err {}", payload_read_res.is_err());
 	match payload_read_res {
 		Err(err) => {
 			let error_code = match err {
@@ -712,7 +729,6 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
 				_ => 0x2000 | 2, // Should never happen
 			};
-			println!("VMW: erroring, err {:?}", err);
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data 1",
 				err_code: error_code,
@@ -742,7 +758,7 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 					chacha_stream.read_exact(&mut next_bytes).unwrap();
 					assert_ne!(next_bytes[..], [0; 32][..]);
 				}
-				return Ok(Hop::Receive(payload));
+				return Ok((payload, None));
 			} else {
 				let (mut new_packet_bytes, read_pos) = if payment_hash.is_some() {
 					let mut new_packet_bytes = [0 as u8; 20*65];
@@ -768,11 +784,7 @@ fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32
 					NextPacketBytes::Payment(ref mut bytes) => chacha_stream.chacha.process_in_place(&mut bytes[read_pos..]),
 					NextPacketBytes::Message(ref mut bytes) => chacha_stream.chacha.process_in_place(&mut bytes[read_pos..]),
 				}
-				return Ok(Hop::Forward {
-					next_hop_data: payload,
-					next_hop_hmac: hmac,
-					new_packet_bytes,
-				})
+				return Ok((payload, Some((hmac, new_packet_bytes))))
 			}
 		},
 	}
