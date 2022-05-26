@@ -405,22 +405,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessager<Sig
 				},
 				next_hop_hmac, new_packet_bytes
 			}) => {
-				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
-
-				let blinding_factor = {
-					let mut sha = Sha256::engine();
-					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&onion_decode_shared_secret);
-					Sha256::from_engine(sha).into_inner()
-				};
-
-				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
-					Err(e)
-				} else { Ok(new_pubkey) };
-
+				let new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 				let outgoing_packet = Packet {
 					version: 0,
-					public_key,
+					public_key: onion_utils::next_hop_packet_pubkey(&self.secp_ctx, new_pubkey, &onion_decode_shared_secret),
 					hop_data: new_packet_bytes.to_vec(),
 					hmac: next_hop_hmac.clone(),
 				};
