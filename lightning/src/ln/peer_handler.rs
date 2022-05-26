@@ -219,8 +219,8 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 	/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 	pub route_handler: RM,
 
-	/// A memssage handler which handles onion messages. Using this is just an [`OnionMessager`]
-	/// object or an [`IgnoringMessageHandler`].
+	/// A message handler which handles onion messages. Using this is just an [`OnionMessager`] object
+	/// or an [`IgnoringMessageHandler`].
 	///
 	/// [`OnionMessager`]: crate::ln::onion_messages::OnionMessager
 	pub onion_message_handler: OM,
@@ -464,8 +464,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<D
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger {
 	/// XXX update docs for onion message handler
-	/// Constructs a new PeerManager with the given ChannelMessageHandler. No routing message
-	/// handler is used and network graph messages are ignored.
+	/// Constructs a new PeerManager with the given ChannelMessageHandler and OnionMessageHandler. No
+	/// routing message handler is used and network graph messages are ignored.
 	///
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
@@ -483,10 +483,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<D
 impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger {
-	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message
-	/// handler is used and messages related to channels will be ignored (or generate error
-	/// messages). Note that some other lightning implementations time-out connections after some
-	/// time if no channel is built with the peer.
+	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message handler
+	/// or onion message handler is used and messages related to channels will be ignored (or generate
+	/// error messages). Note that some other lightning implementations time-out connections after
+	/// some time if no channel is built with the peer.
 	///
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.

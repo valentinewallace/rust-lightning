@@ -297,9 +297,11 @@ pub struct UpdateAddHTLC {
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
-/// XXX
+ /// An onion message to be sent or received from a peer
 #[derive(Clone, Debug)]
 pub struct OnionMessage {
+	/// This blinding point is used in the shared secret that is used to decrypt the onion message
+	/// payload's `encrypted_data` field.
 	pub(crate) blinding_point: PublicKey,
 	pub(crate) len: u16,
 	pub(crate) onion_routing_packet: onion_messages::Packet,
@@ -910,7 +912,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
-/// XXX
+/// A trait to describe an object that can receive onion messages.
 pub trait OnionMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming onion_message message from the given peer.
 	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);

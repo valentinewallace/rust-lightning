@@ -619,8 +619,13 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 	} else { unreachable!(); }
 }
 
+/// Used in the decoding of inbound payments' and onion messages' routing packets. This enum allows
+/// us to use `decode_next_hop` to return the payloads and next hop packet bytes of both payments
+/// and onion messages.
 enum Payload {
+	/// This payload was for an incoming payment.
 	Payment(msgs::OnionHopData),
+	/// This payload was for an incoming onion message.
 	Message(onion_messages::Payload),
 }
 
@@ -629,13 +634,13 @@ enum NextPacketBytes {
 	Message(Vec<u8>),
 }
 
-/// Data decrypted from the onion payload.
+/// Data decrypted from an onion message's onion payload.
 pub(crate) enum MessageHop {
 	/// This onion payload was for us, not for forwarding to a next-hop.
 	Receive(onion_messages::Payload),
 	/// This onion payload needs to be forwarded to a next-hop.
 	Forward {
-		/// Onion payload data used in forwarding the payment.
+		/// Onion payload data used in forwarding the onion message.
 		next_hop_data: onion_messages::Payload,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
@@ -643,7 +648,8 @@ pub(crate) enum MessageHop {
 		new_packet_bytes: Vec<u8>,
 	},
 }
-/// Data decrypted from the onion payload.
+
+/// Data decrypted from a payment's onion payload.
 pub(crate) enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.

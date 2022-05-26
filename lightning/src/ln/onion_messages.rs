@@ -82,10 +82,20 @@ impl ReadableArgs<u16> for Packet {
 		})
 	}
 }
+
+/// The payload of an onion message.
 pub(crate) struct Payload {
+	/// Onion message payloads contain an encrypted TLV stream, containing both "control" TLVs and
+	/// sometimes user-provided custom "data" TLVs. See [`EncryptedTlvs`] for more information.
 	encrypted_tlvs: EncryptedTlvs,
+	// Coming soon:
+	// * custom TLVs
+	// * `message: Message` field
+	// * `reply_path: BlindedRoute` field
 }
 
+/// We want to avoid encoding and encrypting separately in order to avoid an intermediate Vec, thus
+/// we encode and encrypt at the same time using the `SharedSecret` here.
 impl Writeable for (Payload, SharedSecret) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0.encrypted_tlvs {
@@ -104,6 +114,8 @@ impl Writeable for (Payload, SharedSecret) {
 	}
 }
 
+/// Reads of `Payload`s are parameterized by the `rho` of a `SharedSecret`, which is used to decrypt
+/// the onion message payload's `encrypted_data` field.
 impl ReadableArgs<SharedSecret> for Payload {
 	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
@@ -136,19 +148,43 @@ impl ReadableArgs<SharedSecret> for Payload {
 	}
 }
 
+/// Onion messages contain an encrypted TLV stream. This can be supplied by someone else, in the
+/// case that we're sending to a blinded route, or created by us if we're constructing payloads for
+/// unblinded hops in the onion message's path.
 pub(crate) enum EncryptedTlvs {
+	/// If we're sending to a blinded route, the node that constructed the blinded route has provided
+	/// our onion message's `EncryptedTlvs`, already encrypted and encoded into bytes.
 	Blinded(Vec<u8>),
+	/// If we're receiving an onion message or constructing an onion message to send through any
+	/// unblinded nodes, we'll need to construct the onion message's `EncryptedTlvs` in their
+	/// unblinded state to avoid encoding them into an intermediate `Vec`.
+	// Below will later have an additional Vec<CustomTlv>
 	Unblinded(ControlTlvs),
 }
 
+/// Onion messages have "control" TLVs and "data" TLVs. Control TLVs are used to control the
+/// direction and routing of an onion message from hop to hop, whereas data TLVs contain the onion
+/// message content itself.
 pub(crate) enum ControlTlvs {
+	/// Control TLVs for the final recipient of an onion message.
 	Receive {
-		path_id: Option<[u8; 32]>,
+		/// If `path_id` is `Some`, it is used to identify the blinded route that this onion message is
+		/// sending to. This is useful for receivers to check that said blinded route is being used in
+		/// the right context.
+		path_id: Option<[u8; 32]>
 	},
+	/// Control TLVs for an intermediate forwarder of an onion message.
 	Forward {
+		/// The node id of the next hop in the onion message's path.
 		next_node_id: PublicKey,
+		/// Senders of onion messages have the option of specifying an overriding [`blinding_point`]
+		/// for forwarding nodes along the path. If this field is absent, forwarding nodes will
+		/// calculate the next hop's blinding point by multiplying the blinding point that they
+		/// received by a blinding factor.
+		///
+		/// [`blinding_point`]: crate::ln::msgs::OnionMessage::blinding_point
 		next_blinding_override: Option<PublicKey>,
-	},
+	}
 }
 
 impl Writeable for ControlTlvs {
@@ -211,26 +247,40 @@ impl Readable for ControlTlvs {
 	}
 }
 
-/// XXX
+/// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
+/// by outside observers and thus can be used to hide the identity of the recipient.
 pub struct BlindedNode {
-	/// XXX
+	/// The blinded node id of this hop in a blinded route.
 	pub blinded_node_id: PublicKey,
-	/// XXX
+	/// The encrypted payload intended for this hop in a blinded route.
+	// If we're sending to this blinded route, this payload will later be encoded into the
+	// [`EncryptedTlvs`] for the hop when constructing the onion packet for sending.
+	//
+	// [`EncryptedTlvs`]: EncryptedTlvs
 	pub encrypted_payload: Vec<u8>,
 }
 
-/// XXX
+/// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
+/// the recipient.
 pub struct BlindedRoute {
-	/// XXX
+	/// To send to a blinded route, the sender first finds a route to the unblinded
+	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
+	/// message's next hop and forward it along.
+	///
+	/// [`encrypted_payload`]: BlindedNode::encrypted_payload
 	pub introduction_node_id: PublicKey,
-	/// XXX
+	/// Creators of blinded routes supply the introduction node id's `blinding_point`, which the
+	/// introduction node will use in decrypting its [`encrypted_payload`] to forward the onion
+	/// message.
+	///
+	/// [`encrypted_payload`]: BlindedNode::encrypted_payload
 	pub blinding_point: PublicKey,
-	/// XXX
+ 	/// The blinded hops of the blinded route.
 	pub blinded_hops: Vec<BlindedNode>,
 }
 
 impl BlindedRoute {
-	/// XXX
+ 	/// Create a blinded route to be forwarded along `hops`.
 	pub fn new<Signer: Sign, K: Deref>(node_pks: Vec<PublicKey>, keys_manager: K) -> Result<Self, ()>
 		where K::Target: KeysInterface<Signer = Signer>,
 	{
@@ -281,11 +331,11 @@ impl BlindedRoute {
 	}
 }
 
-/// XXX
+/// The destination of an onion message.
 pub enum Destination {
-	/// XXX
+	/// We're sending this onion message to a node.
 	Node(PublicKey),
-	/// XXX
+	/// We're sending this onion message to a blinded route.
 	BlindedRoute(BlindedRoute),
 }
 
@@ -298,7 +348,8 @@ impl Destination {
 	}
 }
 
-/// XXX
+/// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
+/// used to retrieve invoices and fulfill invoice requests from offers.
 pub struct OnionMessager<Signer: Sign, K: Deref, L: Deref>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
@@ -307,13 +358,17 @@ pub struct OnionMessager<Signer: Sign, K: Deref, L: Deref>
 	logger: L,
 	pending_msg_events: Mutex<Vec<MessageSendEvent>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
+	// Coming soon:
+	// invoice_handler: InvoiceHandler,
+	// custom_handler: CustomHandler, // handles custom onion messages
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
-	/// XXX
+	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
+	/// their respective handlers.
 	pub fn new(keys_manager: K, logger: L) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
@@ -325,7 +380,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessager<Signer, K, L>
 		}
 	}
 
-	/// XXX
+ 	/// Send an empty onion message to `recipient`, routing it through `intermediate_nodes`.
 	/// * utilize non-None reply paths
 	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), secp256k1::Error> {
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
@@ -460,6 +515,7 @@ impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessag
 	}
 }
 
+/// Build an onion message's payloads for encoding in the onion packet.
 fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<SharedSecret>) -> Vec<(Payload, SharedSecret)> {
 	let num_intermediate_nodes = intermediate_nodes.len();
 	let num_payloads = num_intermediate_nodes + destination.num_hops();
@@ -574,6 +630,11 @@ fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FTyp
 	Ok(())
 }
 
+/// Construct keys for constructing a blinded route along the given `unblinded_path`.
+///
+/// Returns: `(encrypted_tlvs_keys, blinded_node_ids)`
+/// where the encrypted tlvs keys are used to encrypt the blinded route's blinded payloads and the
+/// blinded node ids are used to set the [`blinded_node_id`]s of the [`BlindedRoute`].
 fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey
 ) -> Result<(Vec<SharedSecret>, Vec<PublicKey>), secp256k1::Error> {
@@ -588,6 +649,11 @@ fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>
 	Ok((encrypted_data_keys, blinded_node_pks))
 }
 
+/// Construct keys for sending an onion message along the given `path`.
+///
+/// Returns: `(encrypted_tlvs_keys, onion_packet_keys)`
+/// where the encrypted tlvs keys are used to encrypt the [`EncryptedTlvs`] of the onion message and the
+/// onion packet keys are used to encrypt the onion packet.
 fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: &Destination, session_priv: &SecretKey
 ) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
@@ -613,9 +679,11 @@ fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	Ok((encrypted_data_keys, onion_packet_keys))
 }
 
-/// XXX
+/// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
+/// [`SimpleArcPeerManager`]. See their docs for more details.
 pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>, Arc<Logger>>;
-/// XXX
+/// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
+/// [`SimpleRefPeerManager`]. See their docs for more details.
 pub type SimpleRefOnionMessager<'a, 'b> = OnionMessager<InMemorySigner, &'a KeysManager, &'b Logger>;
 
 #[cfg(test)]
