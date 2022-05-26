@@ -514,7 +514,6 @@ mod tests {
 		fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &FundingLocked) {}
 		fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, _msg: &Shutdown) {}
 		fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &ClosingSigned) {}
-		fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &OnionMessage) {}
 		fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddHTLC) {}
 		fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillHTLC) {}
 		fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailHTLC) {}
@@ -565,6 +564,7 @@ mod tests {
 		let a_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&a_handler),
 			route_handler: Arc::clone(&a_handler),
+			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
 		}, a_key.clone(), &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
@@ -579,6 +579,7 @@ mod tests {
 		let b_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&b_handler),
 			route_handler: Arc::clone(&b_handler),
+			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
 		}, b_key.clone(), &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		// We bind on localhost, hoping the environment is properly configured with a local

@@ -601,3 +601,43 @@ pub type SimpleArcOnionMessager = OnionMessager<InMemorySigner, Arc<KeysManager>
 /// XXX
 pub type SimpleRefOnionMessager<'a> = OnionMessager<InMemorySigner, &'a KeysManager>;
 
+#[cfg(test)]
+mod tests {
+	use prelude::*;
+
+	use chain::keysinterface::KeysManager;
+	use ln::onion_messages::BlindedRoute;
+	use ln::functional_test_utils::*;
+	use util::test_utils;
+
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::PublicKey;
+
+	use core::time::Duration;
+
+	// < SPEC TESTS >
+
+	// < bolt04/enctlvs.json >
+
+	#[test]
+	fn simple_encrypted_tlvs() {
+		// Simple enctlv for Alice, next is Bob
+		let seed = [42 as u8; 32];
+		let now = Duration::from_secs(genesis_block(Network::Bitcoin).header.time as u64);
+		let keys_mgr = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let mut blinding_secret = [0; 32];
+		let blinding_secret_bytes = &hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap();
+		blinding_secret.copy_from_slice(&blinding_secret_bytes[..]);
+		*keys_mgr.override_session_priv.lock().unwrap() = Some(blinding_secret);
+		let alice_pk = PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let bob_pk = PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()).unwrap();
+		let blinded_route = BlindedRoute::new(vec![alice_pk, bob_pk], &keys_mgr).unwrap();
+		assert_eq!(blinded_route.blinded_hops[0].encrypted_payload, hex::decode("6970e870b473ddbc27e3098bfa45bb1aa54f1f637f803d957e6271d8ffeba89da2665d62123763d9b634e30714144a1c165ac9").unwrap());
+		assert_eq!(blinded_route.blinded_hops[0].blinded_node_id, PublicKey::from_slice(&hex::decode("02004b5662061e9db495a6ad112b6c4eba228a079e8e304d9df50d61043acbc014").unwrap()).unwrap());
+	}
+
+	// </ bolt04/enctlvs.json >
+
+	// </ SPEC TESTS >
+}
