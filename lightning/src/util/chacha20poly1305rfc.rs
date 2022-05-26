@@ -15,14 +15,9 @@ use io;
 
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
-	use ln::onion_messages;
-	use util::chacha20::{BLOCK_SIZE, ChaCha20};
+	use util::chacha20::ChaCha20;
 	use util::poly1305::Poly1305;
-	use util::ser::{Writeable, Writer};
 	use bitcoin::hashes::cmp::fixed_time_eq;
-
-	// use io;
-	use io::{self, Write};
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -66,29 +61,30 @@ mod real_chachapoly {
 		}
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
-			assert!(input.len() == output.len());
-			assert!(self.finished == false);
 			self.cipher.process(input, output);
-			self.data_len += input.len();
-			self.mac.input(output);
-			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
-			self.finished = true;
-			self.mac.input(&self.aad_len.to_le_bytes());
-			self.mac.input(&(self.data_len as u64).to_le_bytes());
-			self.mac.raw_result(out_tag);
+			self.encrypt_inner(input, Some(output), Some(out_tag));
 		}
 
 		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: Option<&mut [u8]>) {
-			assert!(self.finished == false);
 			self.cipher.process_in_place(input_output);
-			self.data_len += input_output.len();
-			self.mac.input(input_output);
+			self.encrypt_inner(input_output, None, out_tag);
+		}
+
+		fn encrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, out_tag: Option<&mut [u8]>) {
+			assert!(self.finished == false);
+			if let Some(output) = output {
+				assert!(input.len() == output.len());
+				self.mac.input(output);
+			} else {
+				self.mac.input(input);
+			}
+			self.data_len += input.len();
 			if let Some(tag) = out_tag {
-				self.get_tag(tag);
+				self.finish_and_get_tag(tag);
 			}
 		}
 
-		pub fn get_tag(&mut self, out_tag: &mut [u8]) {
+		pub fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
 			self.finished = true;
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&self.aad_len.to_le_bytes());
@@ -119,7 +115,6 @@ mod real_chachapoly {
 			}
 			assert!(self.finished == false);
 
-
 			self.mac.input(input);
 
 			self.data_len += input.len();
@@ -137,13 +132,7 @@ mod real_chachapoly {
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 			let mut calc_tag =  [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
-			// println!("VMW: in check_tag, expected_tag: {:02x?}, actual tag: {:02x?}", tag, calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
-				// if let Some(output) = output {
-				//   self.cipher.process(input, output);
-				// } else {
-				//   self.cipher.process_in_place(input);
-				// }
 				true
 			} else {
 				false

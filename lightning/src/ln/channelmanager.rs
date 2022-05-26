@@ -2288,7 +2288,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			},
-			_ => panic!() // XXX
 		};
 
 		channel_state = Some(self.channel_state.lock().unwrap());

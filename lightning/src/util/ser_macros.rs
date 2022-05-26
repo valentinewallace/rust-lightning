@@ -21,7 +21,7 @@ macro_rules! encode_tlv {
 		let mut chacha_stream = ChaChaPoly1305Writer { chacha: &mut chacha, write: $stream };
 		$field.write(&mut chacha_stream)?;
 		let mut tag = [0 as u8; 16];
-		chacha.get_tag(&mut tag);
+		chacha.finish_and_get_tag(&mut tag);
 		tag.write($stream)?;
 	};
 	($stream: expr, $type: expr, $field: expr, required) => {

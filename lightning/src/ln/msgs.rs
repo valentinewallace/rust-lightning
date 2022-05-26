@@ -32,15 +32,13 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use ln::onion_messages;
-use ln::onion_utils;
 
 use prelude::*;
 use core::fmt;
 use core::fmt::Debug;
-use io::{self, Cursor, Read};
+use io::{self, Read};
 use io_extras::read_to_end;
 
-use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::events::MessageSendEventsProvider;
 use util::logger;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
@@ -920,7 +918,6 @@ pub trait OnionMessageHandler : MessageSendEventsProvider {
 
 mod fuzzy_internal_msgs {
 	use prelude::*;
-	use bitcoin::secp256k1::key::PublicKey;
 	use ln::{PaymentPreimage, PaymentSecret};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize

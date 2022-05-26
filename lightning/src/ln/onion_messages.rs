@@ -254,7 +254,7 @@ impl BlindedRoute {
 				let mut chacha_stream = ChaChaPoly1305Writer { chacha: &mut chacha, write: &mut enc_tlvs_blob };
 				$enc_tlvs.write(&mut chacha_stream).map_err(|_| ())?;
 				let mut tag = [0 as u8; 16];
-				chacha.get_tag(&mut tag);
+				chacha.finish_and_get_tag(&mut tag);
 				tag.write(&mut enc_tlvs_blob).map_err(|_| ())?;
 				blinded_hops.push(BlindedNode {
 					blinded_node_id: $blinded_pk,
@@ -495,6 +495,7 @@ fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, 
 	payloads
 }
 
+#[allow(unused_assignments)]
 #[inline]
 fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: Option<&Destination>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
 	let mut msg_blinding_point_priv = session_priv.clone();
@@ -603,18 +604,13 @@ pub type SimpleRefOnionMessager<'a> = OnionMessager<InMemorySigner, &'a KeysMana
 
 #[cfg(test)]
 mod tests {
-	use prelude::*;
-
-	use chain::keysinterface::KeysManager;
 	use ln::onion_messages::BlindedRoute;
-	use ln::functional_test_utils::*;
 	use util::test_utils;
 
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::PublicKey;
+	use prelude::*;
 
-	use core::time::Duration;
 
 	// < SPEC TESTS >
 
@@ -624,7 +620,6 @@ mod tests {
 	fn simple_encrypted_tlvs() {
 		// Simple enctlv for Alice, next is Bob
 		let seed = [42 as u8; 32];
-		let now = Duration::from_secs(genesis_block(Network::Bitcoin).header.time as u64);
 		let keys_mgr = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 		let mut blinding_secret = [0; 32];
 		let blinding_secret_bytes = &hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap();
