@@ -10,6 +10,9 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
+use util::ser::{Writeable, Writer};
+use io;
+
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
 	use util::chacha20::ChaCha20;
@@ -58,11 +61,32 @@ mod real_chachapoly {
 		}
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
-			assert!(input.len() == output.len());
-			assert!(self.finished == false);
 			self.cipher.process(input, output);
+			self.encrypt_inner(input, Some(output), Some(out_tag));
+		}
+
+		pub fn encrypt_in_place(&mut self, input_output: &mut [u8], out_tag: Option<&mut [u8]>) {
+			self.cipher.process_in_place(input_output);
+			self.encrypt_inner(input_output, None, out_tag);
+		}
+
+		// Encrypt in place, and fill in the tag if it's provided. If the tag is not provided, then
+		// `finish_and_get_tag` may be called to check it later.
+		fn encrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, out_tag: Option<&mut [u8]>) {
+			assert!(self.finished == false);
+			if let Some(output) = output {
+				assert!(input.len() == output.len());
+				self.mac.input(output);
+			} else {
+				self.mac.input(input);
+			}
 			self.data_len += input.len();
-			self.mac.input(output);
+			if let Some(tag) = out_tag {
+				self.finish_and_get_tag(tag);
+			}
+		}
+
+		pub fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.finished = true;
 			self.mac.input(&self.aad_len.to_le_bytes());
@@ -97,6 +121,22 @@ mod real_chachapoly {
 #[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
+pub(crate) struct ChaChaPoly1305Writer<'a, W: Writer> {
+	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	pub write: &'a mut W,
+}
+
+impl<'a, W: Writer> Writer for ChaChaPoly1305Writer<'a, W> {
+	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
+		for byte in src.iter() {
+			let mut encrypted_byte = [*byte];
+			self.chacha.encrypt_in_place(&mut encrypted_byte, None);
+			encrypted_byte.write(self.write)?;
+		}
+		Ok(())
+	}
+}
+
 #[cfg(fuzzing)]
 mod fuzzy_chachapoly {
 	#[derive(Clone, Copy)]
@@ -126,6 +166,19 @@ mod fuzzy_chachapoly {
 			assert!(self.finished == false);
 
 			output.copy_from_slice(&input);
+			out_tag.copy_from_slice(&self.tag);
+			self.finished = true;
+		}
+
+		pub fn encrypt_in_place(&mut self, _input_output: &mut [u8], out_tag: Option<&mut [u8]>) {
+			assert!(self.finished == false);
+			if let Some(tag) = out_tag {
+				tag.copy_from_slice(&self.tag);
+				self.finished = true;
+			}
+		}
+
+		pub fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
 			out_tag.copy_from_slice(&self.tag);
 			self.finished = true;
 		}

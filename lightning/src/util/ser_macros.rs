@@ -11,6 +11,19 @@ macro_rules! encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		encode_tlv!($stream, $type, $field, required)
 	};
+	($stream: expr, $type: expr, $field: expr, (chacha, $ss: expr)) => {
+		use util::chacha20poly1305rfc::{ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
+		BigSize($type).write($stream)?;
+		// Add 16 for the ChaCha20Poly1305 mac.
+		BigSize($field.serialized_length() as u64 + 16).write($stream)?;
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&$ss.secret_bytes());
+		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
+		let mut chacha_stream = ChaChaPoly1305Writer { chacha: &mut chacha, write: $stream };
+		$field.write(&mut chacha_stream)?;
+		let mut tag = [0 as u8; 16];
+		chacha.finish_and_get_tag(&mut tag);
+		tag.write($stream)?;
+	};
 	($stream: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -57,6 +70,11 @@ macro_rules! encode_tlv_stream {
 
 macro_rules! get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
+		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
+	};
+	($len: expr, $type: expr, $field: expr, (chacha, $ss: expr)) => {
+		// Add 16 bytes for the ChaCha20Poly1305 mac
+		$len.0 += 16;
 		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
 	};
 	($len: expr, $type: expr, $field: expr, required) => {

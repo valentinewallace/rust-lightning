@@ -476,6 +476,7 @@ macro_rules! impl_array {
 	);
 }
 
+impl_array!(1); // for ChaChaPoly1305Writer to write one byte at a time
 impl_array!(3); // for rgb
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
