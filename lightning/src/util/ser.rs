@@ -244,6 +244,14 @@ pub(crate) trait LengthReadableArgs<P> where Self: Sized
 	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
+/// A trait that various higher-level rust-lightning types implement allowing them to be read in
+/// from a Read, requiring the implementer to provide the total length of the read.
+pub(crate) trait LengthReadable where Self: Sized
+{
+	/// Reads a Self in from the given LengthRead
+	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+}
+
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
@@ -258,6 +266,21 @@ impl<T: Readable> MaybeReadable for T {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Option<T>, DecodeError> {
 		Ok(Some(Readable::read(reader)?))
+	}
+}
+
+/// Reads a given stream to the end, ignoring what's read.
+pub(crate) struct IgnoringLengthReadable {}
+impl LengthReadable for IgnoringLengthReadable {
+	#[inline]
+	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut src_idx = 0;
+		while src_idx < reader.total_bytes() {
+			let mut buf = [0; 8192];
+			let bytes_read = reader.read(&mut buf[..])?;
+			src_idx += bytes_read as u64;
+		}
+		Ok(Self {})
 	}
 }
 
