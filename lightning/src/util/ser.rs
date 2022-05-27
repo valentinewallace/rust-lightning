@@ -94,7 +94,7 @@ impl Writer for LengthCalculatingWriter {
 pub(crate) struct FixedLengthReader<R: Read> {
 	read: R,
 	bytes_read: u64,
-	total_bytes: u64,
+	pub(crate) total_bytes: u64,
 }
 impl<R: Read> FixedLengthReader<R> {
 	pub fn new(read: R, total_bytes: u64) -> Self {

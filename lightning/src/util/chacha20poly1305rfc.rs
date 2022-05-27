@@ -95,14 +95,42 @@ mod real_chachapoly {
 		}
 
 		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
-			assert!(input.len() == output.len());
-			assert!(self.finished == false);
+			if self.decrypt_inner(input, Some(output), Some(tag)) {
+				self.cipher.process(input, output);
+				return true
+			}
+			false
+		}
 
-			self.finished = true;
+		// Decrypt in place, and check the tag if it's provided. If the tag is not provided, then
+		// `finish_and_check_tag` may be called to check it later.
+		pub fn decrypt_in_place(&mut self, input: &mut [u8], tag: Option<&[u8]>) -> bool {
+			if self.decrypt_inner(input, None, tag) {
+				self.cipher.process_in_place(input);
+				return true
+			}
+			false
+		}
+
+
+		fn decrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, tag: Option<&[u8]>) -> bool {
+			if let Some(output) = output {
+				assert!(input.len() == output.len());
+			}
+			assert!(self.finished == false);
 
 			self.mac.input(input);
 
 			self.data_len += input.len();
+
+			if let Some(tag) = tag {
+				return self.finish_and_check_tag(tag)
+			}
+			true
+		}
+
+		pub fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
+			self.finished = true;
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
@@ -110,7 +138,6 @@ mod real_chachapoly {
 			let mut calc_tag =  [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
-				self.cipher.process(input, output);
 				true
 			} else {
 				false
@@ -120,6 +147,21 @@ mod real_chachapoly {
 }
 #[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
+
+pub(crate) struct ChaChaPoly1305Reader<'a, R: io::Read> {
+	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	pub read: R,
+}
+
+impl<'a, R: io::Read> io::Read for ChaChaPoly1305Reader<'a, R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
+		let res = self.read.read(dest)?;
+		if res > 0 {
+			self.chacha.decrypt_in_place(&mut dest[0..res], None);
+		}
+		Ok(res)
+	}
+}
 
 pub(crate) struct ChaChaPoly1305Writer<'a, W: Writer> {
 	pub chacha: &'a mut ChaCha20Poly1305RFC,
@@ -189,6 +231,23 @@ mod fuzzy_chachapoly {
 
 			if tag[..] != self.tag[..] { return false; }
 			output.copy_from_slice(input);
+			self.finished = true;
+			true
+		}
+
+
+		pub fn decrypt_in_place(&mut self, _input: &mut [u8], tag: Option<&[u8]>) -> bool {
+			assert!(self.finished == false);
+			if let Some(tag) = tag {
+				if tag[..] != self.tag[..] { return false; }
+			}
+			self.finished = true;
+			true
+		}
+
+
+		pub fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
+			if tag[..] != self.tag[..] { return false; }
 			self.finished = true;
 			true
 		}

@@ -120,6 +120,9 @@ macro_rules! check_tlv_order {
 			$field = $default;
 		}
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (chacha, $ss: expr)) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
@@ -146,6 +149,9 @@ macro_rules! check_missing_tlv {
 			$field = $default;
 		}
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (chacha, $ss: expr)) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
@@ -167,6 +173,23 @@ macro_rules! check_missing_tlv {
 macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
 		decode_tlv!($reader, $field, required)
+	}};
+	($reader: expr, $field: ident, (chacha, $ss: expr)) => {{
+		// We start by decoding the field itself minus the 16-byte tag.
+		if $reader.total_bytes < 16 { return Err(DecodeError::InvalidValue) }
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret($ss.as_ref());
+		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
+		let decrypted_len = $reader.total_bytes - 16;
+		let s = ser::FixedLengthReader::new(&mut $reader, decrypted_len);
+		let mut chacha_stream = ChaChaPoly1305Reader { chacha: &mut chacha, read: s };
+		$field = Some(ser::Readable::read(&mut chacha_stream)?);
+
+		let mut tag = [0 as u8; 16];
+		let mut s = ser::FixedLengthReader::new(&mut $reader, 16);
+		s.read_exact(&mut tag)?;
+		if !chacha.finish_and_check_tag(&tag) {
+			return Err(DecodeError::InvalidValue)
+		}
 	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = ser::Readable::read(&mut $reader)?;
@@ -360,6 +383,9 @@ macro_rules! init_tlv_based_struct_field {
 	($field: ident, (default_value, $default: expr)) => {
 		$field
 	};
+	($field: ident, (chacha, $ss: expr)) => {
+		$field
+	};
 	($field: ident, option) => {
 		$field
 	};
@@ -374,6 +400,9 @@ macro_rules! init_tlv_based_struct_field {
 macro_rules! init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
 		let mut $field = $default;
+	};
+	($field: ident, (chacha, $ss: expr)) => {
+		let mut $field = None;
 	};
 	($field: ident, required) => {
 		let mut $field = ::util::ser::OptionDeserWrapper(None);
