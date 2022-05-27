@@ -44,7 +44,7 @@ pub(super) struct OnionKeys {
 }
 
 #[inline]
-pub(super) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
+pub(crate) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
 	assert_eq!(shared_secret.len(), 32);
 	({
 		let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
