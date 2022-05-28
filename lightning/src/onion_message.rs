@@ -14,13 +14,13 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
+use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
 use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
-use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
-use util::ser::{IgnoringLengthReadable, LengthRead, LengthReadable, Readable, VecWriter, Writeable, Writer};
+use util::ser::{FixedLengthReader, IgnoringLengthReadable, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, VecWriter, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
@@ -120,6 +120,41 @@ impl Writeable for (Payload, [u8; 32]) {
 			}
 		}
 		Ok(())
+	}
+}
+
+/// Reads of `Payload`s are parameterized by the `rho` of a `SharedSecret`, which is used to decrypt
+/// the onion message payload's `encrypted_data` field.
+impl ReadableArgs<SharedSecret> for Payload {
+	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
+		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
+		let v: VarInt = Decodable::consensus_decode(&mut r)
+			.map_err(|e| match e {
+				Error::Io(ioe) => DecodeError::from(ioe),
+				_ => DecodeError::InvalidValue
+			})?;
+		if v.0 == 0 { // 0-length payload
+			return Err(DecodeError::InvalidValue)
+		}
+
+		let mut rd = FixedLengthReader::new(r, v.0);
+		// TODO: support reply paths
+		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
+		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		decode_tlv_stream!(&mut rd, {
+			(2, _reply_path_bytes, vec_type),
+			(4, read_adapter, (option: LengthReadableArgs, rho))
+		});
+		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+
+		if read_adapter.is_none() {
+			return Err(DecodeError::InvalidValue)
+		}
+
+		Ok(Payload {
+			encrypted_tlvs: EncryptedTlvs::Unblinded(read_adapter.unwrap().readable),
+		})
 	}
 }
 
@@ -380,7 +415,95 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
 {
-	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {}
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+		let node_secret = match self.keys_manager.get_node_secret(Recipient::Node) {
+			Ok(secret) => secret,
+			Err(e) => {
+				log_trace!(self.logger, "Failed to retrieve node secret: {:?}", e);
+				return
+			}
+		};
+		let encrypted_data_ss = SharedSecret::new(&msg.blinding_point, &node_secret);
+		let onion_decode_shared_secret = {
+			let blinding_factor = {
+				let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+				hmac.input(encrypted_data_ss.as_ref());
+				Hmac::from_engine(hmac).into_inner()
+			};
+			let mut blinded_priv = node_secret.clone();
+			if let Err(e) = blinded_priv.mul_assign(&blinding_factor) {
+				log_trace!(self.logger, "Failed to compute blinded public key: {}", e);
+				return
+			}
+			SharedSecret::new(&msg.onion_routing_packet.public_key, &blinded_priv).secret_bytes()
+		};
+		match onion_utils::decode_next_message_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, encrypted_data_ss) {
+			Ok(onion_utils::MessageHop::Receive(Payload {
+				encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id })
+			})) => {
+				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+			},
+			Ok(onion_utils::MessageHop::Forward {
+				next_hop_data: Payload {
+					encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Receive { path_id }),
+				}, .. }) => {
+				// We received an onion message that had fake extra hops at the end of its blinded route.
+				// TODO support adding extra hops to blinded routes and test this case
+				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+			},
+			Ok(onion_utils::MessageHop::Forward {
+				next_hop_data: Payload {
+					encrypted_tlvs: EncryptedTlvs::Unblinded(ControlTlvs::Forward { next_node_id, next_blinding_override }),
+				},
+				next_hop_hmac, new_packet_bytes
+			}) => {
+				let new_pubkey = match onion_utils::next_hop_packet_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_shared_secret) {
+					Ok(pk) => pk,
+					Err(e) => {
+						log_trace!(self.logger, "Failed to compute next hop packet pubkey: {}", e);
+						return
+					}
+				};
+				let outgoing_packet = Packet {
+					version: 0,
+					public_key: new_pubkey,
+					hop_data: new_packet_bytes.to_vec(),
+					hmac: next_hop_hmac.clone(),
+				};
+
+				let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
+				pending_msg_events.push(MessageSendEvent::SendOnionMessage {
+					node_id: next_node_id,
+					msg: msgs::OnionMessage {
+						blinding_point: match next_blinding_override {
+							Some(blinding_point) => blinding_point,
+							None => {
+								let blinding_factor = {
+									let mut sha = Sha256::engine();
+									sha.input(&msg.blinding_point.serialize()[..]);
+									sha.input(encrypted_data_ss.as_ref());
+									Sha256::from_engine(sha).into_inner()
+								};
+								let mut next_blinding_point = msg.blinding_point.clone();
+								if let Err(e) = next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+									return
+								}
+								next_blinding_point
+							},
+						},
+						len: outgoing_packet.len(),
+						onion_routing_packet: outgoing_packet,
+					},
+				});
+			},
+			Err(e) => {
+				log_trace!(self.logger, "Errored decoding onion message packet: {:?}", e);
+			},
+			_ => {} // Unreachable unless someone encodes a `Forward` payload as the final payload, which
+			        // is bogus and should be fine to drop
+		};
+	}
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessenger<Signer, K, L>
