@@ -116,12 +116,12 @@ fn encrypt_final_payload(payload: ReceiveTlvs, encrypted_tlvs_ss: [u8; 32]) -> V
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
 pub(crate) struct ForwardTlvs {
 	/// The node id of the next hop in the onion message's path.
-	next_node_id: PublicKey,
+	pub(super) next_node_id: PublicKey,
 	/// Senders of onion messages have the option of specifying an overriding `blinding_point`
 	/// for forwarding nodes along the path. If this field is absent, forwarding nodes will
 	/// calculate the next hop's blinding point by multiplying the blinding point that they
 	/// received by a blinding factor.
-	next_blinding_override: Option<PublicKey>,
+	pub(super) next_blinding_override: Option<PublicKey>,
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
@@ -129,7 +129,7 @@ pub(crate) struct ReceiveTlvs {
 	/// If `path_id` is `Some`, it is used to identify the blinded route that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded route is being used in
 	/// the right context.
-	path_id: Option<[u8; 32]>,
+	pub(super) path_id: Option<[u8; 32]>,
 }
 
 impl Writeable for ForwardTlvs {

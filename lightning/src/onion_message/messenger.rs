@@ -10,10 +10,13 @@
 //! LDK sends, receives, and forwards onion messages via the [`OnionMessenger`]. See its docs for
 //! more information.
 
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
 use ln::msgs::{self, OnionMessageHandler};
+use ln::onion_utils;
+use super::blinded_route::BlindedRoute;
+use super::utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 
@@ -39,6 +42,23 @@ pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 	// custom_handler: CustomHandler, // handles custom onion messages
 }
 
+/// The destination of an onion message.
+pub enum Destination {
+	/// We're sending this onion message to a node.
+	Node(PublicKey),
+	/// We're sending this onion message to a blinded route.
+	BlindedRoute(BlindedRoute),
+}
+
+impl Destination {
+	pub(super) fn num_hops(&self) -> usize {
+		match self {
+			Destination::Node(_) => 1,
+			Destination::BlindedRoute(BlindedRoute { blinded_hops, .. }) => blinded_hops.len(),
+		}
+	}
+}
+
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
@@ -54,6 +74,38 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			secp_ctx,
 			logger,
 		}
+	}
+
+	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
+	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), secp256k1::Error> {
+		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
+		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
+			(intermediate_nodes[0].clone(), PublicKey::from_secret_key(&self.secp_ctx, &blinding_secret))
+		} else {
+			match destination {
+				Destination::Node(pk) => (pk.clone(), PublicKey::from_secret_key(&self.secp_ctx, &blinding_secret)),
+				Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, .. }) =>
+					(introduction_node_id.clone(), blinding_point.clone()),
+			}
+		};
+		let (control_tlvs_keys, onion_packet_keys) = utils::construct_sending_keys(
+			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)?;
+		let payloads = utils::build_payloads(intermediate_nodes, destination, control_tlvs_keys);
+
+		let prng_seed = self.keys_manager.get_secure_random_bytes();
+		let onion_packet = onion_utils::construct_onion_message_packet(payloads, onion_packet_keys, prng_seed);
+
+		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
+		pending_msg_events.push(MessageSendEvent::SendOnionMessage {
+			node_id: introduction_node_id,
+			msg: msgs::OnionMessage {
+				blinding_point,
+				len: onion_packet.len(),
+				onion_routing_packet: onion_packet,
+			}
+		});
+		Ok(())
 	}
 }
 
