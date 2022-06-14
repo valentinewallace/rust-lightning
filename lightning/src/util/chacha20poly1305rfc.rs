@@ -10,8 +10,9 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
-use util::ser::{Writeable, Writer};
-use io;
+use ln::msgs::DecodeError;
+use util::ser::{self, Readable, ReadableArgs, Writeable, Writer};
+use io::{self, Read, Write};
 
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
@@ -112,7 +113,6 @@ mod real_chachapoly {
 			false
 		}
 
-
 		fn decrypt_inner(&mut self, input: &[u8], output: Option<&mut [u8]>, tag: Option<&[u8]>) -> bool {
 			if let Some(output) = output {
 				assert!(input.len() == output.len());
@@ -148,12 +148,12 @@ mod real_chachapoly {
 #[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
-pub(crate) struct ChaChaPoly1305Reader<'a, R: io::Read> {
+pub(crate) struct ChaChaPolyReader<'a, R: Read> {
 	pub chacha: &'a mut ChaCha20Poly1305RFC,
 	pub read: R,
 }
 
-impl<'a, R: io::Read> io::Read for ChaChaPoly1305Reader<'a, R> {
+impl<'a, R: Read> Read for ChaChaPolyReader<'a, R> {
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		let res = self.read.read(dest)?;
 		if res > 0 {
@@ -163,19 +163,70 @@ impl<'a, R: io::Read> io::Read for ChaChaPoly1305Reader<'a, R> {
 	}
 }
 
-pub(crate) struct ChaChaPoly1305Writer<'a, W: Writer> {
+pub(crate) struct ChaChaPolyWriter<'a, W: Writer> {
 	pub chacha: &'a mut ChaCha20Poly1305RFC,
 	pub write: &'a mut W,
 }
 
-impl<'a, W: Writer> Writer for ChaChaPoly1305Writer<'a, W> {
+impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
 	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
-		for byte in src.iter() {
-			let mut encrypted_byte = [*byte];
-			self.chacha.encrypt_in_place(&mut encrypted_byte, None);
-			encrypted_byte.write(self.write)?;
+		let num_writes = (src.len() + (8192 - 1)) / 8192;
+		for i in 0..num_writes {
+			let mut write_buffer = [0; 8192];
+			let bytes_written = (&mut write_buffer[..]).write(&src[i * 8192..])?;
+			self.chacha.encrypt_in_place(&mut write_buffer[..bytes_written], None);
+			self.write.write_all(&write_buffer[..bytes_written])?;
 		}
 		Ok(())
+	}
+}
+
+pub(crate) struct ChaChaPolyWriteAdapter<'a, W: Writeable> {
+	pub rho: [u8; 32],
+	pub writeable: &'a W,
+}
+
+impl<'a, W: Writeable> ChaChaPolyWriteAdapter<'a, W> {
+	pub fn new(rho: [u8; 32], writeable: &'a W) -> ChaChaPolyWriteAdapter<'a, W> {
+		Self { rho, writeable }
+	}
+}
+
+impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let mut chacha = ChaCha20Poly1305RFC::new(&self.rho, &[0; 12], &[]);
+		let mut chacha_stream = ChaChaPolyWriter { chacha: &mut chacha, write: w };
+		self.writeable.write(&mut chacha_stream)?;
+		let mut tag = [0 as u8; 16];
+		chacha.finish_and_get_tag(&mut tag);
+		tag.write(w)?;
+
+		Ok(())
+	}
+}
+
+pub(crate) struct ChaChaPolyReadAdapter<R: Readable> {
+	pub readable: R,
+}
+
+impl<T: Readable> ReadableArgs<([u8; 32], u64)> for ChaChaPolyReadAdapter<T> {
+	fn read<R: Read>(mut r: &mut R, secret_and_len: ([u8; 32], u64)) -> Result<Self, DecodeError> {
+		let (secret, total_len) = (secret_and_len.0, secret_and_len.1);
+		if total_len < 16 { return Err(DecodeError::InvalidValue) }
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&secret, &[0; 12], &[]);
+		let decrypted_len = total_len - 16;
+		let s = ser::FixedLengthReader::new(&mut r, decrypted_len);
+		let mut chacha_stream = ChaChaPolyReader { chacha: &mut chacha, read: s };
+		let readable: T = ser::Readable::read(&mut chacha_stream)?;
+
+		let mut tag = [0 as u8; 16];
+		r.read_exact(&mut tag)?;
+		if !chacha.finish_and_check_tag(&tag) {
+			return Err(DecodeError::InvalidValue)
+		}
+
+		Ok(Self { readable })
 	}
 }
 

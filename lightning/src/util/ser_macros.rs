@@ -11,19 +11,6 @@ macro_rules! encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		encode_tlv!($stream, $type, $field, required)
 	};
-	($stream: expr, $type: expr, $field: expr, (chacha, $ss: expr)) => {
-		use util::chacha20poly1305rfc::{ChaCha20Poly1305RFC, ChaChaPoly1305Writer};
-		BigSize($type).write($stream)?;
-		// Add 16 for the ChaCha20Poly1305 mac.
-		BigSize($field.serialized_length() as u64 + 16).write($stream)?;
-		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&$ss.secret_bytes());
-		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-		let mut chacha_stream = ChaChaPoly1305Writer { chacha: &mut chacha, write: $stream };
-		$field.write(&mut chacha_stream)?;
-		let mut tag = [0 as u8; 16];
-		chacha.finish_and_get_tag(&mut tag);
-		tag.write($stream)?;
-	};
 	($stream: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -72,11 +59,6 @@ macro_rules! get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
 	};
-	($len: expr, $type: expr, $field: expr, (chacha, $ss: expr)) => {
-		// Add 16 bytes for the ChaCha20Poly1305 mac
-		$len.0 += 16;
-		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
-	};
 	($len: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
 		let field_len = $field.serialized_length();
@@ -120,9 +102,6 @@ macro_rules! check_tlv_order {
 			$field = $default;
 		}
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (chacha, $ss: expr)) => {{
-		// no-op
-	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
@@ -139,6 +118,9 @@ macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (complex, $read_arg: expr)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! check_missing_tlv {
@@ -148,9 +130,6 @@ macro_rules! check_missing_tlv {
 		if missing_req_type {
 			$field = $default;
 		}
-	}};
-	($last_seen_type: expr, $type: expr, $field: ident, (chacha, $ss: expr)) => {{
-		// no-op
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
@@ -168,28 +147,14 @@ macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, ignorable) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (complex, $read_arg: expr)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
 		decode_tlv!($reader, $field, required)
-	}};
-	($reader: expr, $field: ident, (chacha, $ss: expr)) => {{
-		// We start by decoding the field itself minus the 16-byte tag.
-		if $reader.total_bytes < 16 { return Err(DecodeError::InvalidValue) }
-		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret($ss.as_ref());
-		let mut chacha = ChaCha20Poly1305RFC::new(&rho, &[0; 12], &[]);
-		let decrypted_len = $reader.total_bytes - 16;
-		let s = ser::FixedLengthReader::new(&mut $reader, decrypted_len);
-		let mut chacha_stream = ChaChaPoly1305Reader { chacha: &mut chacha, read: s };
-		$field = Some(ser::Readable::read(&mut chacha_stream)?);
-
-		let mut tag = [0 as u8; 16];
-		let mut s = ser::FixedLengthReader::new(&mut $reader, 16);
-		s.read_exact(&mut tag)?;
-		if !chacha.finish_and_check_tag(&tag) {
-			return Err(DecodeError::InvalidValue)
-		}
 	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = ser::Readable::read(&mut $reader)?;
@@ -203,6 +168,12 @@ macro_rules! decode_tlv {
 	}};
 	($reader: expr, $field: ident, ignorable) => {{
 		$field = ser::MaybeReadable::read(&mut $reader)?;
+	}};
+	// Read a ser::ReadableArgs, which must be parameterized by the tuple:
+	// (readable_arg, total_read_len)
+	($reader: expr, $field: ident, (complex, $read_arg: expr)) => {{
+		let len = $reader.total_bytes;
+		$field = Some(ser::ReadableArgs::read(&mut $reader, ($read_arg, len))?);
 	}};
 }
 
@@ -383,9 +354,6 @@ macro_rules! init_tlv_based_struct_field {
 	($field: ident, (default_value, $default: expr)) => {
 		$field
 	};
-	($field: ident, (chacha, $ss: expr)) => {
-		$field
-	};
 	($field: ident, option) => {
 		$field
 	};
@@ -400,9 +368,6 @@ macro_rules! init_tlv_based_struct_field {
 macro_rules! init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
 		let mut $field = $default;
-	};
-	($field: ident, (chacha, $ss: expr)) => {
-		let mut $field = None;
 	};
 	($field: ident, required) => {
 		let mut $field = ::util::ser::OptionDeserWrapper(None);
