@@ -1039,6 +1039,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
 													continue;
 												}
+												(_, Some(ty)) if is_onion_message(ty) => {
+													log_debug!(self.logger, "Got an invalid value while deserializing an onion message");
+													continue;
+												}
 												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
 													log_gossip!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
 													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: format!("Received an unknown required feature/TLV in message type {:?}", ty) });
@@ -1869,11 +1873,19 @@ fn is_gossip_msg(type_id: u16) -> bool {
 	}
 }
 
+fn is_onion_message(type_id: u16) -> bool {
+	match type_id {
+		msgs::OnionMessage::TYPE => true,
+		_ => false
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use ln::{msgs, wire};
 	use ln::msgs::NetAddress;
+	use onion_message;
 	use util::events;
 	use util::test_utils;
 
@@ -2012,6 +2024,45 @@ mod tests {
 
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+	}
+
+	#[test]
+	fn test_invalid_onion_message() {
+		// Check that we will drop invalid onion messages without disconnecting the peer.
+		let cfgs = create_peermgr_cfgs(2);
+		let a_chan_handler = test_utils::TestChannelMessageHandler::new();
+		let b_chan_handler = test_utils::TestChannelMessageHandler::new();
+		let mut peers = create_network(2, &cfgs);
+		let (fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
+
+		let secp_ctx = Secp256k1::new();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+
+		let invalid_onion_msg = msgs::OnionMessage {
+			blinding_point: PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret),
+			len: 42,
+			onion_routing_packet: onion_message::Packet {
+				version: 0,
+				public_key: PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret),
+				hop_data: Vec::new(),
+				hmac: [0; 32],
+			},
+		};
+		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendOnionMessage {
+			node_id: their_id, msg: invalid_onion_msg.clone()
+		});
+		peers[0].message_handler.chan_handler = &a_chan_handler;
+		peers[1].message_handler.chan_handler = &b_chan_handler;
+		peers[0].process_events();
+
+		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+
+		peers[1].logger.assert_log_contains(
+			"lightning::ln::peer_handler".to_string(),
+			"Got an invalid value while deserializing an onion message".to_string(), 1);
+		assert_eq!(peers[1].peers.read().unwrap().len(), 1);
 	}
 
 	#[test]
