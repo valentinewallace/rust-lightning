@@ -14,15 +14,18 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use chain::keysinterface::{KeysInterface, Sign};
+use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
 use ln::msgs::DecodeError;
 use ln::onion_utils;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use util::events::MessageSendEvent;
+use util::logger::Logger;
 use util::ser::{IgnoringLengthReadable, LengthRead, LengthReadable, Readable, VecWriter, Writeable, Writer};
 
 use core::ops::Deref;
 use io::{self, Read};
 use prelude::*;
+use sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Packet {
@@ -227,6 +230,39 @@ impl BlindedRoute {
 	}
 }
 
+/// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
+/// used to retrieve invoices and fulfill invoice requests from offers.
+pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	keys_manager: K,
+	logger: L,
+	pending_msg_events: Mutex<Vec<MessageSendEvent>>,
+	secp_ctx: Secp256k1<secp256k1::All>,
+	// Coming soon:
+	// invoice_handler: InvoiceHandler,
+	// custom_handler: CustomHandler, // handles custom onion messages
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
+	/// their respective handlers.
+	pub fn new(keys_manager: K, logger: L) -> Self {
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+		OnionMessenger {
+			keys_manager,
+			pending_msg_events: Mutex::new(Vec::new()),
+			secp_ctx,
+			logger,
+		}
+	}
+}
+
 #[inline]
 fn construct_keys_callback<
 	T: secp256k1::Signing + secp256k1::Verification,
@@ -302,3 +338,16 @@ fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>
 
 	Ok((encrypted_data_keys, blinded_node_pks))
 }
+
+/// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
+/// [`SimpleArcPeerManager`]. See their docs for more details.
+///
+///[`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
+///[`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>>;
+/// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
+/// [`SimpleRefPeerManager`]. See their docs for more details.
+///
+///[`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
+///[`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
+pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L>;
