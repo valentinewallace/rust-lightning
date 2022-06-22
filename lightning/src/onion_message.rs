@@ -15,13 +15,14 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
-use ln::msgs::DecodeError;
+use ln::msgs::{self, DecodeError, OnionMessageHandler};
 use ln::onion_utils;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use util::events::MessageSendEvent;
+use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use util::ser::{IgnoringLengthReadable, LengthRead, LengthReadable, Readable, VecWriter, Writeable, Writer};
 
+use core::mem;
 use core::ops::Deref;
 use io::{self, Read};
 use prelude::*;
@@ -260,6 +261,25 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			secp_ctx,
 			logger,
 		}
+	}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
+		let mut ret = Vec::new();
+		mem::swap(&mut ret, &mut *pending_msg_events);
+		ret
 	}
 }
 

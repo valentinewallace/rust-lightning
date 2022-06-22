@@ -923,6 +923,12 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
+/// A trait to describe an object that can receive onion messages.
+pub trait OnionMessageHandler : MessageSendEventsProvider {
+	/// Handle an incoming onion_message message from the given peer.
+	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
+}
+
 mod fuzzy_internal_msgs {
 	use prelude::*;
 	use ln::{PaymentPreimage, PaymentSecret};
