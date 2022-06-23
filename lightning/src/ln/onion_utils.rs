@@ -232,22 +232,23 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 		payloads, onion_keys, PacketData::Payment(packet_data), Some(associated_data)).try_into().unwrap()
 }
 
-pub(crate) fn construct_onion_message_packet(payloads: Vec<(onion_message::Payload, [u8; 32])>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> onion_message::Packet {
+/// Errors if the serialized payload size exceeds onion_message::BIG_PACKET_HOP_DATA_LEN
+pub(crate) fn construct_onion_message_packet(payloads: Vec<(onion_message::Payload, [u8; 32])>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> Result<onion_message::Packet, ()> {
 	let payloads_serialized_len = payloads.iter()
 		.fold(0, |total, next_payload| total + next_payload.serialized_length() + 32 /* HMAC */ );
 	let hop_data_len = if payloads_serialized_len <= onion_message::SMALL_PACKET_HOP_DATA_LEN {
 		onion_message::SMALL_PACKET_HOP_DATA_LEN
 	} else if payloads_serialized_len <= onion_message::BIG_PACKET_HOP_DATA_LEN {
 		onion_message::BIG_PACKET_HOP_DATA_LEN
-	} else { payloads_serialized_len };
+	} else { return Err(()) };
 
 	let mut packet_data = vec![0; hop_data_len];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process_in_place(&mut packet_data);
 
-	construct_onion_packet_with_init_noise(
-		payloads, onion_keys, PacketData::Message(packet_data), None).try_into().unwrap()
+	Ok(construct_onion_packet_with_init_noise(
+		payloads, onion_keys, PacketData::Message(packet_data), None).try_into().unwrap())
 }
 
 #[cfg(test)]

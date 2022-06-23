@@ -115,6 +115,18 @@ impl Destination {
 	}
 }
 
+/// Errors that may occur when [sending an onion message].
+///
+/// [sending an onion message]: OnionMessenger::send_onion_message
+#[derive(Debug, PartialEq)]
+pub enum SendError {
+	/// Errored computing onion message packet keys.
+	Secp256k1(secp256k1::Error),
+	/// Because implementations such as Eclair will drop onion messages where the message packet
+	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
+	TooBigPacket,
+}
+
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
@@ -133,7 +145,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	}
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
-	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), secp256k1::Error> {
+	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), SendError> {
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
@@ -146,11 +158,13 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		};
 		let (control_tlvs_keys, onion_packet_keys) = utils::construct_sending_keys(
-			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)?;
+			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)
+			.map_err(|e| SendError::Secp256k1(e))?;
 		let payloads = utils::build_payloads(intermediate_nodes, destination, control_tlvs_keys);
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
-		let onion_packet = onion_utils::construct_onion_message_packet(payloads, onion_packet_keys, prng_seed);
+		let onion_packet = onion_utils::construct_onion_message_packet(
+			payloads, onion_packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
 		let mut pending_msg_events = self.pending_msg_events.lock().unwrap();
 		pending_msg_events.push(MessageSendEvent::SendOnionMessage {

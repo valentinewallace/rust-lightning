@@ -31,5 +31,5 @@ mod functional_tests;
 // Re-export structs and consts so they can be imported with just the `onion_message::` module
 // prefix.
 pub use self::blinded_route::{BlindedRoute, BlindedHop};
-pub use self::messenger::{Destination, OnionMessenger, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+pub use self::messenger::{Destination, OnionMessenger, SendError, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 pub(crate) use self::packet::{BIG_PACKET_HOP_DATA_LEN, Packet, Payload, SMALL_PACKET_HOP_DATA_LEN};
