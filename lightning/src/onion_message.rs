@@ -163,6 +163,13 @@ pub(crate) struct Payload {
 /// we encode and encrypt at the same time using the secret provided as the second parameter here.
 impl Writeable for (Payload, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let invoice_request = self.invoice_request();
+		let invoice = self.invoice();
+		let invoice_error = self.invoice_error();
+		(4, self.0.encrypted_tlvs, required),
+		(64, invoice_request, option),
+		(66, invoice, option),
+		(68, invoice_error, option),
 		match &self.0.encrypted_tlvs {
 			EncryptedTlvs::Blinded(encrypted_bytes) => {
 				encode_varint_length_prefixed_tlv!(w, {
@@ -180,8 +187,8 @@ impl Writeable for (Payload, [u8; 32]) {
 	}
 }
 
-/// Reads of `Payload`s are parameterized by the `rho` of a `SharedSecret`, which is used to decrypt
-/// the onion message payload's `encrypted_data` field.
+/// Reads of `Payload`s are parameterized by a `SharedSecret`, which is used to decrypt the onion
+/// message payload's `encrypted_data` field.
 impl ReadableArgs<SharedSecret> for Payload {
 	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
@@ -403,6 +410,29 @@ impl Destination {
 	}
 }
 
+struct InvoiceRequest {}
+struct Invoice {}
+struct InvoiceError {}
+
+/// XXX
+pub struct CustomTlv {
+	/// XXX
+	pub typ: u64,
+	/// XXX
+	pub value: Vec<u8>,
+}
+/// XXX
+enum Message {
+	/// XXX
+	InvoiceRequest(InvoiceRequest),
+	/// XXX
+	Invoice(Invoice),
+	/// XXX
+	InvoiceError(InvoiceError),
+	/// XXX
+	Custom(Vec<CustomTlv>),
+}
+
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
@@ -453,8 +483,16 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		}
 	}
 
-	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
-	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), SendError> {
+	/// Send an onion message to `destination`, routing it through `intermediate_nodes`. `custom_tlvs`
+	/// will be encoded into the destination's payload.
+	pub fn send_custom_onion_message(
+		&self, intermediate_nodes: Vec<PublicKey>, destination: Destination, custom_tlvs: Vec<CustomTlv>
+	) -> Result<(), SendError>
+	{
+		self.send_onion_message(intermediate_nodes, destination, Message::Custom(custom_tlvs))
+	}
+
+	fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination, final_payload: Message) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() == 0 {
 				return Err(SendError::InvalidDestination("Blinded routes can't have 0 hops"));
@@ -474,7 +512,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		let (encrypted_data_keys, onion_packet_keys) = construct_sending_keys(
 			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
-		let payloads = build_payloads(intermediate_nodes, destination, encrypted_data_keys);
+		let payloads = build_payloads(intermediate_nodes, destination, final_payload, encrypted_data_keys);
 
 		// Check whether the onion message is too big to send.
 		let payloads_serialized_len = payloads.iter()
@@ -496,6 +534,9 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		});
 		Ok(())
+	}
+
+	pub fn send_invoice_request(amount_msat: u64, destination: Destination, quantity: u64, payer_note: String, offer_id: sha256, chain: Chain) -> Result<(), SendError> {
 	}
 }
 
@@ -607,7 +648,7 @@ impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessen
 }
 
 /// Build an onion message's payloads for encoding in the onion packet.
-fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<[u8; 32]>) -> Vec<(Payload, [u8; 32])> {
+fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, final_payload: Message, mut encrypted_tlvs_keys: Vec<[u8; 32]>) -> Vec<(Payload, [u8; 32])> {
 	let num_intermediate_nodes = intermediate_nodes.len();
 	let num_payloads = num_intermediate_nodes + destination.num_hops();
 	assert_eq!(encrypted_tlvs_keys.len(), num_payloads);
