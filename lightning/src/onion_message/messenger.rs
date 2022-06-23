@@ -125,6 +125,11 @@ pub enum SendError {
 	/// Because implementations such as Eclair will drop onion messages where the message packet
 	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
 	TooBigPacket,
+	/// The provided [destination] was an invalid [blinded route], due to having 0 blinded hops.
+	///
+	/// [destination]: Destination
+	/// [blinded route]: super::blinded_route::BlindedRoute
+	MissingBlindedHops,
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
@@ -146,6 +151,11 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
 	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), SendError> {
+		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
+			if blinded_hops.len() == 0 {
+				return Err(SendError::MissingBlindedHops);
+			}
+		}
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
