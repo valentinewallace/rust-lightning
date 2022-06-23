@@ -31,9 +31,60 @@ use sync::{Arc, Mutex};
 use prelude::*;
 
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
-/// used to retrieve invoices and fulfill invoice requests from [offers].
+/// used to retrieve invoices and fulfill invoice requests from [offers]. Currently, only sending
+/// and receiving empty onion messages is supported.
+///
+/// To set up the [`OnionMessenger`], provide it to the [`PeerManager`] via
+/// [`MessageHandler::onion_message_handler`], or directly if you're initializing the `PeerManager`
+/// via [`PeerManager::new_channel_only`].
+///
+/// # Example
+///
+/// ```
+/// # extern crate bitcoin;
+/// # use bitcoin::hashes::_export::_core::time::Duration;
+/// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+/// # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
+/// # use lightning::onion_message::{BlindedRoute, Destination, OnionMessenger};
+/// # use lightning::util::logger::{Logger, Record};
+/// # use std::sync::Arc;
+/// # struct FakeLogger {};
+/// # impl Logger for FakeLogger {
+/// #     fn log(&self, record: &Record) { unimplemented!() }
+/// # }
+/// # let seed = [42u8; 32];
+/// # let time = Duration::from_secs(123456);
+/// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos());
+/// # let logger = Arc::new(FakeLogger {});
+/// # let node_secret = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+/// # let secp_ctx = Secp256k1::new();
+/// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
+/// # let hop_node_id2 = hop_node_id1.clone();
+/// # let destination_node_id = hop_node_id1.clone();
+/// #
+/// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
+/// // ChannelManager.
+/// let onion_messenger = OnionMessenger::new(&keys_manager, logger);
+///
+/// // Send an empty onion message to a node id.
+/// let intermediate_hops = vec![hop_node_id1, hop_node_id2];
+/// onion_messenger.send_onion_message(intermediate_hops, Destination::Node(destination_node_id));
+///
+/// // Create a blinded route to yourself, for someone to send an onion message to.
+/// # let your_node_id = hop_node_id1.clone();
+/// let hops = vec![hop_node_id1, hop_node_id2, your_node_id];
+/// let blinded_route = BlindedRoute::new(hops, &&keys_manager, &secp_ctx).unwrap();
+///
+/// // Send an empty onion message to a blinded route.
+/// # let intermediate_hops = vec![hop_node_id1, hop_node_id2];
+/// onion_messenger.send_onion_message(intermediate_hops, Destination::BlindedRoute(blinded_route));
+/// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
+/// [`OnionMessenger`]: crate::onion_message::OnionMessenger
+/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
+/// [`MessageHandler::onion_message_handler`]: crate::ln::peer_handler::MessageHandler::onion_message_handler
+/// [`PeerManager::new_channel_only`]: crate::ln::peer_handler::PeerManager::new_channel_only
 pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
