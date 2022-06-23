@@ -8,6 +8,61 @@
 // licenses.
 
 //! Onion Messages: sending, receiving, forwarding, and ancillary utilities live here
+//!
+//! Onion messages are multi-purpose messages sent between peers over the lightning network. In the
+//! near future, they will be used to communicate invoices for [Offers], unlocking use cases such as
+//! static invoices, refunds and proof of payer. Further, you will be able to accept payments
+//! without revealing your node id through the use of [blinded routes].
+//!
+//! # Example
+//!
+//! ```
+//! # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
+//! # use lightning::onion_message::{BlindedRoute, OnionMessenger};
+//! # use lightning::util::logger::{Logger, Record};
+//! # struct FakeLogger {};
+//! # impl Logger for FakeLogger {
+//! #     fn log(&self, record: &Record) { unimplemented!() }
+//! # }
+//! # let seed = [42u8; 32];
+//! # let time = Duration::from_secs(123456);
+//! # let keys_manager = Arc::new(KeysManager::new(seed, time.as_secs(), time.subsec_nanos()));
+//! # let logger = Arc::new(FakeLogger {});
+//! # let node_secret = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+//! # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
+//! # let hop_node_id2 = hop_node_id1.clone();
+//! # let destination_node_id = hop_node_id1.clone();
+//! #
+//! // Create the onion messenger. This must use the same `keys_manager` as is passed to your
+//! // ChannelManager.
+//! let onion_messenger = OnionMessenger::new(keys_manager, logger);
+//!
+//! // Hook up the OnionMessenger to your PeerManager, for sending and receiving messages on the
+//! // wire.
+//! # let chan_handler = IgnoringMessageHandler {};
+//! # let route_handler = IgnoringMessageHandler {};
+//! # let custom_message_handler = IgnoringMessageHandler {};
+//! # let rand_bytes = [0; 32];
+//! let message_handler = MessageHandler { chan_handler, route_handler, onion_messenger };
+//! let peer_manager = PeerManager::new(message_handler, node_secret, &rand_bytes, logger,
+//! custom_message_handler);
+//!
+//! // Send an empty onion message to a node id.
+//! let intermediate_hops = vec![hop_node_id1, hop_node_id2];
+//! onion_messenger.send_onion_message(intermediate_hops, Destination::Node(destination_node_id));
+//!
+//! // Create a blinded route to yourself, for someone to send an onion message to.
+//! # let secp_ctx = Secp256k1::new();
+//! # let your_node_id = hop_node_id1.clone();
+//! let hops = vec![hop_node_id_1, hop_node_id_2, your_node_id];
+//! let blinded_route = BlindedRoute::new(hops, keys_manager, &secp_ctx).unwrap();
+//!
+//! // Send an empty onion message to a blinded route.
+//! onion_messenger.send_onion_message(intermediate_hops, Destination::BlindedRoute(blinded_route));
+//! ```
+//!
+//! [Offers]: https://github.com/lightning/bolts/pull/798
+//! [blinded routes]: crate::onion_message::BlindedRoute
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -28,6 +83,8 @@ use io::{self, Read};
 use prelude::*;
 use sync::{Arc, Mutex};
 
+// Per the spec, an onion message packet's `hop_data` field length should be
+// SMALL_PACKET_HOP_DATA_LEN if it fits, else BIG_PACKET_HOP_DATA_LEN if it fits.
 pub(crate) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
 pub(crate) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
@@ -287,7 +344,7 @@ impl BlindedRoute {
 		(node_pks: Vec<PublicKey>, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 		where K::Target: KeysInterface<Signer = Signer>,
 	{
-		if node_pks.len() <= 1 { return Err(()) }
+		if node_pks.len() < 2 { return Err(()) }
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (mut encrypted_data_keys, mut blinded_node_pks) = construct_blinded_route_keys(secp_ctx, &node_pks, &blinding_secret).map_err(|_| ())?;
@@ -308,7 +365,7 @@ impl BlindedRoute {
 		}
 
 		// Add the recipient final payload.
-		let encrypted_tlvs = ControlTlvs::Receive { path_id: Some([42; 32]) };
+		let encrypted_tlvs = ControlTlvs::Receive { path_id: None };
 		blinded_hops.push(BlindedHop {
 			blinded_node_id: blinded_pks.next().unwrap(),
 			encrypted_payload: Self::encrypt_payload(encrypted_tlvs, enc_tlvs_keys.next().unwrap()),
@@ -346,8 +403,26 @@ impl Destination {
 	}
 }
 
+/// Errors that may occur when [sending an onion message].
+///
+/// [sending an onion message]: OnionMessenger::send_onion_message
+#[derive(Debug)]
+pub enum SendError {
+	/// Errored computing onion message packet keys.
+	Secp256k1(secp256k1::Error),
+	/// The provided [destination] was invalid.
+	///
+	/// [destination]: Destination
+	InvalidDestination(&'static str),
+	/// Because implementations such as Eclair will drop onion messages where the message packet
+	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
+	TooBigPacket,
+}
+
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
-/// used to retrieve invoices and fulfill invoice requests from offers.
+/// used to retrieve invoices and fulfill invoice requests from [offers].
+///
+/// [offers]: https://github.com/lightning/bolts/pull/798
 pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 	where K::Target: KeysInterface<Signer = Signer>,
 				L::Target: Logger,
@@ -379,7 +454,12 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	}
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
-	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), secp256k1::Error> {
+	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), SendError> {
+		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
+			if blinded_hops.len() == 0 {
+				return Err(SendError::InvalidDestination("Blinded routes can't have 0 hops"));
+			}
+		}
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
@@ -392,8 +472,16 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		};
 		let (encrypted_data_keys, onion_packet_keys) = construct_sending_keys(
-			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)?;
+			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)
+			.map_err(|e| SendError::Secp256k1(e))?;
 		let payloads = build_payloads(intermediate_nodes, destination, encrypted_data_keys);
+
+		// Check whether the onion message is too big to send.
+		let payloads_serialized_len = payloads.iter()
+			.fold(0, |total, next_payload| total + next_payload.serialized_length() + 32 /* HMAC */ );
+		if payloads_serialized_len > BIG_PACKET_HOP_DATA_LEN {
+			return Err(SendError::TooBigPacket)
+		}
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let onion_packet = onion_utils::construct_onion_message_packet(payloads, onion_packet_keys, prng_seed);
@@ -795,7 +883,7 @@ mod tests {
 		let blinded_route = BlindedRoute::new(vec![node4.get_node_pk(), node5.get_node_pk()], &node5.keys_manager, &secp_ctx).unwrap();
 
 		node1.messenger.send_onion_message(vec![node2.get_node_pk(), node3.get_node_pk()], Destination::BlindedRoute(blinded_route)).unwrap();
-		pass_along_path(vec![&node1, &node2, &node3, &node4, &node5], Some([42; 32]));
+		pass_along_path(vec![&node1, &node2, &node3, &node4, &node5], None);
 	}
 
 	#[test]
@@ -807,6 +895,6 @@ mod tests {
 		let blinded_route = BlindedRoute::new(vec![node2.get_node_pk(), node3.get_node_pk(), node4.get_node_pk()], &node4.keys_manager, &secp_ctx).unwrap();
 
 		node1.messenger.send_onion_message(vec![], Destination::BlindedRoute(blinded_route)).unwrap();
-		pass_along_path(vec![&node1, &node2, &node3, &node4], Some([42; 32]));
+		pass_along_path(vec![&node1, &node2, &node3, &node4], None);
 	}
 }
