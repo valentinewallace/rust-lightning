@@ -235,6 +235,24 @@ mod sealed {
 			BasicMPP,
 		],
 	});
+	define_context!(OfferContext {
+		required_features: [
+			// Byte 0
+			,
+			// Byte 1
+			VariableLengthOnion | PaymentSecret,
+			// Byte 2
+			,
+		],
+		optional_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			BasicMPP,
+		],
+	});
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext {
@@ -414,17 +432,17 @@ mod sealed {
 	define_feature!(7, GossipQueries, [InitContext, NodeContext],
 		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required,
 		supports_gossip_queries, requires_gossip_queries);
-	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
+	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext, OfferContext],
 		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
 		set_variable_length_onion_required, supports_variable_length_onion,
 		requires_variable_length_onion);
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
 		set_static_remote_key_required, supports_static_remote_key, requires_static_remote_key);
-	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
+	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext, OfferContext],
 		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
 		supports_payment_secret, requires_payment_secret);
-	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
+	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext, OfferContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
@@ -447,7 +465,7 @@ mod sealed {
 		supports_keysend, requires_keysend);
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
+	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext, OfferContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -495,6 +513,8 @@ pub type NodeFeatures = Features<sealed::NodeContext>;
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
 /// Features used within an invoice.
 pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
+/// Features used within an offer.
+pub type OfferFeatures = Features<sealed::OfferContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
@@ -561,6 +581,15 @@ impl InvoiceFeatures {
 		let mut res = InvoiceFeatures::empty();
 		res.set_variable_length_onion_optional();
 		res
+	}
+}
+
+#[cfg(test)]
+impl OfferFeatures {
+	/// Converts `OfferFeatures` to `Features<C>`. Only known `InvoiceFeatures` relevant to context
+	/// `C` are included in the result.
+	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
+		self.to_context_internal()
 	}
 }
 
@@ -811,24 +840,29 @@ impl_feature_len_prefixed_write!(ChannelFeatures);
 impl_feature_len_prefixed_write!(NodeFeatures);
 impl_feature_len_prefixed_write!(InvoiceFeatures);
 
-// Because ChannelTypeFeatures only appears inside of TLVs, it doesn't have a length prefix when
-// serialized. Thus, we can't use `impl_feature_len_prefixed_write`, above, and have to write our
-// own serialization.
-impl Writeable for ChannelTypeFeatures {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.write_be(w)
-	}
-}
-impl Readable for ChannelTypeFeatures {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v = io_extras::read_to_end(r)?;
-		Ok(Self::from_be_bytes(v))
+// Some features only appear inside of TLVs, so they don't have a length prefix when serialized.
+macro_rules! impl_feature_tlv_value_write {
+	($features: ident) => {
+		impl Writeable for $features {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				self.write_be(w)
+			}
+		}
+		impl Readable for $features {
+			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let v = io_extras::read_to_end(r)?;
+				Ok(Self::from_be_bytes(v))
+			}
+		}
 	}
 }
 
+impl_feature_tlv_value_write!(ChannelTypeFeatures);
+impl_feature_tlv_value_write!(OfferFeatures);
+
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, OfferFeatures};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
 
 	#[test]
@@ -1019,6 +1053,12 @@ mod tests {
 		// Test deserialization.
 		let features_deserialized = InvoiceFeatures::from_base32(&features_as_u5s).unwrap();
 		assert_eq!(features, features_deserialized);
+	}
+
+	#[test]
+	fn invoice_features_equal_offer_features() {
+		assert_eq!(InvoiceFeatures::known(), OfferFeatures::known().to_context());
+		assert_eq!(OfferFeatures::known(), InvoiceFeatures::known().to_context());
 	}
 
 	#[test]
