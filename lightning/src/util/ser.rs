@@ -20,8 +20,9 @@ use core::convert::TryFrom;
 use core::ops::Deref;
 
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
-use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
+use bitcoin::secp256k1::ecdsa;
+use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
@@ -530,7 +531,7 @@ impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
-impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
+impl_array!(64); // for ecdsa::Signature and schnorr::Signature
 impl_array!(1300); // for OnionPacket.hop_data
 
 /// For variable-length values within TLV subtypes where the length cannot be inferred from the
@@ -704,7 +705,7 @@ impl Readable for Vec<u8> {
 		Ok(ret)
 	}
 }
-impl Writeable for Vec<Signature> {
+impl Writeable for Vec<ecdsa::Signature> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
@@ -715,7 +716,7 @@ impl Writeable for Vec<Signature> {
 	}
 }
 
-impl Readable for Vec<Signature> {
+impl Readable for Vec<ecdsa::Signature> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
@@ -804,7 +805,7 @@ impl Readable for Sha256dHash {
 	}
 }
 
-impl Writeable for Signature {
+impl Writeable for ecdsa::Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.serialize_compact().write(w)
 	}
@@ -814,10 +815,30 @@ impl Writeable for Signature {
 	}
 }
 
-impl Readable for Signature {
+impl Readable for ecdsa::Signature {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; COMPACT_SIGNATURE_SIZE] = Readable::read(r)?;
-		match Signature::from_compact(&buf) {
+		match ecdsa::Signature::from_compact(&buf) {
+			Ok(sig) => Ok(sig),
+			Err(_) => return Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for schnorr::Signature {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.as_ref().write(w)
+	}
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		SCHNORR_SIGNATURE_SIZE
+	}
+}
+
+impl Readable for schnorr::Signature {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; SCHNORR_SIGNATURE_SIZE] = Readable::read(r)?;
+		match schnorr::Signature::from_slice(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
