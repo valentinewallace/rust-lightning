@@ -427,6 +427,108 @@ macro_rules! impl_writeable_tlv_based {
 	}
 }
 
+/// Defines a struct for a TLV stream and a similar struct using references for non-primitive types,
+/// implementing [`Readable`] for the former and [`Writeable`] for the latter. Useful as an
+/// intermediary format when reading or writing a type encoded as a TLV stream.
+macro_rules! tlv_stream {
+	(struct $name:ident {
+		$(($type:expr, $field:ident : $fieldty:ident$(<$gen:ident>)?)),* $(,)*
+	}) => {
+		#[derive(Debug)]
+		struct $name {
+			$(
+				$field: Option<tlv_record_type!($fieldty$(<$gen>)?)>,
+			)*
+		}
+
+		mod reference {
+			use super::*;
+
+			pub(super) struct $name<'a> {
+				$(
+					pub(super) $field: Option<tlv_record_ref_type!($fieldty$(<$gen>)?)>,
+				)*
+			}
+
+			impl<'a> ::util::ser::Writeable for $name<'a> {
+				fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+					encode_tlv_stream!(writer, { $(($type, self.$field, option)),* });
+					Ok(())
+				}
+			}
+		}
+
+		impl ::util::ser::Readable for $name {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+				$(
+					init_tlv_field_var!($field, option);
+				)*
+				decode_tlv_stream!(reader, {$(($type, $field, option)),*});
+
+				Ok(Self {
+					$(
+						$field: init_tlv_based_struct_field!($field, option)
+					),*
+				})
+			}
+		}
+	}
+}
+
+macro_rules! tlv_record_type {
+	(u8) => {
+		u8
+	};
+	(u16) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u16>
+	};
+	(u32) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u32>
+	};
+	(u64) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u64>
+	};
+	(char) => {
+		char
+	};
+	(String) => {
+		::util::ser::WithoutLength<String>
+	};
+	(Vec<$type:ty>) => {
+		::util::ser::WithoutLength<Vec<$type>>
+	};
+	($type:ident$(<$gen:ident>)?) => {
+		$type$(<$gen>)?
+	};
+}
+
+macro_rules! tlv_record_ref_type {
+	(u8) => {
+		u8
+	};
+	(u16) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u16>
+	};
+	(u32) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u32>
+	};
+	(u64) => {
+		::util::ser::HighZeroBytesDroppedVarInt<u64>
+	};
+	(char) => {
+		char
+	};
+	(String) => {
+		::util::ser::WithoutLength<&'a String>
+	};
+	(Vec<$type:ty>) => {
+		::util::ser::WithoutLength<&'a Vec<$type>>
+	};
+	($type:ident$(<$gen:ident>)?) => {
+		&'a $type$(<$gen>)?
+	};
+}
+
 macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
