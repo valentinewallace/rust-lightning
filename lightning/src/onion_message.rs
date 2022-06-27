@@ -146,6 +146,7 @@ pub(crate) struct Payload {
 	/// Onion message payloads contain an encrypted TLV stream, containing both "control" TLVs and
 	/// sometimes user-provided custom "data" TLVs. See [`EncryptedTlvs`] for more information.
 	encrypted_tlvs: EncryptedTlvs,
+	message: Message,
 	// Coming soon:
 	// * `message: Message` field
 	// * `reply_path: Option<BlindedRoute>` field
@@ -159,30 +160,37 @@ pub(crate) struct Payload {
 //	CustomMessage<T>,
 // }
 
+impl Payload {
+	pub(super) fn invoice_request<'a>(&self) -> Option<&'a InvoiceRequest> {
+		match self.message {
+			Message::InvoiceRequest(req) => Some(&req),
+			_ => None
+		}
+	}
+
+	pub(super) fn invoice<'a>(&self) -> Option<&'a Invoice> {
+		match self.message {
+			Message::Invoice(inv) => Some(&inv),
+			_ => None
+		}
+	}
+
+	pub(super) fn invoice_error<'a>(&self) -> Option<&'a InvoiceError> {
+		match self.message {
+			Message::InvoiceError(err) => Some(&err),
+			_ => None
+		}
+	}
+}
+
 /// We want to avoid encoding and encrypting separately in order to avoid an intermediate Vec, thus
 /// we encode and encrypt at the same time using the secret provided as the second parameter here.
 impl Writeable for (Payload, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let invoice_request = self.invoice_request();
-		let invoice = self.invoice();
-		let invoice_error = self.invoice_error();
-		(4, self.0.encrypted_tlvs, required),
-		(64, invoice_request, option),
-		(66, invoice, option),
-		(68, invoice_error, option),
-		match &self.0.encrypted_tlvs {
-			EncryptedTlvs::Blinded(encrypted_bytes) => {
-				encode_varint_length_prefixed_tlv!(w, {
-					(4, encrypted_bytes, vec_type)
-				})
-			},
-			EncryptedTlvs::Unblinded(control_tlvs) => {
-				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
-				encode_varint_length_prefixed_tlv!(w, {
-					(4, write_adapter, required)
-				})
-			}
-		}
+		(4, (self.0.encrypted_tlvs, self.1), required),
+		(64, self.0.invoice_request(), option),
+		(66, self.0.invoice(), option),
+		(68, self.0.invoice_error(), option),
 		Ok(())
 	}
 }
@@ -206,18 +214,37 @@ impl ReadableArgs<SharedSecret> for Payload {
 		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		let mut invoice_request: Option<InvoiceRequest> = None;
+		let mut invoice: Option<Invoice> = None;
+		let mut invoice_error: Option<InvoiceError> = None;
 		decode_tlv_stream!(&mut rd, {
 			(2, _reply_path_bytes, vec_type),
-			(4, read_adapter, (option: LengthReadableArgs, rho))
+			(4, read_adapter, (option: LengthReadableArgs, rho)),
+			(64, invoice_request, option),
+			(66, invoice, option),
+			(68, invoice_error, option),
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 
 		if read_adapter.is_none() {
 			return Err(DecodeError::InvalidValue)
 		}
+		// Make sure 0 or 1 of these fields is set.
+		if (invoice_request.is_some() as i32 + invoice.is_some() as i32 + invoice_error.is_some() as i32) <= 1 {
+			return Err(DecodeError::InvalidValue)
+		}
 
 		Ok(Payload {
 			encrypted_tlvs: EncryptedTlvs::Unblinded(read_adapter.unwrap().readable),
+			message: if invoice_request.is_some() {
+				Message::InvoiceRequest(invoice_request.unwrap())
+			} else if invoice.is_some() {
+				Message::Invoice(invoice.unwrap())
+			} else if invoice_error.is_some() {
+				Message::InvoiceError(invoice_error.unwrap())
+			} else {
+				Message::Custom(Vec::new()) // TODO: read custom TLVs
+			}
 		})
 	}
 }
@@ -234,6 +261,25 @@ pub(crate) enum EncryptedTlvs {
 	/// unblinded state to avoid encoding them into an intermediate `Vec`.
 	// Below will later have an additional Vec<CustomTlv>
 	Unblinded(ControlTlvs),
+}
+
+impl Writeable for (EncryptedTlvs, [u8; 32]) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match &self.0 {
+			EncryptedTlvs::Blinded(encrypted_bytes) => {
+				encode_tlv_stream!(w, {
+					(4, encrypted_bytes, vec_type),
+				})
+			},
+			EncryptedTlvs::Unblinded(control_tlvs) => {
+				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
+				encode_tlv_stream!(w, {
+					(4, write_adapter, required)
+				})
+			}
+		}
+		Ok(())
+	}
 }
 
 /// Onion messages have "control" TLVs and "data" TLVs. Control TLVs are used to control the
