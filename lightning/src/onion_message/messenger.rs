@@ -150,7 +150,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	}
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
-	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), SendError> {
+	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() == 0 {
 				return Err(SendError::MissingBlindedHops);
@@ -170,7 +170,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		let (control_tlvs_keys, onion_packet_keys) = utils::construct_sending_keys(
 			&self.secp_ctx, &intermediate_nodes, &destination, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
-		let payloads = utils::build_payloads(intermediate_nodes, destination, control_tlvs_keys);
+		let payloads = utils::build_payloads(intermediate_nodes, destination, reply_path, control_tlvs_keys);
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let onion_packet = onion_utils::construct_onion_message_packet(
@@ -220,9 +220,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 		};
 		match onion_utils::decode_next_message_hop(onion_decode_shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, control_tlvs_ss) {
 			Ok(onion_utils::MessageHop::Receive(Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id })
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path
 			})) => {
-				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+				log_info!(self.logger,
+					"Received an onion message with path_id: {:02x?} and reply path: {:?}", path_id, reply_path);
 			},
 			Ok(onion_utils::MessageHop::Forward {
 				next_hop_data:

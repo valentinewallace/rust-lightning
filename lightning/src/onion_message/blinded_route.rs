@@ -13,15 +13,17 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use chain::keysinterface::{KeysInterface, Sign};
 use super::utils;
+use ln::msgs::DecodeError;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use util::ser::{VecWriter, Writeable, Writer};
+use util::ser::{FixedLengthReader, LengthRead, LengthReadable, Readable, VecReadWrapper, VecWriter, Writeable, Writer};
 
 use core::ops::Deref;
-use io;
+use io::{self, Read};
 use prelude::*;
 
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
 /// the recipient.
+#[derive(Debug)]
 pub struct BlindedRoute {
 	/// To send to a blinded route, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
@@ -41,6 +43,7 @@ pub struct BlindedRoute {
 
 /// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
+#[derive(Debug)]
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded route.
 	pub blinded_node_id: PublicKey,
@@ -110,6 +113,61 @@ fn encrypt_final_payload(payload: ReceiveTlvs, encrypted_tlvs_ss: [u8; 32]) -> V
 	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_ss, &payload);
 	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
 	writer.0
+}
+
+impl Writeable for BlindedRoute {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.introduction_node_id.write(w)?;
+		self.blinding_point.write(w)?;
+		for hop in &self.blinded_hops {
+			hop.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Writeable for BlindedHop {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.blinded_node_id.write(w)?;
+		(self.encrypted_payload.len() as u64).write(w)?;
+		self.encrypted_payload.write(w)?;
+		Ok(())
+	}
+}
+
+impl LengthReadable for BlindedRoute {
+	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+		if r.total_bytes() < 66 {
+			return Err(DecodeError::InvalidValue)
+		}
+		let introduction_node_id = Readable::read(r)?;
+		let blinding_point = Readable::read(r)?;
+		let mut blinded_hops: Vec<BlindedHop> = Vec::new();
+		let mut bytes_read = 66;
+		while bytes_read < r.total_bytes() {
+			let blinded_hop: BlindedHop = Readable::read(r)?;
+			bytes_read += 66 + blinded_hop.encrypted_payload.len() as u64;
+			blinded_hops.push(blinded_hop);
+		}
+		Ok(BlindedRoute {
+			introduction_node_id,
+			blinding_point,
+			blinded_hops,
+		})
+	}
+}
+
+impl Readable for BlindedHop {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let blinded_node_id = Readable::read(r)?;
+		let encrypted_payload_len = Readable::read(r)?;
+		let mut rd = FixedLengthReader::new(r, encrypted_payload_len);
+		let f: VecReadWrapper<_> = Readable::read(&mut rd)?;
+		Ok(Self {
+			blinded_node_id,
+			encrypted_payload: f.0
+		})
+	}
 }
 
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded

@@ -23,7 +23,7 @@ use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use prelude::*;
 
 /// Build an onion message's payloads for encoding in the onion packet.
-pub(super) fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<[u8; 32]>) -> Vec<(Payload, [u8; 32])> {
+pub(super) fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, reply_path: Option<BlindedRoute>, mut encrypted_tlvs_keys: Vec<[u8; 32]>) -> Vec<(Payload, [u8; 32])> {
 	let num_intermediate_nodes = intermediate_nodes.len();
 	let num_payloads = num_intermediate_nodes + destination.num_hops();
 	debug_assert_eq!(encrypted_tlvs_keys.len(), num_payloads);
@@ -47,13 +47,12 @@ pub(super) fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: De
 					}
 				)), enc_tlv_keys.next().unwrap()));
 			}
-			payloads.push((Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(
-				ReceiveTlvs {
-					path_id: None,
-				}
-			)}, enc_tlv_keys.next().unwrap()));
+			payloads.push((Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None }),
+				reply_path,
+			}, enc_tlv_keys.next().unwrap()));
 		},
-		Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, blinded_hops }) => {
+		Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, mut blinded_hops }) => {
 			if num_intermediate_nodes != 0 {
 				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
 					ForwardTlvs {
@@ -63,16 +62,17 @@ pub(super) fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: De
 				)), enc_tlv_keys.next().unwrap()));
 			}
 			let num_hops = blinded_hops.len();
-			for (idx, hop) in blinded_hops.into_iter().enumerate() {
-				if idx != num_hops - 1 {
-					payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(hop.encrypted_payload)),
-						enc_tlv_keys.next().unwrap()));
-				} else {
-					payloads.push((Payload::Receive {
-						control_tlvs: ReceiveControlTlvs::Blinded(hop.encrypted_payload),
-					}, enc_tlv_keys.next().unwrap()));
-				}
+			let mut hops = blinded_hops.drain(..);
+			let mut idx = 0;
+			while idx != num_hops - 1 {
+				payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(hops.next().unwrap().encrypted_payload)),
+				enc_tlv_keys.next().unwrap()));
+				idx += 1;
 			}
+			payloads.push((Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Blinded(hops.next().unwrap().encrypted_payload),
+				reply_path,
+			}, enc_tlv_keys.next().unwrap()));
 		}
 	}
 	payloads

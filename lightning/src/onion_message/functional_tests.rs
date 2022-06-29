@@ -75,7 +75,7 @@ fn one_hop() {
 	let mut nodes = create_nodes(2);
 	let (node1, node2) = (nodes.remove(0), nodes.remove(0));
 
-	node1.messenger.send_onion_message(vec![], Destination::Node(node2.get_node_pk())).unwrap();
+	node1.messenger.send_onion_message(vec![], Destination::Node(node2.get_node_pk()), None).unwrap();
 	pass_along_path(vec![&node1, &node2], None);
 }
 
@@ -84,7 +84,7 @@ fn two_unblinded_hops() {
 	let mut nodes = create_nodes(3);
 	let (node1, node2, node3) = (nodes.remove(0), nodes.remove(0), nodes.remove(0));
 
-	node1.messenger.send_onion_message(vec![node2.get_node_pk()], Destination::Node(node3.get_node_pk())).unwrap();
+	node1.messenger.send_onion_message(vec![node2.get_node_pk()], Destination::Node(node3.get_node_pk()), None).unwrap();
 	pass_along_path(vec![&node1, &node2, &node3], None);
 }
 
@@ -96,7 +96,7 @@ fn two_unblinded_two_blinded() {
 	let secp_ctx = Secp256k1::new();
 	let blinded_route = BlindedRoute::new(vec![node4.get_node_pk(), node5.get_node_pk()], &node5.keys_manager, &secp_ctx).unwrap();
 
-	node1.messenger.send_onion_message(vec![node2.get_node_pk(), node3.get_node_pk()], Destination::BlindedRoute(blinded_route)).unwrap();
+	node1.messenger.send_onion_message(vec![node2.get_node_pk(), node3.get_node_pk()], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(vec![&node1, &node2, &node3, &node4, &node5], None);
 }
 
@@ -108,7 +108,7 @@ fn three_blinded_hops() {
 	let secp_ctx = Secp256k1::new();
 	let blinded_route = BlindedRoute::new(vec![node2.get_node_pk(), node3.get_node_pk(), node4.get_node_pk()], &node4.keys_manager, &secp_ctx).unwrap();
 
-	node1.messenger.send_onion_message(vec![], Destination::BlindedRoute(blinded_route)).unwrap();
+	node1.messenger.send_onion_message(vec![], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(vec![&node1, &node2, &node3, &node4], None);
 }
 
@@ -122,7 +122,7 @@ fn too_big_packet_error() {
 	let hop_node_id = PublicKey::from_secret_key(&secp_ctx, &hop_secret);
 
 	let hops = vec![hop_node_id.clone(); 400];
-	let err = nodes[0].messenger.send_onion_message(hops, Destination::Node(hop_node_id)).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(hops, Destination::Node(hop_node_id), None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
 }
 
@@ -137,6 +137,6 @@ fn invalid_blinded_route_error() {
 	let mut empty_hops = Vec::new();
 	mem::swap(&mut empty_hops, &mut blinded_route.blinded_hops);
 
-	let err = node1.messenger.send_onion_message(vec![], Destination::BlindedRoute(blinded_route)).unwrap_err();
+	let err = node1.messenger.send_onion_message(vec![], Destination::BlindedRoute(blinded_route), None).unwrap_err();
 	assert_eq!(err, SendError::MissingBlindedHops);
 }

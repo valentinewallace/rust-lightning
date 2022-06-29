@@ -14,7 +14,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use ln::msgs::DecodeError;
 use ln::onion_utils;
-use super::blinded_route::{ForwardTlvs, ReceiveTlvs};
+use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use util::ser::{FixedLengthReader, IgnoringLengthReadable, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
@@ -89,8 +89,8 @@ pub(crate) enum Payload {
 	/// This payload is for the final hop.
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
+		reply_path: Option<BlindedRoute>,
 		// Coming soon:
-		// reply_path: Option<BlindedRoute>,
 		// message: Message,
 	}
 }
@@ -127,9 +127,16 @@ pub(crate) enum ReceiveControlTlvs {
 impl Writeable for (Payload, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
-			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) |
-			Payload::Receive { control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes)} => {
+			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
 				encode_varint_length_prefixed_tlv!(w, {
+					(4, encrypted_bytes, vec_type)
+				})
+			},
+			Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path
+			} => {
+				encode_varint_length_prefixed_tlv!(w, {
+					(2, reply_path, option),
 					(4, encrypted_bytes, vec_type)
 				})
 			},
@@ -139,9 +146,12 @@ impl Writeable for (Payload, [u8; 32]) {
 					(4, write_adapter, required)
 				})
 			},
-			Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs)} => {
+			Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs), reply_path,
+			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				encode_varint_length_prefixed_tlv!(w, {
+					(2, reply_path, option),
 					(4, write_adapter, required)
 				})
 			},
@@ -165,11 +175,11 @@ impl ReadableArgs<SharedSecret> for Payload {
 
 		let mut rd = FixedLengthReader::new(r, v.0);
 		// TODO: support reply paths
-		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		let mut reply_path: Option<BlindedRoute> = None;
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let (rho, _) = onion_utils::gen_rho_mu_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
 		decode_tlv_stream!(&mut rd, {
-			(2, _reply_path_bytes, vec_type),
+			(2, reply_path, (option: LengthReadable)),
 			(4, read_adapter, (option: LengthReadableArgs, rho))
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
@@ -180,7 +190,7 @@ impl ReadableArgs<SharedSecret> for Payload {
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				Ok(Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(tlvs)})
+				Ok(Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(tlvs), reply_path})
 			},
 		}
 	}
