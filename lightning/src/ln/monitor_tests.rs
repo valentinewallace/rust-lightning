@@ -772,12 +772,14 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
-	// We create four HTLCs for B to claim against A's revoked commitment transaction:
+	// We create five HTLCs for B to claim against A's revoked commitment transaction:
 	//
 	// (1) one for which A is the originator and B knows the preimage
 	// (2) one for which B is the originator where the HTLC has since timed-out
 	// (3) one for which B is the originator but where the HTLC has not yet timed-out
 	// (4) one dust HTLC which is lost in the channel closure
+	// (5) one that actually isn't in the revoked commitment transaction at all, but was added in
+	//     later commitment transaction updates
 	//
 	// Though they could all be claimed in a single claim transaction, due to CLTV timeouts they
 	// are all currently claimed in separate transactions, which helps us test as we can claim
@@ -801,16 +803,8 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
 
-	{
-		let mut feerate = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
-		*feerate += 1;
-	}
-	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
-
-	let fee_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
-	commitment_signed_dance!(nodes[1], nodes[0], fee_update.commitment_signed, false);
+	let missing_htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
+	let missing_htlc_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 2_000_000).1;
 
 	nodes[1].node.claim_funds(claimed_payment_preimage);
 	expect_payment_claimed!(nodes[1], claimed_payment_hash, 3_000_000);
@@ -836,7 +830,10 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
-			claimable_amount_satoshis: 100_000 - 5_000 - 4_000 - 3 + 3_000,
+			claimable_amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 2_000,
+			claimable_height: missing_htlc_cltv_timeout,
 		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
@@ -955,7 +952,14 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &as_revoked_txn[0]);
-	expect_payment_failed!(nodes[1], dust_payment_hash, true);
+
+	let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
+	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
+		dust_payment_hash, true, PaymentFailedConditions::new());
+	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
+		missing_htlc_payment_hash, true, PaymentFailedConditions::new());
+	assert!(payment_failed_events.is_empty());
+
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[if confirm_htlc_spend_first { 2 } else { 3 }]);
 	connect_blocks(&nodes[1], 1);
