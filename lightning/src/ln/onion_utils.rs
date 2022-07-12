@@ -683,7 +683,7 @@ pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPa
 	}
 
 	let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
-	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
+	let mut chacha_stream = ChaChaReader::new(&mut chacha, Cursor::new(&hop_data[..]));
 	match R::read(&mut chacha_stream, decode_input.read_arg()) {
 		Err(err) => {
 			let error_code = match err {
@@ -725,7 +725,8 @@ pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPa
 				return Ok((msg, None)); // We are the final destination for this packet
 			} else {
 				let mut new_packet_bytes = N::new(hop_data.len());
-				let read_pos = chacha_stream.read(new_packet_bytes.as_mut()).unwrap();
+				let new_packet_bytes_len = hop_data.len() - chacha_stream.bytes_read();
+				chacha_stream.read_exact(&mut new_packet_bytes.as_mut()[..new_packet_bytes_len]).unwrap();
 				#[cfg(debug_assertions)]
 				{
 					// Check two things:
@@ -737,7 +738,7 @@ pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPa
 				}
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
-				chacha_stream.chacha.process_in_place(&mut new_packet_bytes.as_mut()[read_pos..]);
+				chacha_stream.chacha.process_in_place(&mut new_packet_bytes.as_mut()[new_packet_bytes_len..]);
 				return Ok((msg, Some((hmac, new_packet_bytes)))) // This packet needs forwarding
 			}
 		},

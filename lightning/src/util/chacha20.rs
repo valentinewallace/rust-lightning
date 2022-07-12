@@ -303,6 +303,7 @@ pub use self::fuzzy_chacha::ChaCha20;
 pub(crate) struct ChaChaReader<'a, R: io::Read> {
 	pub chacha: &'a mut ChaCha20,
 	pub read: R,
+	bytes_read: usize,
 }
 impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
@@ -310,7 +311,20 @@ impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 		if res > 0 {
 			self.chacha.process_in_place(&mut dest[0..res]);
 		}
+		self.bytes_read += res;
 		Ok(res)
+	}
+}
+impl<'a, R: io::Read> ChaChaReader<'a, R> {
+	pub(crate) fn new(chacha: &'a mut ChaCha20, read: R) -> Self {
+		Self {
+			chacha,
+			read,
+			bytes_read: 0,
+		}
+	}
+	pub(crate) fn bytes_read(&self) -> usize {
+		self.bytes_read
 	}
 }
 
