@@ -1172,3 +1172,186 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(), Vec::new());
 }
+
+#[test]
+fn test_revoked_counterparty_aggregated_claims() {
+	// Tests `get_claimable_balances` for revoked counterparty commitment transactions when
+	// claiming with an aggregated claim transaction.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// We broadcast a second-to-latest commitment transaction, without providing the revocation
+	// secret to the counterparty. However, because we always immediately take the revocation
+	// secret from the keys_manager, we would panic at broadcast as we're trying to sign a
+	// transaction which, from the point of view of our keys_manager, is revoked.
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, InitFeatures::known(), InitFeatures::known());
+	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+
+	// We create two HTLCs, one which we will give A the preimage to to generate an HTLC-Success
+	// transaction, and one which we will not, allowing B to claim the HTLC output in an aggregated
+	// revocation-claim transaction.
+
+	let (claimed_payment_preimage, claimed_payment_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+	let revoked_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 4_000_000).1;
+
+	let htlc_cltv_timeout = nodes[1].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
+
+	// Cheat by giving A's ChannelMonitor the preimage to the to-be-claimed HTLC so that we have an
+	// HTLC-claim transaction on the to-be-revoked state.
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage(&claimed_payment_hash, &claimed_payment_preimage, &nodes[0].tx_broadcaster, &node_cfgs[0].fee_estimator, &nodes[0].logger);
+
+	// Now get the latest commitment transaction from A and then update the fee to revoke it
+	let as_revoked_txn = get_local_commitment_txn!(nodes[0], chan_id);
+
+	assert_eq!(as_revoked_txn.len(), 2);
+	check_spends!(as_revoked_txn[0], funding_tx);
+	check_spends!(as_revoked_txn[1], as_revoked_txn[0]); // The HTLC-Claim transaction
+
+	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
+	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
+
+	{
+		let mut feerate = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate += 1;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(nodes[0], 1);
+
+	let fee_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
+	commitment_signed_dance!(nodes[1], nodes[0], fee_update.commitment_signed, false);
+
+	nodes[0].node.claim_funds(claimed_payment_preimage);
+	expect_payment_claimed!(nodes[0], claimed_payment_hash, 3_000_000);
+	check_added_monitors!(nodes[0], 1);
+	let _a_htlc_msgs = get_htlc_update_msgs!(&nodes[0], nodes[1].node.get_our_node_id());
+
+	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
+			claimable_amount_satoshis: 100_000 - 4_000 - 3_000,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 4_000,
+			claimable_height: htlc_cltv_timeout,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 3_000,
+			claimable_height: htlc_cltv_timeout,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[1], &as_revoked_txn[0]);
+	check_closed_broadcast!(nodes[1], true);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_added_monitors!(nodes[1], 1);
+
+	let mut claim_txn: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..).filter(|tx| tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].txid())).collect();
+	// Currently the revoked commitment outputs are all claimed in one aggregated transaction
+	assert_eq!(claim_txn.len(), 1);
+	assert_eq!(claim_txn[0].input.len(), 3);
+	check_spends!(claim_txn[0], as_revoked_txn[0]);
+
+	let to_self_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+
+	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations { // to_remote output to A
+			claimable_amount_satoshis: 100_000 - 4_000 - 3_000,
+			confirmation_height: to_self_maturity,
+		}, Balance::CounterpartyRevokedOutputClaimable { // to_self output to A
+			claimable_amount_satoshis: 1_000_000 - 100_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
+			claimable_amount_satoshis: 4_000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
+			claimable_amount_satoshis: 3_000,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// Confirm A's HTLC-Success tranasction which presumably raced B's claim, causing B to create a
+	// new claim.
+	mine_transaction(&nodes[1], &as_revoked_txn[1]);
+	expect_payment_sent!(nodes[1], claimed_payment_preimage);
+	let mut claim_txn_2: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	claim_txn_2.sort_unstable_by_key(|tx| if tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].txid()) { 0 } else { 1 });
+	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in
+	// theory it could re-aggregate the claims as well.
+	assert_eq!(claim_txn_2.len(), 2);
+	assert_eq!(claim_txn_2[0].input.len(), 2);
+	check_spends!(claim_txn_2[0], as_revoked_txn[0]);
+	assert_eq!(claim_txn_2[1].input.len(), 1);
+	check_spends!(claim_txn_2[1], as_revoked_txn[1]);
+
+	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations { // to_remote output to A
+			claimable_amount_satoshis: 100_000 - 4_000 - 3_000,
+			confirmation_height: to_self_maturity,
+		}, Balance::CounterpartyRevokedOutputClaimable { // to_self output to A
+			claimable_amount_satoshis: 1_000_000 - 100_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
+			claimable_amount_satoshis: 4_000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
+			// The amount here is a bit of a misnomer, really its been reduced by the HTLC
+			// transaction fee, but the claimable amount is always a bit of an overshoot for HTLCs
+			// anyway, so its not a big change.
+			claimable_amount_satoshis: 3_000,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[1], 5);
+	test_spendable_output(&nodes[1], &as_revoked_txn[0]);
+
+	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable { // to_self output to A
+			claimable_amount_satoshis: 1_000_000 - 100_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
+			claimable_amount_satoshis: 4_000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
+			// The amount here is a bit of a misnomer, really its been reduced by the HTLC
+			// transaction fee, but the claimable amount is always a bit of an overshoot for HTLCs
+			// anyway, so its not a big change.
+			claimable_amount_satoshis: 3_000,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[1], &claim_txn_2[1]);
+	let htlc_2_claim_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+
+	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable { // to_self output to A
+			claimable_amount_satoshis: 1_000_000 - 100_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
+			claimable_amount_satoshis: 4_000,
+		}, Balance::ClaimableAwaitingConfirmations { // HTLC 2
+			claimable_amount_satoshis: claim_txn_2[1].output[0].value,
+			confirmation_height: htlc_2_claim_maturity,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[1], 5);
+	test_spendable_output(&nodes[1], &claim_txn_2[1]);
+
+	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable { // to_self output to A
+			claimable_amount_satoshis: 1_000_000 - 100_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
+			claimable_amount_satoshis: 4_000,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[1], &claim_txn_2[0]);
+	let rest_claim_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+
+	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: claim_txn_2[0].output[0].value,
+			confirmation_height: rest_claim_maturity,
+		}],
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
+
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty()); // We shouldn't fail the payment until we spend the output
+
+	connect_blocks(&nodes[1], 5);
+	expect_payment_failed!(nodes[1], revoked_payment_hash, true);
+	test_spendable_output(&nodes[1], &claim_txn_2[0]);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+}
