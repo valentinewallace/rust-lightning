@@ -2244,7 +2244,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									None
 								}
 							} else {
-								debug_assert!(false, "Failed to derive a delayed payment key for a commitment state we accepted");
+								debug_assert!(false, "Failed to derive a revocation pubkey key for a commitment state we accepted");
 								None
 							};
 						if let Some(revokeable_p2wsh) = revokeable_p2wsh_opt {
