@@ -845,7 +845,8 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 	mine_transaction(&nodes[1], &as_revoked_txn[0]);
 	let mut claim_txn: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..).filter(|tx| tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].txid())).collect();
-	// Currently the revoked commitment is claimed in four transactions, this should likely be changed.
+	// Currently the revoked commitment is claimed in four transactions as the HTLCs all expire
+	// quite soon.
 	assert_eq!(claim_txn.len(), 4);
 	claim_txn.sort_unstable_by_key(|tx| tx.output.iter().map(|output| output.value).sum::<u64>());
 
