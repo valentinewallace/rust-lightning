@@ -315,7 +315,7 @@ struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
 	event: OnchainEvent,
-	transaction: Option<Transaction>,
+	transaction: Option<Transaction>, // Added as optional, but always filled in, in LDK 0.0.110
 }
 
 impl OnchainEventEntry {
