@@ -2095,8 +2095,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// data in counterparty_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
-	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
-	/// revoked counterparty commitment tx
+	///
+	/// Returns packages to claim the revoked output(s), as well as additional outputs to watch and
+	/// general information about the output that is to the counterparty in the commitment
+	/// transaction.
 	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L)
 		-> (Vec<PackageTemplate>, TransactionOutputs, CommitmentTxCounterpartyOutputInfo)
 	where L::Target: Logger {
