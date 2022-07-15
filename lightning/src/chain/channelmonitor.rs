@@ -588,7 +588,7 @@ struct IrrevocablyResolvedHTLC {
 	commitment_tx_output_idx: u32,
 	/// The txid of the transaction which resolved the HTLC, this may be a commitment,
 	/// HTLC-Success, or HTLC-Timeout transaction.
-	resolving_txid: Option<Txid>,
+	resolving_txid: Option<Txid>, // Added as optional, but always filled in, in 0.0.110
 	/// Only set if the HTLC claim was ours using a payment preimage
 	payment_preimage: Option<PaymentPreimage>,
 }
