@@ -346,6 +346,7 @@ impl OnchainEventEntry {
 	}
 }
 
+// This was added as an `Option` in 0.0.110.
 type CommitmentTxCounterpartyOutputInfo = Option<(u32, u64)>;
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
