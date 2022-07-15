@@ -367,6 +367,8 @@ enum OnchainEvent {
 		/// transaction which appeared on chain.
 		commitment_tx_output_idx: Option<u32>,
 	},
+	/// An output waiting on [`ANTI_REORG_DELAY`] confirmations before we hand the user the
+	/// [`SpendableOutputDescriptor`].
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
 	},
