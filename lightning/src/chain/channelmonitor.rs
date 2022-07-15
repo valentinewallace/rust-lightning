@@ -3006,10 +3006,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 										commitment_tx_output_idx: input.previous_output.vout,
 										preimage: if accepted_preimage_claim || offered_preimage_claim {
 											Some(payment_preimage) } else { None },
-										// If this is a payment to us (!outbound_htlc, above),
-										// wait for the CSV delay before dropping the HTLC from
-										// claimable balance if the claim was an HTLC-Success
-										// transaction.
+										// If this is a payment to us (ie !outbound_htlc), wait for
+										// the CSV delay before dropping the HTLC from claimable
+										// balance if the claim was an HTLC-Success transaction (ie
+										// accepted_preimage_claim).
 										on_to_local_output_csv: if accepted_preimage_claim && !outbound_htlc {
 											Some(self.on_holder_tx_csv) } else { None },
 									},
