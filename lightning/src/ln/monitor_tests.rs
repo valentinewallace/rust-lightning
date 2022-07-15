@@ -11,6 +11,7 @@
 
 use chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use chain::transaction::OutPoint;
+use chain::chaininterface::LowerBoundedFeeEstimator;
 use ln::channel;
 use ln::channelmanager::BREAKDOWN_TIMEOUT;
 use ln::features::InitFeatures;
@@ -1204,7 +1205,8 @@ fn test_revoked_counterparty_aggregated_claims() {
 
 	// Cheat by giving A's ChannelMonitor the preimage to the to-be-claimed HTLC so that we have an
 	// HTLC-claim transaction on the to-be-revoked state.
-	get_monitor!(nodes[0], chan_id).provide_payment_preimage(&claimed_payment_hash, &claimed_payment_preimage, &nodes[0].tx_broadcaster, &node_cfgs[0].fee_estimator, &nodes[0].logger);
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage(&claimed_payment_hash, &claimed_payment_preimage,
+		&node_cfgs[0].tx_broadcaster, &LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger);
 
 	// Now get the latest commitment transaction from A and then update the fee to revoke it
 	let as_revoked_txn = get_local_commitment_txn!(nodes[0], chan_id);
