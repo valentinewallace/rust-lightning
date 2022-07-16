@@ -1458,6 +1458,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 							match event.event {
 								OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
 								if commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) => {
+									debug_assert!(htlc_spend_txid_opt.is_none());
 									htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
 									debug_assert!(htlc_update_pending.is_none());
 									debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
@@ -1465,6 +1466,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 								},
 								OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
 								if commitment_tx_output_idx == htlc_commitment_tx_output_idx => {
+									debug_assert!(htlc_spend_txid_opt.is_none());
 									htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
 									debug_assert!(htlc_spend_pending.is_none());
 									htlc_spend_pending = Some((event.confirmation_threshold(), preimage.is_some()));
@@ -1480,22 +1482,22 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 						}
 						let htlc_resolved = us.htlcs_resolved_on_chain.iter()
 							.find(|v| if v.commitment_tx_output_idx == htlc_commitment_tx_output_idx {
-								debug_assert_ne!(v.resolving_txid, confirmed_txid);
+								debug_assert!(htlc_spend_txid_opt.is_none());
 								htlc_spend_txid_opt = v.resolving_txid;
 								true
 							} else { false });
 						debug_assert!(htlc_update_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
 
-						let htlc_output_needs_spending =
-							us.onchain_tx_handler.is_output_spend_pending(&
-								if let Some(txid) = htlc_spend_txid_opt {
-									debug_assert!(
-										us.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_none(),
-										"This code needs updating for anchors");
-									BitcoinOutPoint::new(txid, 0)
-								} else {
-									BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx)
-								});
+						let htlc_output_to_spend =
+							if let Some(txid) = htlc_spend_txid_opt {
+								debug_assert!(
+									us.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_none(),
+									"This code needs updating for anchors");
+								BitcoinOutPoint::new(txid, 0)
+							} else {
+								BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx)
+							};
+						let htlc_output_needs_spending = us.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
 
 						if let Some(conf_thresh) = delayed_output_pending {
 							debug_assert!($holder_commitment);
@@ -1533,18 +1535,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 								// `StaticOutput` in a `MaturingOutput` in the revoked
 								// counterparty commitment transaction case generally, so don't
 								// need to do so again here.
-							} else if htlc_spend_pending.is_some() {
-								res.push(Balance::CounterpartyRevokedOutputClaimable {
-									claimable_amount_satoshis: htlc.amount_msat / 1000,
-								});
-							} else if htlc_resolved.is_some() {
-								res.push(Balance::CounterpartyRevokedOutputClaimable {
-									claimable_amount_satoshis: htlc.amount_msat / 1000,
-								});
 							} else {
 								debug_assert!(htlc_update_pending.is_none(),
 									"HTLCUpdate OnchainEvents should never appear for preimage claims");
-								debug_assert!(htlc_spend_pending.is_none() || !htlc_spend_pending.unwrap().1,
+								debug_assert!(!htlc.offered || htlc_spend_pending.is_none() || !htlc_spend_pending.unwrap().1,
 									"We don't (currently) generate preimage claims against revoked outputs, where did you get one?!");
 								res.push(Balance::CounterpartyRevokedOutputClaimable {
 									claimable_amount_satoshis: htlc.amount_msat / 1000,
