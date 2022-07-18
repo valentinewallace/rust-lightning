@@ -405,9 +405,9 @@ pub trait KeysInterface {
 	/// This method must return the same value each time it is called with a given `Recipient`
 	/// parameter.
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
-	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, applying the optional
-	/// `tweak` to our secret beforehand if provided. Note that this tweak can be applied to
-	/// `other_key` instead of being provided to `ecdh`, though this is less efficient.
+	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, multiplying by `tweak`
+	/// if one is provided. Note that this tweak can be applied to `other_key` instead of being
+	/// provided to `ecdh`, though this is less efficient.
 	///
 	/// [`node secret`]: Self::get_node_secret
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()>;
