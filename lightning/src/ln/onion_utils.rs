@@ -260,8 +260,24 @@ impl AsMut<[u8]> for FixedSizeOnionPacket {
 	}
 }
 
+pub(crate) fn payloads_serialized_length<HD: Writeable>(payloads: &Vec<HD>) -> usize {
+	payloads.iter().map(|p| p.serialized_length() + 32 /* HMAC */).sum()
+}
+
 /// panics if route_size_insane(payloads)
-pub(crate) fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
+pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec<u8>>>(
+	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize) -> P
+{
+	let mut packet_data = vec![0; packet_data_len];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process_in_place(&mut packet_data);
+
+	construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, packet_data, None)
+}
+
+/// panics if route_size_insane(payloads)
+fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> P
 {
 	let filler = {

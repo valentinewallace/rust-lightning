@@ -18,9 +18,7 @@ use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
-use util::chacha20::ChaCha20;
 use util::logger::Logger;
-use util::ser::Writeable;
 
 use core::ops::Deref;
 use sync::{Arc, Mutex};
@@ -213,18 +211,12 @@ fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, 
 }
 
 fn construct_onion_message_packet(payloads: Vec<(Payload, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Packet {
-	let payloads_serialized_len = payloads.iter().map(|p| p.serialized_length() + 32 /* HMAC */).sum();
-	let hop_data_len = if payloads_serialized_len <= SMALL_PACKET_HOP_DATA_LEN {
+	let payloads_ser_len = onion_utils::payloads_serialized_length(&payloads);
+	let hop_data_len = if payloads_ser_len <= SMALL_PACKET_HOP_DATA_LEN {
 		SMALL_PACKET_HOP_DATA_LEN
-	} else if payloads_serialized_len <= BIG_PACKET_HOP_DATA_LEN {
+	} else if payloads_ser_len <= BIG_PACKET_HOP_DATA_LEN {
 		BIG_PACKET_HOP_DATA_LEN
-	} else { payloads_serialized_len };
+	} else { payloads_ser_len };
 
-	let mut packet_data = vec![0; hop_data_len];
-
-	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
-	chacha.process_in_place(&mut packet_data);
-
-	onion_utils::construct_onion_packet_with_init_noise::<_, _>(
-		payloads, onion_keys, packet_data, None)
+	onion_utils::construct_onion_message_packet::<_, _>(payloads, onion_keys, prng_seed, hop_data_len)
 }
