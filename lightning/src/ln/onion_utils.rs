@@ -218,7 +218,7 @@ pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
 	false
 }
 
-/// panics if route_size_insane(payloads) and we're constructing a packet for a payment
+/// panics if route_size_insane(payloads)
 pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
@@ -260,7 +260,7 @@ impl AsMut<[u8]> for FixedSizeOnionPacket {
 	}
 }
 
-/// panics if route_size_insane(payloads) and we're sending a payment
+/// panics if route_size_insane(payloads)
 fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> P
 {
