@@ -16,6 +16,7 @@ use super::utils;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
 use util::ser::{VecWriter, Writeable, Writer};
 
+use core::iter::FromIterator;
 use io;
 use prelude::*;
 
@@ -27,26 +28,25 @@ pub struct BlindedRoute {
 	/// message's next hop and forward it along.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	pub introduction_node_id: PublicKey,
-	/// Creators of blinded routes supply the introduction node id's `blinding_point`, which the
-	/// introduction node will use in decrypting its [`encrypted_payload`] to forward the onion
+	introduction_node_id: PublicKey,
+	/// Used by the introduction node to decrypt its [`encrypted_payload`] to forward the onion
 	/// message.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	pub blinding_point: PublicKey,
+	blinding_point: PublicKey,
 	/// The hops composing the blinded route.
-	pub blinded_hops: Vec<BlindedHop>,
+	blinded_hops: Vec<BlindedHop>,
 }
 
 /// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded route.
-	pub blinded_node_id: PublicKey,
+	blinded_node_id: PublicKey,
 	/// The encrypted payload intended for this hop in a blinded route.
 	// The node sending to this blinded route will later encode this payload into the onion packet for
 	// this hop.
-	pub encrypted_payload: Vec<u8>,
+	encrypted_payload: Vec<u8>,
 }
 
 impl BlindedRoute {
@@ -56,21 +56,20 @@ impl BlindedRoute {
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<Signer: Sign, K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification>
-		(mut node_pks: Vec<PublicKey>, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
+		(node_pks: Vec<PublicKey>, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
 		if node_pks.len() < 2 { return Err(()) }
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let mut blinded_node_ids_and_payload_keys = construct_blinded_route_keys(secp_ctx, &node_pks, &blinding_secret).map_err(|_| ())?;
-		let mut route_keys = blinded_node_ids_and_payload_keys.drain(..);
+		let mut route_keys = construct_blinded_route_keys(secp_ctx, &node_pks, &blinding_secret).map_err(|_| ())?;
+		let (final_enc_payload_key, final_blinded_node_id) = route_keys.pop().unwrap();
 		let mut blinded_hops = Vec::with_capacity(node_pks.len());
 
-		let mut iter = node_pks.drain(..);
-		let introduction_node_id = iter.next().unwrap();
-		for pk in iter {
-			let (encrypted_payload_key, blinded_node_id) = route_keys.next().unwrap();
+		let mut pks = VecDeque::from_iter(node_pks);
+		let introduction_node_id = pks.pop_front().unwrap();
+		for (pk, (encrypted_payload_key, blinded_node_id)) in pks.into_iter().zip(route_keys) {
 			let payload = ForwardTlvs {
-				next_node_id: pk.clone(),
+				next_node_id: pk,
 				next_blinding_override: None,
 			};
 			blinded_hops.push(BlindedHop {
@@ -81,10 +80,9 @@ impl BlindedRoute {
 
 		// Add the recipient final payload.
 		let payload = ReceiveTlvs { path_id: None };
-		let (encrypted_payload_key, blinded_node_id) = route_keys.next().unwrap();
 		blinded_hops.push(BlindedHop {
-			blinded_node_id,
-			encrypted_payload: encrypt_payload(payload, encrypted_payload_key),
+			blinded_node_id: final_blinded_node_id,
+			encrypted_payload: encrypt_payload(payload, final_enc_payload_key),
 		});
 
 		Ok(BlindedRoute {
@@ -93,7 +91,6 @@ impl BlindedRoute {
 			blinded_hops,
 		})
 	}
-
 }
 
 /// Construct keys for creating a blinded route along the given `unblinded_path`.
@@ -106,7 +103,7 @@ fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>
 ) -> Result<Vec<([u8; 32], PublicKey)>, secp256k1::Error> {
 	let mut route_keys = Vec::with_capacity(unblinded_path.len());
 
-	utils::construct_keys_callback(secp_ctx, unblinded_path, session_priv, |blinded_hop_pubkey, _, _, _, encrypted_payload_ss| {
+	utils::construct_keys_callback(secp_ctx, unblinded_path, session_priv, |blinded_hop_pubkey, _, _, encrypted_payload_ss| {
 		route_keys.push((encrypted_payload_ss, blinded_hop_pubkey));
 	})?;
 

@@ -19,9 +19,10 @@ use ln::onion_utils;
 
 use prelude::*;
 
+// TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
 pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
-	FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, [u8; 32])>(
+	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32])>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>,
 	session_priv: &SecretKey, mut callback: FType
 ) -> Result<(), secp256k1::Error> {
@@ -34,12 +35,12 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 		($pk: expr, $blinded: expr) => {
 			let encrypted_data_ss = SharedSecret::new(&$pk, &msg_blinding_point_priv);
 
-			let hop_pk_blinding_factor = {
-				let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-				hmac.input(encrypted_data_ss.as_ref());
-				Hmac::from_engine(hmac).into_inner()
-			};
 			let blinded_hop_pk = if $blinded { $pk.clone() } else {
+				let hop_pk_blinding_factor = {
+					let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+					hmac.input(encrypted_data_ss.as_ref());
+					Hmac::from_engine(hmac).into_inner()
+				};
 				let mut unblinded_pk = $pk.clone();
 				unblinded_pk.mul_assign(secp_ctx, &hop_pk_blinding_factor)?;
 				unblinded_pk
@@ -47,7 +48,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
 			let rho = onion_utils::gen_rho_from_shared_secret(encrypted_data_ss.as_ref());
-			callback(blinded_hop_pk, onion_packet_ss, hop_pk_blinding_factor, onion_packet_pubkey, rho);
+			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho);
 
 			let msg_blinding_point_blinding_factor = {
 				let mut sha = Sha256::engine();
