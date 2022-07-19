@@ -33,7 +33,9 @@ use prelude::*;
 ///
 /// # Example
 ///
-/// ```
+//  Needs to be `ignore` until the `onion_message` module is made public, otherwise this is a test
+//  failure.
+/// ```ignore
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
