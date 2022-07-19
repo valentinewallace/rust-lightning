@@ -22,7 +22,6 @@ use prelude::*;
 
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
 /// the recipient.
-#[derive(Clone)] // removed in next fixup commit
 pub struct BlindedRoute {
 	/// To send to a blinded route, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
@@ -41,7 +40,6 @@ pub struct BlindedRoute {
 
 /// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
-#[derive(Clone)] // removed in next fixup commit
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded route.
 	pub(super) blinded_node_id: PublicKey,
@@ -81,7 +79,7 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut blinded_hops = Vec::with_capacity(total_hops);
 
 	let mut prev_ss_and_blinded_node_id = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk| {
+	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
 		if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
 			if let Some(pk) = unblinded_pk {
 				let payload = ForwardTlvs {
