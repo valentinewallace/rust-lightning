@@ -22,8 +22,8 @@ use prelude::*;
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
 pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
-	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32])>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>,
+	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>)>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: Vec<PublicKey>,
 	session_priv: &SecretKey, mut callback: FType
 ) -> Result<(), secp256k1::Error> {
 	let mut msg_blinding_point_priv = session_priv.clone();
@@ -48,7 +48,8 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
 			let rho = onion_utils::gen_rho_from_shared_secret(encrypted_data_ss.as_ref());
-			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho);
+			let unblinded_pk_opt = if $blinded { None } else { Some($pk) };
+			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_pk_opt);
 
 			let msg_blinding_point_blinding_factor = {
 				let mut sha = Sha256::engine();

@@ -61,53 +61,49 @@ impl BlindedRoute {
 		if node_pks.len() < 2 { return Err(()) }
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let mut route_keys = construct_blinded_route_keys(secp_ctx, &node_pks, &blinding_secret).map_err(|_| ())?;
-		let (final_enc_payload_key, final_blinded_node_id) = route_keys.pop().unwrap();
-		let mut blinded_hops = Vec::with_capacity(node_pks.len());
-
-		let mut pks = VecDeque::from_iter(node_pks);
-		let introduction_node_id = pks.pop_front().unwrap();
-		for (pk, (encrypted_payload_key, blinded_node_id)) in pks.into_iter().zip(route_keys) {
-			let payload = ForwardTlvs {
-				next_node_id: pk,
-				next_blinding_override: None,
-			};
-			blinded_hops.push(BlindedHop {
-				blinded_node_id,
-				encrypted_payload: encrypt_payload(payload, encrypted_payload_key),
-			});
-		}
-
-		// Add the recipient final payload.
-		let payload = ReceiveTlvs { path_id: None };
-		blinded_hops.push(BlindedHop {
-			blinded_node_id: final_blinded_node_id,
-			encrypted_payload: encrypt_payload(payload, final_enc_payload_key),
-		});
+		let introduction_node_id = node_pks[0].clone();
 
 		Ok(BlindedRoute {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops,
+			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
 	}
 }
 
-/// Construct keys for creating a blinded route along the given `unblinded_path`.
-///
-/// Returns: `Vec<(encrypted_payload_key, blinded_node_id)>`
-/// where the former is for encrypting [`BlindedHop::encrypted_payload`] and the latter for
-/// [`BlindedHop::blinded_node_id`].
-fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey
-) -> Result<Vec<([u8; 32], PublicKey)>, secp256k1::Error> {
-	let mut route_keys = Vec::with_capacity(unblinded_path.len());
+/// Construct blinded hops for the given `unblinded_path`.
+fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: Vec<PublicKey>, session_priv: &SecretKey
+) -> Result<Vec<BlindedHop>, secp256k1::Error> {
+	let total_hops = unblinded_path.len();
+	let mut blinded_hops = Vec::with_capacity(total_hops);
 
-	utils::construct_keys_callback(secp_ctx, unblinded_path, session_priv, |blinded_hop_pubkey, _, _, encrypted_payload_ss| {
-		route_keys.push((encrypted_payload_ss, blinded_hop_pubkey));
+	let mut prev_ss_and_blinded_node_id = None;
+	utils::construct_keys_callback(secp_ctx, unblinded_path, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk| {
+		if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
+			if let Some(pk) = unblinded_pk {
+				let payload = ForwardTlvs {
+					next_node_id: unblinded_pk.unwrap(),
+					next_blinding_override: None,
+				};
+				blinded_hops.push(BlindedHop {
+					blinded_node_id: prev_blinded_node_id,
+					encrypted_payload: encrypt_payload(payload, prev_ss),
+				});
+			} else { debug_assert!(false); }
+		}
+		prev_ss_and_blinded_node_id = Some((encrypted_payload_ss, blinded_node_id));
 	})?;
 
-	Ok(route_keys)
+	if let Some((final_ss, final_blinded_node_id)) = prev_ss_and_blinded_node_id {
+		let final_payload = ReceiveTlvs { path_id: None };
+		blinded_hops.push(BlindedHop {
+			blinded_node_id: final_blinded_node_id,
+			encrypted_payload: encrypt_payload(final_payload, final_ss),
+		});
+	} else { debug_assert!(false) }
+
+	Ok(blinded_hops)
 }
 
 /// Encrypt TLV payload to be used as a [`BlindedHop::encrypted_payload`].
