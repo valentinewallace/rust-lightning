@@ -525,7 +525,7 @@ macro_rules! impl_array {
 	);
 }
 
-impl_array!(3); // for rgb
+impl_array!(3); // for rgb, ISO 4712 code
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
@@ -538,7 +538,7 @@ impl_array!(1300); // for OnionPacket.hop_data
 /// enclosing TLV record.
 ///
 /// The length is encoded as an unsigned `U` type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WithLength<T, U>(pub T, pub core::marker::PhantomData<U>);
 
 impl<T: Writeable> Writeable for WithLength<Vec<T>, u8> {
@@ -562,10 +562,13 @@ impl<T: Readable> Readable for WithLength<Vec<T>, u8> {
 		Ok(Self(result, core::marker::PhantomData))
 	}
 }
+impl<T, U> From<Vec<T>> for WithLength<Vec<T>, U> {
+	fn from(v: Vec<T>) -> Self { Self(v, core::marker::PhantomData) }
+}
 
 /// For variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WithoutLength<T>(pub T);
 
 impl Writeable for WithoutLength<String> {
