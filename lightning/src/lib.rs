@@ -78,6 +78,7 @@ extern crate core;
 pub mod util;
 pub mod chain;
 pub mod ln;
+pub mod offers;
 pub mod routing;
 #[allow(unused)]
 mod onion_message; // To be exposed after sending/receiving OMs is supported in PeerManager.

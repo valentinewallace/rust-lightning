@@ -399,7 +399,8 @@ impl Readable for BigSize {
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing Readable/Writeable for them.
-#[cfg_attr(test, derive(PartialEq, Debug))]
+#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone, Debug)]
 pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
@@ -522,6 +523,35 @@ impl_array!(32); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data
+
+/// For variable-length values within TLV subtypes where the length cannot be inferred from the
+/// enclosing TLV record.
+///
+/// The length is encoded as an unsigned `U` type.
+#[derive(Clone, Debug)]
+pub(crate) struct WithLength<T, U>(pub T, pub core::marker::PhantomData<U>);
+
+impl<T: Writeable> Writeable for WithLength<Vec<T>, u8> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.0.len() as u8).write(w)?;
+		for element in self.0.iter() {
+			element.write(w)?;
+		}
+		Ok(())
+	}
+}
+impl<T: Readable> Readable for WithLength<Vec<T>, u8> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u8 as Readable>::read(r)? as usize;
+		let mut result = Vec::with_capacity(len);
+		for _ in 0..len {
+			result.push(<T as Readable>::read(r)?);
+		}
+		Ok(Self(result, core::marker::PhantomData))
+	}
+}
 
 // HashMap
 impl<K, V> Writeable for HashMap<K, V>
