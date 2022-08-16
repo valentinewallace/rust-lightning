@@ -93,10 +93,8 @@ impl<'a> TlvStream<'a> {
 }
 
 struct TlvRecord<'a> {
-	type_bytes: &'a [u8],
 	r#type: BigSize,
-	_length: BigSize,
-	_value: &'a [u8],
+	type_bytes: &'a [u8],
 	data: &'a [u8],
 }
 
@@ -119,12 +117,12 @@ impl<'a> Iterator for TlvStream<'a> {
 			let offset = self.data.position();
 			let end = offset + length.0;
 
-			let value = &self.data.get_ref()[offset as usize..end as usize];
+			let _value = &self.data.get_ref()[offset as usize..end as usize];
 			let data = &self.data.get_ref()[start as usize..end as usize];
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { type_bytes, r#type, _length: length, _value: value, data })
+			Some(TlvRecord { r#type, type_bytes, data })
 		} else {
 			None
 		}
