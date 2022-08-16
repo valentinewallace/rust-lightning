@@ -15,22 +15,21 @@ use util::ser::{BigSize, Readable};
 const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
 
 pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
-	let mut engine = sha256::Hash::engine();
-	engine.input("LnAll".as_bytes());
-	for record in TlvStream::new(&data[..]) {
-		if !SIGNATURE_TYPES.contains(&record.r#type.0) {
-			engine.input(record.as_ref());
-		}
-	}
-	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine(engine));
+	let mut tlv_stream = TlvStream::new(&data[..]).peekable();
+	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine({
+		let mut engine = sha256::Hash::engine();
+		engine.input("LnNonce".as_bytes());
+		engine.input(tlv_stream.peek().unwrap().type_bytes);
+		engine
+	}));
 	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut leaves = Vec::new();
-	for record in TlvStream::new(&data[..]) {
+	for record in tlv_stream {
 		if !SIGNATURE_TYPES.contains(&record.r#type.0) {
 			leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record));
-			leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record));
+			leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
 		}
 	}
 
@@ -94,6 +93,7 @@ impl<'a> TlvStream<'a> {
 }
 
 struct TlvRecord<'a> {
+	type_bytes: &'a [u8],
 	r#type: BigSize,
 	_length: BigSize,
 	_value: &'a [u8],
@@ -112,8 +112,10 @@ impl<'a> Iterator for TlvStream<'a> {
 			let start = self.data.position();
 
 			let r#type: BigSize = Readable::read(&mut self.data).unwrap();
-			let length: BigSize = Readable::read(&mut self.data).unwrap();
+			let offset = self.data.position();
+			let type_bytes = &self.data.get_ref()[start as usize..offset as usize];
 
+			let length: BigSize = Readable::read(&mut self.data).unwrap();
 			let offset = self.data.position();
 			let end = offset + length.0;
 
@@ -122,7 +124,7 @@ impl<'a> Iterator for TlvStream<'a> {
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, _length: length, _value: value, data })
+			Some(TlvRecord { type_bytes, r#type, _length: length, _value: value, data })
 		} else {
 			None
 		}
