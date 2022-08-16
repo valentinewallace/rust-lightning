@@ -22,15 +22,15 @@ pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
 			engine.input(record.as_ref());
 		}
 	}
-	let nonce_tag = sha256::Hash::from_engine(engine);
-	let leaf_tag = sha256::Hash::hash("LnLeaf".as_bytes());
-	let branch_tag = sha256::Hash::hash("LnBranch".as_bytes());
+	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine(engine));
+	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
+	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut leaves = Vec::new();
 	for record in TlvStream::new(&data[..]) {
 		if !SIGNATURE_TYPES.contains(&record.r#type.0) {
-			leaves.push(tagged_hash(leaf_tag, &record));
-			leaves.push(tagged_hash(nonce_tag, &record));
+			leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record));
+			leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record));
 		}
 	}
 
@@ -43,7 +43,7 @@ pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
 		}
 
 		for (i, j) in (0..num_leaves).step_by(step).zip((offset..num_leaves).step_by(step)) {
-			leaves[i] = tagged_branch_hash(branch_tag, leaves[i], leaves[j]);
+			leaves[i] = tagged_branch_hash_from_engine(branch_tag.clone(), leaves[i], leaves[j]);
 		}
 	}
 
@@ -52,17 +52,25 @@ pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
 }
 
 pub(super) fn tagged_hash<T: AsRef<[u8]>>(tag: sha256::Hash, msg: T) -> sha256::Hash {
+	let engine = tagged_hash_engine(tag);
+	tagged_hash_from_engine(engine, msg)
+}
+
+fn tagged_hash_engine(tag: sha256::Hash) -> sha256::HashEngine {
 	let mut engine = sha256::Hash::engine();
 	engine.input(tag.as_ref());
 	engine.input(tag.as_ref());
+	engine
+}
+
+fn tagged_hash_from_engine<T: AsRef<[u8]>>(mut engine: sha256::HashEngine, msg: T) -> sha256::Hash {
 	engine.input(msg.as_ref());
 	sha256::Hash::from_engine(engine)
 }
 
-fn tagged_branch_hash(tag: sha256::Hash, leaf1: sha256::Hash, leaf2: sha256::Hash) -> sha256::Hash {
-	let mut engine = sha256::Hash::engine();
-	engine.input(tag.as_ref());
-	engine.input(tag.as_ref());
+fn tagged_branch_hash_from_engine(
+	mut engine: sha256::HashEngine, leaf1: sha256::Hash, leaf2: sha256::Hash,
+) -> sha256::Hash {
 	if leaf1 < leaf2 {
 		engine.input(leaf1.as_ref());
 		engine.input(leaf2.as_ref());
