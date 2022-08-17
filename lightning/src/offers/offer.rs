@@ -29,6 +29,7 @@ use std::time::SystemTime;
 pub struct Offer {
 	id: sha256::Hash,
 	chains: Option<Vec<BlockHash>>,
+	metadata: Option<Vec<u8>>,
 	amount: Option<Amount>,
 	description: String,
 	features: Option<OfferFeatures>,
@@ -55,6 +56,11 @@ impl Offer {
 			.as_ref()
 			.and_then(|chains| chains.first().copied())
 			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
+	}
+
+	///
+	pub fn metadata(&self) -> Option<&Vec<u8>> {
+		self.metadata.as_ref()
 	}
 
 	///
