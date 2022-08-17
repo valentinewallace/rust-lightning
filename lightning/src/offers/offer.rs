@@ -16,7 +16,6 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::schnorr::Signature;
 use core::time::Duration;
-use ln::PaymentHash;
 use ln::features::OfferFeatures;
 use util::ser::WithLength;
 
@@ -151,9 +150,7 @@ pub type CurrencyCode = [u8; 3];
 
 ///
 #[derive(Clone, Debug)]
-pub struct SendInvoice {
-	refund_for: Option<PaymentHash>,
-}
+pub struct SendInvoice;
 
 #[derive(Clone, Debug)]
 ///
