@@ -142,8 +142,8 @@ impl OfferBuilder {
 	}
 
 	///
-	pub fn send_invoice(mut self, send_invoice: SendInvoice) -> Self {
-		self.offer.send_invoice = Some(send_invoice);
+	pub fn send_invoice(mut self) -> Self {
+		self.offer.send_invoice = Some(SendInvoice);
 		self
 	}
 
@@ -297,11 +297,6 @@ impl Offer {
 			),
 		};
 
-		let (send_invoice, refund_for) = match &self.send_invoice {
-			None => (None, None),
-			Some(SendInvoice { refund_for }) => (Some(&()), refund_for.as_ref()),
-		};
-
 		reference::OfferTlvStream {
 			chains: self.chains.as_ref().map(Into::into),
 			currency,
@@ -314,8 +309,7 @@ impl Offer {
 			quantity_min: self.quantity_min.map(Into::into),
 			quantity_max: self.quantity_max.map(Into::into),
 			node_id: self.node_id.as_ref(),
-			send_invoice,
-			refund_for,
+			send_invoice: self.send_invoice.as_ref().map(|_| &()),
 			signature: self.signature.as_ref(),
 		}
 	}
@@ -354,7 +348,6 @@ tlv_stream!(struct OfferTlvStream {
 	(22, quantity_min: u64),
 	(24, quantity_max: u64),
 	(30, node_id: PublicKey),
-	(34, refund_for: PaymentHash),
 	(54, send_invoice: Empty),
 	(240, signature: Signature),
 });
@@ -386,7 +379,6 @@ mod tests {
 	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 	use core::num::NonZeroU64;
 	use core::time::Duration;
-	use ln::PaymentHash;
 	use ln::features::OfferFeatures;
 
 	fn pubkey() -> PublicKey {
@@ -438,7 +430,6 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 		assert_eq!(tlv_stream.node_id, Some(&pubkey()));
-		assert_eq!(tlv_stream.refund_for, None);
 		assert_eq!(tlv_stream.send_invoice, None);
 		assert_eq!(tlv_stream.signature, None);
 	}
@@ -751,31 +742,11 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_send_invoice() {
-		let refund_for = Some(PaymentHash([0; 32]));
-
 		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
-			.send_invoice(SendInvoice { refund_for: None })
+			.send_invoice()
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.send_invoice(), Some(&SendInvoice { refund_for: None }));
-		assert_eq!(tlv_stream.refund_for, None);
-		assert_eq!(tlv_stream.send_invoice, Some(&()));
-
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
-			.send_invoice(SendInvoice { refund_for })
-			.build();
-		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.send_invoice(), Some(&SendInvoice { refund_for }));
-		assert_eq!(tlv_stream.refund_for, refund_for.as_ref());
-		assert_eq!(tlv_stream.send_invoice, Some(&()));
-
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
-			.send_invoice(SendInvoice { refund_for })
-			.send_invoice(SendInvoice { refund_for: None })
-			.build();
-		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.send_invoice(), Some(&SendInvoice { refund_for: None }));
-		assert_eq!(tlv_stream.refund_for, None);
+		assert_eq!(offer.send_invoice(), Some(&SendInvoice));
 		assert_eq!(tlv_stream.send_invoice, Some(&()));
 	}
 }
