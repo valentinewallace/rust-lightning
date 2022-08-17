@@ -49,9 +49,9 @@ impl OfferBuilder {
 			Destination::Path(path) => (None, Some(vec![path])),
 		};
 		let offer = Offer {
-			id, chains: None, amount: None, description, features: None, absolute_expiry: None,
-			issuer: None, paths, quantity_min: None, quantity_max: None, node_id,
-			send_invoice: None, signature: None,
+			id, chains: None, metadata: None, amount: None, description, features: None,
+			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
+			node_id, send_invoice: None, signature: None,
 		};
 		OfferBuilder { offer }
 	}
@@ -64,6 +64,12 @@ impl OfferBuilder {
 			chains.push(block_hash);
 		}
 
+		self
+	}
+
+	///
+	pub fn metadata(mut self, metadata: Vec<u8>) -> Self {
+		self.offer.metadata = Some(metadata);
 		self
 	}
 
@@ -299,6 +305,7 @@ impl Offer {
 
 		reference::OfferTlvStream {
 			chains: self.chains.as_ref().map(Into::into),
+			metadata: self.metadata.as_ref().map(Into::into),
 			currency,
 			amount,
 			description: Some((&self.description).into()),
@@ -338,6 +345,7 @@ pub type CurrencyCode = [u8; 3];
 
 tlv_stream!(struct OfferTlvStream {
 	(2, chains: Vec<BlockHash>),
+	(4, metadata: Vec<u8>),
 	(6, currency: CurrencyCode),
 	(8, amount: u64),
 	(10, description: String),
@@ -406,6 +414,7 @@ mod tests {
 
 		assert_eq!(offer.id(), merkle::root_hash(&offer.to_bytes()));
 		assert_eq!(offer.chain(), genesis_block(Network::Bitcoin).block_hash());
+		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), "foo");
 		assert_eq!(offer.features(), None);
@@ -420,6 +429,7 @@ mod tests {
 		assert_eq!(offer.signature(), None);
 
 		assert_eq!(tlv_stream.chains, None);
+		assert_eq!(tlv_stream.metadata, None);
 		assert_eq!(tlv_stream.currency, None);
 		assert_eq!(tlv_stream.amount, None);
 		assert_eq!(tlv_stream.description, Some((&String::from("foo")).into()));
@@ -480,6 +490,22 @@ mod tests {
 			.build();
 		assert_eq!(offer.chain(), block_hashes[0]);
 		assert_eq!(offer.as_tlv_stream().chains, Some((&block_hashes).into()));
+	}
+
+	#[test]
+	fn builds_offer_with_metadata() {
+		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+			.metadata(vec![42; 32])
+			.build();
+		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
+		assert_eq!(offer.as_tlv_stream().metadata, Some((&vec![42; 32]).into()));
+
+		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+			.metadata(vec![42; 32])
+			.metadata(vec![43; 32])
+			.build();
+		assert_eq!(offer.metadata(), Some(&vec![43; 32]));
+		assert_eq!(offer.as_tlv_stream().metadata, Some((&vec![43; 32]).into()));
 	}
 
 	#[test]
