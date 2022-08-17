@@ -236,22 +236,8 @@ mod sealed {
 		],
 	});
 	define_context!(OfferContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | PaymentSecret,
-			// Byte 2
-			,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP,
-		],
+		required_features: [],
+		optional_features: [],
 	});
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
@@ -432,17 +418,17 @@ mod sealed {
 	define_feature!(7, GossipQueries, [InitContext, NodeContext],
 		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required,
 		supports_gossip_queries, requires_gossip_queries);
-	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext, OfferContext],
+	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
 		set_variable_length_onion_required, supports_variable_length_onion,
 		requires_variable_length_onion);
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
 		set_static_remote_key_required, supports_static_remote_key, requires_static_remote_key);
-	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext, OfferContext],
+	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
 		supports_payment_secret, requires_payment_secret);
-	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext, OfferContext],
+	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
@@ -581,15 +567,6 @@ impl InvoiceFeatures {
 		let mut res = InvoiceFeatures::empty();
 		res.set_variable_length_onion_optional();
 		res
-	}
-}
-
-#[cfg(test)]
-impl OfferFeatures {
-	/// Converts `OfferFeatures` to `Features<C>`. Only known `InvoiceFeatures` relevant to context
-	/// `C` are included in the result.
-	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
-		self.to_context_internal()
 	}
 }
 
@@ -873,6 +850,9 @@ mod tests {
 		assert!(!InitFeatures::known().supports_unknown_bits());
 		assert!(!NodeFeatures::known().requires_unknown_bits());
 		assert!(!NodeFeatures::known().supports_unknown_bits());
+		assert!(!InvoiceFeatures::known().supports_unknown_bits());
+		assert!(!OfferFeatures::known().supports_unknown_bits());
+		assert_eq!(OfferFeatures::known(), OfferFeatures::empty());
 
 		assert!(InitFeatures::known().supports_upfront_shutdown_script());
 		assert!(NodeFeatures::known().supports_upfront_shutdown_script());
@@ -1053,12 +1033,6 @@ mod tests {
 		// Test deserialization.
 		let features_deserialized = InvoiceFeatures::from_base32(&features_as_u5s).unwrap();
 		assert_eq!(features, features_deserialized);
-	}
-
-	#[test]
-	fn invoice_features_equal_offer_features() {
-		assert_eq!(InvoiceFeatures::known(), OfferFeatures::known().to_context());
-		assert_eq!(OfferFeatures::known(), InvoiceFeatures::known().to_context());
 	}
 
 	#[test]
