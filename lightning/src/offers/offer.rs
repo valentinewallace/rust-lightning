@@ -393,8 +393,6 @@ pub enum SemanticError {
 	///
 	InvalidQuantity,
 	///
-	UnexpectedRefund,
-	///
 	InvalidSignature(secp256k1::Error),
 }
 
@@ -436,7 +434,7 @@ impl TryFrom<ParsedOffer> for Offer {
 	fn try_from(offer: ParsedOffer) -> Result<Self, Self::Error> {
 		let ParsedOffer(OfferTlvStream {
 			chains, currency, amount, description, features, absolute_expiry, paths, issuer,
-			quantity_min, quantity_max, node_id, send_invoice, refund_for, signature,
+			quantity_min, quantity_max, node_id, send_invoice, signature,
 		}, data) = offer;
 
 		let supported_chains = [
@@ -498,11 +496,7 @@ impl TryFrom<ParsedOffer> for Offer {
 			}
 		}
 
-		let send_invoice = match (send_invoice, refund_for) {
-			(None, None) => None,
-			(None, Some(_)) => return Err(SemanticError::UnexpectedRefund),
-			(Some(_), _) => Some(SendInvoice { refund_for }),
-		};
+		let send_invoice = send_invoice.map(|_| SendInvoice);
 
 		let id = merkle::root_hash(&data);
 		if let Some(signature) = &signature {
