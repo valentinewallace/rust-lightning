@@ -13,7 +13,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::PublicKey;
 use core::num::NonZeroU64;
 use core::ops::{Bound, RangeBounds};
 use core::time::Duration;
@@ -51,7 +51,7 @@ impl OfferBuilder {
 		let offer = Offer {
 			id, chains: None, metadata: None, amount: None, description, features: None,
 			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
-			node_id, send_invoice: None, signature: None,
+			node_id, send_invoice: None,
 		};
 		OfferBuilder { offer }
 	}
@@ -158,13 +158,6 @@ impl OfferBuilder {
 		self.offer.id = merkle::root_hash(&self.offer.to_bytes());
 		self.offer
 	}
-
-	///
-	pub fn build_signed<F>(self, sign: F) -> Result<Offer, secp256k1::Error>
-	where F: FnOnce(&Message) -> Signature
-	{
-		self.build().sign(sign)
-	}
 }
 
 ///
@@ -264,29 +257,6 @@ impl Offer {
 			self.contents.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
 	}
 
-	fn sign<F>(mut self, sign: F) -> Result<Self, secp256k1::Error>
-	where F: FnOnce(&Message) -> Signature
-	{
-		let digest = self.to_message_digest();
-		let signature = sign(&digest);
-
-		let secp_ctx = Secp256k1::verification_only();
-		let pubkey = self.node_id();
-		secp_ctx.verify_schnorr(&signature, &digest, &pubkey.into())?;
-
-		self.signature = Some(signature);
-		Ok(self)
-	}
-
-	fn to_message_digest(&self) -> Message {
-		Self::message_digest(self.id)
-	}
-
-	fn message_digest(offer_id: sha256::Hash) -> Message {
-		let tag = sha256::Hash::hash(concat!("lightning", "offer", "signature").as_bytes());
-		Message::from_slice(&merkle::tagged_hash(tag, offer_id)).unwrap()
-	}
-
 	fn to_bytes(&self) -> Vec<u8> {
 		use util::ser::Writeable;
 		let mut buffer = Vec::new();
@@ -317,7 +287,6 @@ impl Offer {
 			quantity_max: self.quantity_max.map(Into::into),
 			node_id: self.node_id.as_ref(),
 			send_invoice: self.send_invoice.as_ref().map(|_| &()),
-			signature: self.signature.as_ref(),
 		}
 	}
 }
@@ -357,7 +326,6 @@ tlv_stream!(struct OfferTlvStream {
 	(22, quantity_max: u64),
 	(24, node_id: PublicKey),
 	(26, send_invoice: Empty),
-	(240, signature: Signature),
 });
 
 #[derive(Clone, Debug, PartialEq)]
@@ -384,7 +352,7 @@ mod tests {
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use ln::features::OfferFeatures;
@@ -426,7 +394,6 @@ mod tests {
 		assert_eq!(offer.quantity_max(), 1);
 		assert_eq!(offer.node_id(), pubkey());
 		assert_eq!(offer.send_invoice(), None);
-		assert_eq!(offer.signature(), None);
 
 		assert_eq!(tlv_stream.chains, None);
 		assert_eq!(tlv_stream.metadata, None);
@@ -441,26 +408,6 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_max, None);
 		assert_eq!(tlv_stream.node_id, Some(&pubkey()));
 		assert_eq!(tlv_stream.send_invoice, None);
-		assert_eq!(tlv_stream.signature, None);
-	}
-
-	#[test]
-	fn builds_signed_offer() {
-		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &privkey());
-		let pubkey = PublicKey::from(keys);
-
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey))
-			.build_signed(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
-			.unwrap();
-		assert!(offer.signature().is_some());
-
-		let wrong_keys = KeyPair::from_secret_key(&secp_ctx, &blinded_privkey(99));
-		assert!(
-			OfferBuilder::new("foo".into(), Destination::NodeId(pubkey))
-				.build_signed(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &wrong_keys))
-				.is_err()
-		);
 	}
 
 	#[test]
