@@ -11,7 +11,6 @@
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::{Hash, sha256};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 use core::num::NonZeroU64;
@@ -21,7 +20,6 @@ use ln::features::OfferFeatures;
 use util::ser::WithLength;
 
 use prelude::*;
-use super::merkle;
 
 #[cfg(feature = "std")]
 use std::time::SystemTime;
@@ -43,13 +41,13 @@ pub enum Destination {
 impl OfferBuilder {
 	///
 	pub fn new(description: String, destination: Destination) -> Self {
-		let id = sha256::Hash::all_zeros();
+		let bytes = Vec::new();
 		let (node_id, paths) = match destination {
 			Destination::NodeId(node_id) => (Some(node_id), None),
 			Destination::Path(path) => (None, Some(vec![path])),
 		};
 		let offer = Offer {
-			id, chains: None, metadata: None, amount: None, description, features: None,
+			bytes, chains: None, metadata: None, amount: None, description, features: None,
 			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
 			node_id, send_invoice: None,
 		};
@@ -155,7 +153,7 @@ impl OfferBuilder {
 
 	///
 	pub fn build(mut self) -> Offer {
-		self.offer.id = merkle::root_hash(&self.offer.to_bytes());
+		self.offer.bytes = self.offer.to_bytes();
 		self.offer
 	}
 }
@@ -257,6 +255,11 @@ impl Offer {
 			self.contents.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
 	}
 
+	#[cfg(test)]
+	fn as_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
 	fn to_bytes(&self) -> Vec<u8> {
 		use util::ser::Writeable;
 		let mut buffer = Vec::new();
@@ -348,7 +351,7 @@ type Empty = ();
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, BlindedPath, Destination, OfferBuilder, OnionMessagePath, SendInvoice, merkle};
+	use super::{Amount, BlindedPath, Destination, OfferBuilder, OnionMessagePath, SendInvoice};
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
@@ -380,7 +383,7 @@ mod tests {
 		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey())).build();
 		let tlv_stream = offer.as_tlv_stream();
 
-		assert_eq!(offer.id(), merkle::root_hash(&offer.to_bytes()));
+		assert_eq!(offer.as_bytes(), &offer.to_bytes()[..]);
 		assert_eq!(offer.chain(), genesis_block(Network::Bitcoin).block_hash());
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
