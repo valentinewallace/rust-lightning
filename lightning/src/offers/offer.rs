@@ -11,7 +11,6 @@
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::sha256;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 use core::time::Duration;
@@ -26,7 +25,7 @@ use std::time::SystemTime;
 ///
 #[derive(Clone, Debug)]
 pub struct Offer {
-	id: sha256::Hash,
+	bytes: Vec<u8>,
 	chains: Option<Vec<BlockHash>>,
 	metadata: Option<Vec<u8>>,
 	amount: Option<Amount>,
@@ -42,11 +41,6 @@ pub struct Offer {
 }
 
 impl Offer {
-	///
-	pub fn id(&self) -> sha256::Hash {
-		self.id
-	}
-
 	///
 	pub fn chain(&self) -> BlockHash {
 		// TODO: Update once spec is finalized
