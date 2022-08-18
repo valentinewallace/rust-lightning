@@ -352,11 +352,11 @@ tlv_stream!(struct OfferTlvStream {
 	(12, features: OfferFeatures),
 	(14, absolute_expiry: u64),
 	(16, paths: Vec<BlindedPath>),
-	(20, issuer: String),
-	(22, quantity_min: u64),
-	(24, quantity_max: u64),
-	(30, node_id: PublicKey),
-	(54, send_invoice: Empty),
+	(18, issuer: String),
+	(20, quantity_min: u64),
+	(22, quantity_max: u64),
+	(24, node_id: PublicKey),
+	(26, send_invoice: Empty),
 	(240, signature: Signature),
 });
 
