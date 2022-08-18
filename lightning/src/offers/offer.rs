@@ -433,8 +433,8 @@ impl TryFrom<ParsedOffer> for Offer {
 
 	fn try_from(offer: ParsedOffer) -> Result<Self, Self::Error> {
 		let ParsedOffer(OfferTlvStream {
-			chains, currency, amount, description, features, absolute_expiry, paths, issuer,
-			quantity_min, quantity_max, node_id, send_invoice, signature,
+			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
+			issuer, quantity_min, quantity_max, node_id, send_invoice, signature,
 		}, data) = offer;
 
 		let supported_chains = [
@@ -451,6 +451,8 @@ impl TryFrom<ParsedOffer> for Offer {
 				_ => return Err(SemanticError::UnsupportedChain),
 			},
 		};
+
+		let metadata = metadata.map(Into::into);
 
 		let amount = match (currency, amount.map(Into::into)) {
 			(None, None) => None,
@@ -506,8 +508,8 @@ impl TryFrom<ParsedOffer> for Offer {
 		}
 
 		Ok(Offer {
-			id, chains, amount, description, features, absolute_expiry, issuer, paths, quantity_min,
-			quantity_max, node_id, send_invoice, signature,
+			id, chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
+			quantity_min, quantity_max, node_id, send_invoice, signature,
 		})
 	}
 }
