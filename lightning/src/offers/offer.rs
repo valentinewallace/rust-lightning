@@ -14,7 +14,6 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::secp256k1::schnorr::Signature;
 use core::time::Duration;
 use ln::features::OfferFeatures;
 use util::ser::WithLength;
@@ -40,7 +39,6 @@ pub struct Offer {
 	quantity_max: Option<u64>,
 	node_id: Option<PublicKey>,
 	send_invoice: Option<SendInvoice>,
-	signature: Option<Signature>,
 }
 
 impl Offer {
@@ -125,11 +123,6 @@ impl Offer {
 	///
 	pub fn send_invoice(&self) -> Option<&SendInvoice> {
 		self.send_invoice.as_ref()
-	}
-
-	///
-	pub fn signature(&self) -> Option<&Signature> {
-		self.signature.as_ref()
 	}
 }
 
