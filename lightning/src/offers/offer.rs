@@ -244,7 +244,6 @@ impl Offer {
 		self.contents.node_id.unwrap()
 	}
 
-	#[cfg(test)]
 	fn as_bytes(&self) -> &[u8] {
 		&self.bytes
 	}
@@ -356,8 +355,8 @@ struct OnionMessagePath {
 }
 impl_writeable!(OnionMessagePath, { node_id, encrypted_recipient_data });
 
-/// An offer parsed from a bech32-encoded string as a TLV stream and the corresponding bytes. The
-/// latter is used to compute the offer id.
+/// An `offer` parsed from a bech32-encoded string as a TLV stream and the corresponding bytes. The
+/// latter is used to reflect fields in an `invoice_request`, some of which may be unknown.
 struct ParsedOffer(OfferTlvStream, Vec<u8>);
 
 /// Error when parsing a bech32 encoded message using [`str::parse`].
@@ -427,7 +426,7 @@ impl TryFrom<ParsedOffer> for Offer {
 		let ParsedOffer(OfferTlvStream {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
 			issuer, quantity_min, quantity_max, node_id, send_invoice,
-		}, data) = offer;
+		}, bytes) = offer;
 
 		let supported_chains = [
 			genesis_block(Network::Bitcoin).block_hash(),
@@ -492,10 +491,8 @@ impl TryFrom<ParsedOffer> for Offer {
 
 		let send_invoice = send_invoice.map(|_| SendInvoice);
 
-		let id = merkle::root_hash(&data);
-
 		Ok(Offer {
-			id, chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
+			bytes, chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
 			quantity_min, quantity_max, node_id, send_invoice,
 		})
 	}
@@ -530,7 +527,7 @@ impl FromStr for ParsedOffer {
 impl core::fmt::Display for Offer {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		use bitcoin::bech32::ToBase32;
-		let data = self.to_bytes().to_base32();
+		let data = self.as_bytes().to_base32();
 		bech32::encode_without_checksum_to_fmt(f, OFFER_BECH32_HRP, data).expect("HRP is valid").unwrap();
 
 		Ok(())
