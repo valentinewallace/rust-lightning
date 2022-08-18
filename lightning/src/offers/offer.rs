@@ -357,7 +357,7 @@ struct OnionMessagePath {
 impl_writeable!(OnionMessagePath, { node_id, encrypted_recipient_data });
 
 /// An offer parsed from a bech32-encoded string as a TLV stream and the corresponding bytes. The
-/// latter is used for signature verification.
+/// latter is used to compute the offer id.
 struct ParsedOffer(OfferTlvStream, Vec<u8>);
 
 /// Error when parsing a bech32 encoded message using [`str::parse`].
@@ -392,8 +392,6 @@ pub enum SemanticError {
 	MissingPaths,
 	///
 	InvalidQuantity,
-	///
-	InvalidSignature(secp256k1::Error),
 }
 
 impl From<bech32::Error> for ParseError {
@@ -414,12 +412,6 @@ impl From<SemanticError> for ParseError {
 	}
 }
 
-impl From<secp256k1::Error> for SemanticError {
-	fn from(error: secp256k1::Error) -> Self {
-		Self::InvalidSignature(error)
-	}
-}
-
 impl FromStr for Offer {
 	type Err = ParseError;
 
@@ -434,7 +426,7 @@ impl TryFrom<ParsedOffer> for Offer {
 	fn try_from(offer: ParsedOffer) -> Result<Self, Self::Error> {
 		let ParsedOffer(OfferTlvStream {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
-			issuer, quantity_min, quantity_max, node_id, send_invoice, signature,
+			issuer, quantity_min, quantity_max, node_id, send_invoice,
 		}, data) = offer;
 
 		let supported_chains = [
@@ -501,15 +493,10 @@ impl TryFrom<ParsedOffer> for Offer {
 		let send_invoice = send_invoice.map(|_| SendInvoice);
 
 		let id = merkle::root_hash(&data);
-		if let Some(signature) = &signature {
-			let digest = Offer::message_digest(id);
-			let secp_ctx = Secp256k1::verification_only();
-			secp_ctx.verify_schnorr(signature, &digest, &node_id.into())?;
-		}
 
 		Ok(Offer {
 			id, chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
-			quantity_min, quantity_max, node_id, send_invoice, signature,
+			quantity_min, quantity_max, node_id, send_invoice,
 		})
 	}
 }
