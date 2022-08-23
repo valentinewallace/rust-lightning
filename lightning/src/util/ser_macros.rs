@@ -437,7 +437,7 @@ macro_rules! tlv_stream {
 		#[derive(Debug)]
 		pub(crate) struct $name {
 			$(
-				$field: Option<tlv_record_type!($fieldty$(<$gen>)?)>,
+				pub(crate) $field: Option<tlv_record_type!($fieldty$(<$gen>)?)>,
 			)*
 		}
 

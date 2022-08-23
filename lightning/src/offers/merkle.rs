@@ -10,9 +10,14 @@
 //! Tagged hashes for use in signature calculation and verification.
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
+use bitcoin::secp256k1::schnorr::Signature;
 use util::ser::{BigSize, Readable};
 
 const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
+
+tlv_stream!(struct SignatureTlvStream {
+	(240, signature: Signature),
+});
 
 pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
 	let mut tlv_stream = TlvStream::new(&data[..]).peekable();

@@ -10,6 +10,7 @@
 //! Implementation of Lightning Offers
 //! ([BOLT 12](https://github.com/lightning/bolts/blob/master/12-offer-encoding.md)).
 
+mod invoice_request;
 mod merkle;
 mod offer;
 mod parse;
