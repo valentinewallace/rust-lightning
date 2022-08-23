@@ -12,5 +12,10 @@
 
 mod merkle;
 mod offer;
+mod parse;
 
 pub use self::offer::{Amount, BlindedPath, CurrencyCode, Offer, OfferBuilder};
+
+tlv_stream!(struct PayerTlvStream {
+	(0, payer_info: Vec<u8>),
+});

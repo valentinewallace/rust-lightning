@@ -9,8 +9,6 @@
 
 //! Data structures and encoding for `offer` messages.
 
-use bitcoin::bech32;
-use bitcoin::bech32::FromBase32;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
@@ -22,8 +20,8 @@ use core::str::FromStr;
 use core::time::Duration;
 use io;
 use ln::features::OfferFeatures;
-use ln::msgs::DecodeError;
-use util::ser::{Readable, WithLength, Writeable, Writer};
+use offers::parse::{Bech32Encode, ParseError, SemanticError};
+use util::ser::{WithLength, Writeable, Writer};
 
 use prelude::*;
 
@@ -244,6 +242,7 @@ impl Offer {
 		self.contents.node_id.unwrap()
 	}
 
+	#[cfg(test)]
 	fn as_bytes(&self) -> &[u8] {
 		&self.bytes
 	}
@@ -258,6 +257,12 @@ impl Offer {
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> reference::OfferTlvStream {
 		self.contents.as_tlv_stream()
+	}
+}
+
+impl AsRef<[u8]> for Offer {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
 	}
 }
 
@@ -355,67 +360,17 @@ struct OnionMessagePath {
 }
 impl_writeable!(OnionMessagePath, { node_id, encrypted_recipient_data });
 
-/// An `offer` parsed from a bech32-encoded string as a TLV stream and the corresponding bytes. The
-/// latter is used to reflect fields in an `invoice_request`, some of which may be unknown.
-struct ParsedOffer(OfferTlvStream, Vec<u8>);
+impl Bech32Encode for Offer {
+	type TlvStream = OfferTlvStream;
 
-/// Error when parsing a bech32 encoded message using [`str::parse`].
-#[derive(Debug, PartialEq)]
-pub enum ParseError {
-	/// The bech32 encoding does not conform to the BOLT 12 requirements for continuing messages
-	/// across multiple parts (i.e., '+' followed by whitespace).
-	InvalidContinuation,
-	/// The bech32 encoding's human-readable part does not match what was expected for the message
-	/// being parsed.
-	InvalidBech32Hrp,
-	/// The string could not be bech32 decoded.
-	Bech32(bech32::Error),
-	/// The bech32 decoded string could not be decoded as the expected message type.
-	Decode(DecodeError),
-	/// The parsed message has invalid semantics.
-	InvalidSemantics(SemanticError),
-}
-
-/// Error when interpreting a TLV stream as a specific type.
-#[derive(Debug, PartialEq)]
-pub enum SemanticError {
-	/// The provided block hash does not correspond to a supported chain.
-	UnsupportedChain,
-	/// A currency was provided without an amount.
-	UnexpectedCurrency,
-	/// A required description was not provided.
-	MissingDescription,
-	/// A node id was not provided.
-	MissingNodeId,
-	/// An empty set of blinded paths was provided.
-	MissingPaths,
-	/// A quantity representing an empty range or that was outside of a valid range was provided.
-	InvalidQuantity,
-}
-
-impl From<bech32::Error> for ParseError {
-	fn from(error: bech32::Error) -> Self {
-		Self::Bech32(error)
-	}
-}
-
-impl From<DecodeError> for ParseError {
-	fn from(error: DecodeError) -> Self {
-		Self::Decode(error)
-	}
-}
-
-impl From<SemanticError> for ParseError {
-	fn from(error: SemanticError) -> Self {
-		Self::InvalidSemantics(error)
-	}
+	const BECH32_HRP: &'static str = "lno";
 }
 
 impl FromStr for Offer {
 	type Err = ParseError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
-		let ParsedOffer(tlv_stream, bytes) = ParsedOffer::from_str(s)?;
+		let (tlv_stream, bytes) = Offer::from_bech32_str(s)?;
 		let contents = OfferContents::try_from(tlv_stream)?;
 		Ok(Offer { bytes, contents })
 	}
@@ -501,39 +456,9 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 	}
 }
 
-const OFFER_BECH32_HRP: &str = "lno";
-
-impl FromStr for ParsedOffer {
-	type Err = ParseError;
-
-	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
-		// Offer encoding may be split by '+' followed by optional whitespace.
-		for chunk in s.split('+') {
-			let chunk = chunk.trim_start();
-			if chunk.is_empty() || chunk.contains(char::is_whitespace) {
-				return Err(ParseError::InvalidContinuation);
-			}
-		}
-
-		let s = s.chars().filter(|c| *c != '+' && !c.is_whitespace()).collect::<String>();
-		let (hrp, data) = bech32::decode_without_checksum(&s)?;
-
-		if hrp != OFFER_BECH32_HRP {
-			return Err(ParseError::InvalidBech32Hrp);
-		}
-
-		let data = Vec::<u8>::from_base32(&data)?;
-		Ok(ParsedOffer(Readable::read(&mut &data[..])?, data))
-	}
-}
-
 impl core::fmt::Display for Offer {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		use bitcoin::bech32::ToBase32;
-		let data = self.as_bytes().to_base32();
-		bech32::encode_without_checksum_to_fmt(f, OFFER_BECH32_HRP, data).expect("HRP is valid").unwrap();
-
-		Ok(())
+		self.fmt_bech32_str(f)
 	}
 }
 
@@ -896,7 +821,7 @@ mod tests {
 
 #[cfg(test)]
 mod bolt12_tests {
-	use super::{Offer, ParseError, ParsedOffer};
+	use super::{Offer, ParseError};
 	use bitcoin::bech32;
 	use ln::msgs::DecodeError;
 
@@ -922,8 +847,7 @@ mod bolt12_tests {
 			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0yg06qg2qdd7t628sgykwj5kuc837qmlv9m9gr7sq8ap6erfgacv26nhp8zzcqgzhdvttlk22pw8fmwqqrvzst792mj35ypylj886ljkcmug03wg6heqqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq6muh550qsfva9fdes0ruph7ctk2s8aqq06r4jxj3msc448wzwy9sqs9w6ckhlv55zuwnkuqqxc9qhu24h9rggzflyw04l9d3hcslzu340jqpqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
 		];
 		for encoded_offer in &offers {
-			// TODO: Use Offer once Destination semantics are finalized.
-			if let Err(e) = encoded_offer.parse::<ParsedOffer>() {
+			if let Err(e) = encoded_offer.parse::<Offer>() {
 				panic!("Invalid offer ({:?}): {}", e, encoded_offer);
 			}
 		}
