@@ -376,20 +376,20 @@ pub enum ParseError {
 	InvalidSemantics(SemanticError),
 }
 
+/// Error when interpreting a TLV stream as a specific type.
 #[derive(Debug, PartialEq)]
-///
 pub enum SemanticError {
-	///
+	/// The provided block hash does not correspond to a supported chain.
 	UnsupportedChain,
-	///
+	/// A currency was provided without an amount.
 	UnexpectedCurrency,
-	///
+	/// A required description was not provided.
 	MissingDescription,
-	///
+	/// A node id was not provided.
 	MissingNodeId,
-	///
+	/// An empty set of blinded paths was provided.
 	MissingPaths,
-	///
+	/// A quantity representing an empty range or that was outside of a valid range was provided.
 	InvalidQuantity,
 }
 
