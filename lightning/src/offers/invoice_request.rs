@@ -15,15 +15,20 @@ use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use core::str::FromStr;
 use ln::features::OfferFeatures;
-use offers::{Offer, PayerTlvStream};
+use offers::PayerTlvStream;
 use offers::merkle::SignatureTlvStream;
-use offers::offer::{OfferTlvStream, ParsedOffer};
+use offers::offer::{OfferContents, OfferTlvStream};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
 
 ///
 pub struct InvoiceRequest {
 	bytes: Vec<u8>,
-	offer: Offer,
+	contents: InvoiceRequestContents,
+}
+
+///
+pub(crate) struct InvoiceRequestContents {
+	offer: OfferContents,
 	chain: Option<BlockHash>,
 	amount_msat: Option<u64>,
 	features: Option<OfferFeatures>,
@@ -63,24 +68,23 @@ impl FromStr for InvoiceRequest {
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		let (tlv_stream, bytes) = InvoiceRequest::from_bech32_str(s)?;
-		Ok(InvoiceRequest::try_from((tlv_stream, bytes))?)
+		let contents = InvoiceRequestContents::try_from(tlv_stream)?;
+		Ok(InvoiceRequest { bytes, contents })
 	}
 }
 
-type ParsedInvoiceRequest = (FullInvoiceRequestTlvStream, Vec<u8>);
-
-impl TryFrom<ParsedInvoiceRequest> for InvoiceRequest {
+impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 	type Error = SemanticError;
 
-	fn try_from(invoice_request: ParsedInvoiceRequest) -> Result<Self, Self::Error> {
-		let ((
-				PayerTlvStream { payer_info },
-				offer_tlv_stream,
-				InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
-				SignatureTlvStream { signature },
-		), bytes) = invoice_request;
+	fn try_from(tlv_stream: FullInvoiceRequestTlvStream) -> Result<Self, Self::Error> {
+		let (
+			PayerTlvStream { payer_info },
+			offer_tlv_stream,
+			InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
+			SignatureTlvStream { signature },
+		) = tlv_stream;
 
-		let offer = Offer::try_from(ParsedOffer(offer_tlv_stream, vec![]))?;
+		let offer = OfferContents::try_from(offer_tlv_stream)?;
 
 		let chain = match chain {
 			None => None,
@@ -97,8 +101,8 @@ impl TryFrom<ParsedInvoiceRequest> for InvoiceRequest {
 
 		let payer_info = payer_info.map(Into::into);
 
-		Ok(InvoiceRequest {
-			bytes, offer, chain, amount_msat, features, quantity, payer_id, payer_note, payer_info,
+		Ok(InvoiceRequestContents {
+			offer, chain, amount_msat, features, quantity, payer_id, payer_note, payer_info,
 			signature,
 		})
 	}

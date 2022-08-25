@@ -173,11 +173,7 @@ pub(crate) struct OfferContents {
 impl Offer {
 	///
 	pub fn chain(&self) -> BlockHash {
-		// TODO: Update once spec is finalized
-		self.contents.chains
-			.as_ref()
-			.and_then(|chains| chains.first().copied())
-			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
+		self.contents.chain()
 	}
 
 	///
@@ -267,6 +263,14 @@ impl AsRef<[u8]> for Offer {
 }
 
 impl OfferContents {
+	pub fn chain(&self) -> BlockHash {
+		// TODO: Update once spec is finalized
+		self.chains
+			.as_ref()
+			.and_then(|chains| chains.first().copied())
+			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
+	}
+
 	pub fn quantity_min(&self) -> u64 {
 		self.quantity_min.unwrap_or(1)
 	}
