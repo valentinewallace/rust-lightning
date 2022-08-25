@@ -415,18 +415,20 @@ impl FromStr for Offer {
 	type Err = ParseError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
-		Ok(Offer::try_from(ParsedOffer::from_str(s)?)?)
+		let ParsedOffer(tlv_stream, bytes) = ParsedOffer::from_str(s)?;
+		let contents = OfferContents::try_from(tlv_stream)?;
+		Ok(Offer { bytes, contents })
 	}
 }
 
-impl TryFrom<ParsedOffer> for Offer {
+impl TryFrom<OfferTlvStream> for OfferContents {
 	type Error = SemanticError;
 
-	fn try_from(offer: ParsedOffer) -> Result<Self, Self::Error> {
-		let ParsedOffer(OfferTlvStream {
+	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
+		let OfferTlvStream {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
 			issuer, quantity_min, quantity_max, node_id, send_invoice,
-		}, bytes) = offer;
+		} = tlv_stream;
 
 		let supported_chains = [
 			genesis_block(Network::Bitcoin).block_hash(),
@@ -491,8 +493,8 @@ impl TryFrom<ParsedOffer> for Offer {
 
 		let send_invoice = send_invoice.map(|_| SendInvoice);
 
-		Ok(Offer {
-			bytes, chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
+		Ok(OfferContents {
+			chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
 			quantity_min, quantity_max, node_id, send_invoice,
 		})
 	}
