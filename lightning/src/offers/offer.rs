@@ -22,10 +22,17 @@ use prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
+
 ///
 #[derive(Clone, Debug)]
 pub struct Offer {
 	bytes: Vec<u8>,
+	contents: OfferContents,
+}
+
+///
+#[derive(Clone, Debug)]
+pub(crate) struct OfferContents {
 	chains: Option<Vec<BlockHash>>,
 	metadata: Option<Vec<u8>>,
 	amount: Option<Amount>,
@@ -44,7 +51,7 @@ impl Offer {
 	///
 	pub fn chain(&self) -> BlockHash {
 		// TODO: Update once spec is finalized
-		self.chains
+		self.contents.chains
 			.as_ref()
 			.and_then(|chains| chains.first().copied())
 			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
@@ -52,27 +59,27 @@ impl Offer {
 
 	///
 	pub fn metadata(&self) -> Option<&Vec<u8>> {
-		self.metadata.as_ref()
+		self.contents.metadata.as_ref()
 	}
 
 	///
 	pub fn amount(&self) -> Option<&Amount> {
-		self.amount.as_ref()
+		self.contents.amount.as_ref()
 	}
 
 	///
 	pub fn description(&self) -> &String {
-		&self.description
+		&self.contents.description
 	}
 
 	///
 	pub fn features(&self) -> Option<&OfferFeatures> {
-		self.features.as_ref()
+		self.contents.features.as_ref()
 	}
 
 	///
 	pub fn absolute_expiry(&self) -> Option<Duration> {
-		self.absolute_expiry
+		self.contents.absolute_expiry
 	}
 
 	///
@@ -89,34 +96,34 @@ impl Offer {
 
 	///
 	pub fn issuer(&self) -> Option<&String> {
-		self.issuer.as_ref()
+		self.contents.issuer.as_ref()
 	}
 
 	///
 	pub fn paths(&self) -> Option<&Vec<BlindedPath>> {
-		self.paths.as_ref()
+		self.contents.paths.as_ref()
 	}
 
 	///
 	pub fn quantity_min(&self) -> u64 {
-		self.quantity_min.unwrap_or(1)
+		self.contents.quantity_min.unwrap_or(1)
 	}
 
 	///
 	pub fn quantity_max(&self) -> u64 {
-		self.quantity_max.unwrap_or_else(||
-			self.quantity_min.map_or(1, |_| u64::max_value()))
+		self.contents.quantity_max.unwrap_or_else(||
+			self.contents.quantity_min.map_or(1, |_| u64::max_value()))
 	}
 
 	///
 	pub fn node_id(&self) -> PublicKey {
-		self.node_id.unwrap_or_else(||
-			self.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
+		self.contents.node_id.unwrap_or_else(||
+			self.contents.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
 	}
 
 	///
 	pub fn send_invoice(&self) -> Option<&SendInvoice> {
-		self.send_invoice.as_ref()
+		self.contents.send_invoice.as_ref()
 	}
 }
 
