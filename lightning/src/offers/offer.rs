@@ -16,18 +16,18 @@ use bitcoin::secp256k1::PublicKey;
 use core::num::NonZeroU64;
 use core::ops::{Bound, RangeBounds};
 use core::time::Duration;
+use io;
 use ln::features::OfferFeatures;
-use util::ser::WithLength;
+use util::ser::{WithLength, Writeable, Writer};
 
 use prelude::*;
 
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-
 ///
 pub struct OfferBuilder {
-	offer: Offer
+	offer: OfferContents,
 }
 
 ///
@@ -41,13 +41,12 @@ pub enum Destination {
 impl OfferBuilder {
 	///
 	pub fn new(description: String, destination: Destination) -> Self {
-		let bytes = Vec::new();
 		let (node_id, paths) = match destination {
 			Destination::NodeId(node_id) => (Some(node_id), None),
 			Destination::Path(path) => (None, Some(vec![path])),
 		};
-		let offer = Offer {
-			bytes, chains: None, metadata: None, amount: None, description, features: None,
+		let offer = OfferContents {
+			chains: None, metadata: None, amount: None, description, features: None,
 			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
 			node_id, send_invoice: None,
 		};
@@ -152,9 +151,14 @@ impl OfferBuilder {
 	}
 
 	///
-	pub fn build(mut self) -> Offer {
-		self.offer.bytes = self.offer.to_bytes();
-		self.offer
+	pub fn build(self) -> Offer {
+		let mut bytes = Vec::new();
+		self.offer.write(&mut bytes).unwrap();
+
+		Offer {
+			bytes,
+			contents: self.offer,
+		}
 	}
 }
 
@@ -240,13 +244,12 @@ impl Offer {
 
 	///
 	pub fn quantity_min(&self) -> u64 {
-		self.contents.quantity_min.unwrap_or(1)
+		self.contents.quantity_min()
 	}
 
 	///
 	pub fn quantity_max(&self) -> u64 {
-		self.contents.quantity_max.unwrap_or_else(||
-			self.contents.quantity_min.map_or(1, |_| u64::max_value()))
+		self.contents.quantity_max()
 	}
 
 	///
@@ -260,11 +263,27 @@ impl Offer {
 		&self.bytes
 	}
 
+	#[cfg(test)]
 	fn to_bytes(&self) -> Vec<u8> {
-		use util::ser::Writeable;
 		let mut buffer = Vec::new();
-		self.as_tlv_stream().write(&mut buffer).unwrap();
+		self.contents.write(&mut buffer).unwrap();
 		buffer
+	}
+
+	#[cfg(test)]
+	fn as_tlv_stream(&self) -> reference::OfferTlvStream {
+		self.contents.as_tlv_stream()
+	}
+}
+
+impl OfferContents {
+	pub fn quantity_min(&self) -> u64 {
+		self.quantity_min.unwrap_or(1)
+	}
+
+	pub fn quantity_max(&self) -> u64 {
+		self.quantity_max.unwrap_or_else(||
+			self.quantity_min.map_or(1, |_| u64::max_value()))
 	}
 
 	fn as_tlv_stream(&self) -> reference::OfferTlvStream {
@@ -291,6 +310,12 @@ impl Offer {
 			node_id: self.node_id.as_ref(),
 			send_invoice: self.send_invoice.as_ref().map(|_| &()),
 		}
+	}
+}
+
+impl Writeable for OfferContents {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.as_tlv_stream().write(writer)
 	}
 }
 
