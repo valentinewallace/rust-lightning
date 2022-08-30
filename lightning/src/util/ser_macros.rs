@@ -441,12 +441,14 @@ macro_rules! tlv_stream {
 			)*
 		}
 
-		mod reference {
-			use super::*;
+		pub(crate) mod reference {
+			$(
+				tlv_record_import!($fieldty$(<$gen>)?);
+			)*
 
-			pub(super) struct $name<'a> {
+			pub(crate) struct $name<'a> {
 				$(
-					pub(super) $field: Option<tlv_record_ref_type!($fieldty$(<$gen>)?)>,
+					pub(crate) $field: Option<tlv_record_ref_type!($fieldty$(<$gen>)?)>,
 				)*
 			}
 
@@ -526,6 +528,25 @@ macro_rules! tlv_record_ref_type {
 	};
 	($type:ident$(<$gen:ident>)?) => {
 		&'a $type$(<$gen>)?
+	};
+}
+
+macro_rules! tlv_record_import {
+	(u8) => {};
+	(u16) => {};
+	(u32) => {};
+	(u64) => {};
+	(char) => {};
+	(String) => {};
+	(Vec<$type:ident>) => {
+		tlv_record_import!($type);
+	};
+	($type:ident<$gen:ident>) => {
+		tlv_record_import!($type);
+		tlv_record_import!($gen);
+	};
+	($type:ident) => {
+		use super::$type;
 	};
 }
 

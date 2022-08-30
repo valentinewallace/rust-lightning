@@ -14,11 +14,13 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use core::str::FromStr;
+use io;
 use ln::features::OfferFeatures;
-use offers::PayerTlvStream;
+use offers::{PayerTlvStream, self};
 use offers::merkle::{SignatureTlvStream, self};
-use offers::offer::{Amount, OfferContents, OfferTlvStream};
+use offers::offer::{Amount, OfferContents, OfferTlvStream, self};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
+use util::ser::{Writeable, Writer};
 
 ///
 pub struct InvoiceRequest {
@@ -45,6 +47,37 @@ impl AsRef<[u8]> for InvoiceRequest {
 	}
 }
 
+impl InvoiceRequestContents {
+	pub(super) fn as_tlv_stream(&self) -> ReferencedFullInvoiceRequestTlvStream {
+		let payer = offers::reference::PayerTlvStream {
+			payer_info: self.payer_info.as_ref().map(Into::into),
+		};
+
+		let offer = self.offer.as_tlv_stream();
+
+		let invoice_request = reference::InvoiceRequestTlvStream {
+			chain: self.chain.as_ref(),
+			amount: self.amount_msats.map(Into::into),
+			features: self.features.as_ref(),
+			quantity: self.quantity.map(Into::into),
+			payer_id: Some(&self.payer_id),
+			payer_note: self.payer_note.as_ref().map(Into::into),
+		};
+
+		let signature = merkle::reference::SignatureTlvStream {
+			signature: self.signature.as_ref(),
+		};
+
+		(payer, offer, invoice_request, signature)
+	}
+}
+
+impl Writeable for InvoiceRequestContents {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.as_tlv_stream().write(writer)
+	}
+}
+
 tlv_stream!(struct InvoiceRequestTlvStream {
 	(80, chain: BlockHash),
 	(82, amount: u64),
@@ -62,6 +95,13 @@ impl Bech32Encode for InvoiceRequest {
 
 type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
+
+type ReferencedFullInvoiceRequestTlvStream<'a> = (
+	offers::reference::PayerTlvStream<'a>,
+	offer::reference::OfferTlvStream<'a>,
+	reference::InvoiceRequestTlvStream<'a>,
+	merkle::reference::SignatureTlvStream<'a>,
+);
 
 impl FromStr for InvoiceRequest {
 	type Err = ParseError;

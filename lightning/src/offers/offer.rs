@@ -297,7 +297,7 @@ impl OfferContents {
 		}
 	}
 
-	fn as_tlv_stream(&self) -> reference::OfferTlvStream {
+	pub(super) fn as_tlv_stream(&self) -> reference::OfferTlvStream {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(amount_msats.into())),
