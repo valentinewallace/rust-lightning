@@ -183,7 +183,7 @@ impl Offer {
 
 	///
 	pub fn amount(&self) -> Option<&Amount> {
-		self.contents.amount.as_ref()
+		self.contents.amount()
 	}
 
 	///
@@ -234,6 +234,11 @@ impl Offer {
 	}
 
 	///
+	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+		self.contents.is_valid_quantity(quantity)
+	}
+
+	///
 	pub fn node_id(&self) -> PublicKey {
 		self.contents.node_id.unwrap()
 	}
@@ -271,6 +276,10 @@ impl OfferContents {
 			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
 	}
 
+	pub fn amount(&self) -> Option<&Amount> {
+		self.amount.as_ref()
+	}
+
 	pub fn quantity_min(&self) -> u64 {
 		self.quantity_min.unwrap_or(1)
 	}
@@ -278,6 +287,14 @@ impl OfferContents {
 	pub fn quantity_max(&self) -> u64 {
 		self.quantity_max.unwrap_or_else(||
 			self.quantity_min.map_or(1, |_| u64::max_value()))
+	}
+
+	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+		if self.quantity_min.is_none() && self.quantity_max.is_none() {
+			false
+		} else {
+			quantity >= self.quantity_min() && quantity <= self.quantity_max()
+		}
 	}
 
 	fn as_tlv_stream(&self) -> reference::OfferTlvStream {

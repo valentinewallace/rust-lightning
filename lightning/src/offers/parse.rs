@@ -11,6 +11,7 @@
 
 use bitcoin::bech32;
 use bitcoin::bech32::{FromBase32, ToBase32};
+use bitcoin::secp256k1;
 use core::fmt;
 use ln::msgs::DecodeError;
 use util::ser::Readable;
@@ -68,6 +69,8 @@ pub enum ParseError {
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
 	InvalidSemantics(SemanticError),
+	/// The parsed message has an invalid signature.
+	InvalidSignature(secp256k1::Error),
 }
 
 /// Error when interpreting a TLV stream as a specific type.
@@ -77,6 +80,12 @@ pub enum SemanticError {
 	UnsupportedChain,
 	/// A currency was provided without an amount.
 	UnexpectedCurrency,
+	///
+	MissingAmount,
+	///
+	InsufficientAmount,
+	///
+	UnknownRequiredFeatures,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A node id was not provided.
@@ -85,6 +94,8 @@ pub enum SemanticError {
 	MissingPaths,
 	/// A quantity representing an empty range or that was outside of a valid range was provided.
 	InvalidQuantity,
+	///
+	MissingPayerId,
 }
 
 impl From<bech32::Error> for ParseError {
@@ -102,5 +113,11 @@ impl From<DecodeError> for ParseError {
 impl From<SemanticError> for ParseError {
 	fn from(error: SemanticError) -> Self {
 		Self::InvalidSemantics(error)
+	}
+}
+
+impl From<secp256k1::Error> for ParseError {
+	fn from(error: secp256k1::Error) -> Self {
+		Self::InvalidSignature(error)
 	}
 }

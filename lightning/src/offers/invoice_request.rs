@@ -16,8 +16,8 @@ use core::convert::TryFrom;
 use core::str::FromStr;
 use ln::features::OfferFeatures;
 use offers::PayerTlvStream;
-use offers::merkle::SignatureTlvStream;
-use offers::offer::{OfferContents, OfferTlvStream};
+use offers::merkle::{SignatureTlvStream, self};
+use offers::offer::{Amount, OfferContents, OfferTlvStream};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
 
 ///
@@ -30,10 +30,10 @@ pub struct InvoiceRequest {
 pub(crate) struct InvoiceRequestContents {
 	offer: OfferContents,
 	chain: Option<BlockHash>,
-	amount_msat: Option<u64>,
+	amount_msats: Option<u64>,
 	features: Option<OfferFeatures>,
 	quantity: Option<u64>,
-	payer_id: Option<PublicKey>,
+	payer_id: PublicKey,
 	payer_note: Option<String>,
 	payer_info: Option<Vec<u8>>,
 	signature: Option<Signature>,
@@ -69,6 +69,12 @@ impl FromStr for InvoiceRequest {
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		let (tlv_stream, bytes) = InvoiceRequest::from_bech32_str(s)?;
 		let contents = InvoiceRequestContents::try_from(tlv_stream)?;
+
+		if let Some(signature) = &contents.signature {
+			let tag = concat!("lightning", "invoice_request", "signature");
+			merkle::verify_signature(signature, tag, &bytes, contents.payer_id)?;
+		}
+
 		Ok(InvoiceRequest { bytes, contents })
 	}
 }
@@ -92,17 +98,43 @@ impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 			Some(_) => return Err(SemanticError::UnsupportedChain),
 		};
 
-		// TODO: Check remaining fields against the reflected offer
-		let amount_msat = amount.map(Into::into);
+		// TODO: Determine whether quantity should be accounted for
+		let amount_msats = match (offer.amount(), amount.map(Into::into)) {
+			// TODO: Handle currency case
+			(Some(Amount::Currency { .. }), _) => return Err(SemanticError::UnexpectedCurrency),
+			(Some(_), None) => return Err(SemanticError::MissingAmount),
+			(Some(Amount::Bitcoin { amount_msats: offer_amount_msats }), Some(amount_msats)) => {
+				if amount_msats < *offer_amount_msats {
+					return Err(SemanticError::InsufficientAmount);
+				} else {
+					Some(amount_msats)
+				}
+			},
+			(_, amount_msats) => amount_msats,
+		};
 
-		let quantity = quantity.map(Into::into);
+		if let Some(features) = &features {
+			if features.requires_unknown_bits() {
+				return Err(SemanticError::UnknownRequiredFeatures);
+			}
+		}
+
+		let quantity = match quantity.map(Into::into) {
+			Some(quantity) if offer.is_valid_quantity(quantity) => Some(quantity),
+			_ => return Err(SemanticError::InvalidQuantity),
+		};
+
+		let payer_id = match payer_id {
+			None => return Err(SemanticError::MissingPayerId),
+			Some(payer_id) => payer_id,
+		};
 
 		let payer_note = payer_note.map(Into::into);
 
 		let payer_info = payer_info.map(Into::into);
 
 		Ok(InvoiceRequestContents {
-			offer, chain, amount_msat, features, quantity, payer_id, payer_note, payer_info,
+			offer, chain, amount_msats, features, quantity, payer_id, payer_note, payer_info,
 			signature,
 		})
 	}

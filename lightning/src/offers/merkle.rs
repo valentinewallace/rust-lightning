@@ -10,6 +10,7 @@
 //! Tagged hashes for use in signature calculation and verification.
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use util::ser::{BigSize, Readable};
 
@@ -19,7 +20,18 @@ tlv_stream!(struct SignatureTlvStream {
 	(240, signature: Signature),
 });
 
-pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
+pub(super) fn verify_signature(
+	signature: &Signature, tag: &str, bytes: &[u8], pubkey: PublicKey,
+) -> Result<(), secp256k1::Error> {
+	let tag = sha256::Hash::hash(tag.as_bytes());
+	let merkle_root = root_hash(bytes);
+	let digest = Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap();
+	let pubkey = pubkey.into();
+	let secp_ctx = Secp256k1::verification_only();
+	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
+}
+
+fn root_hash(data: &[u8]) -> sha256::Hash {
 	let mut tlv_stream = TlvStream::new(&data[..]).peekable();
 	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine({
 		let mut engine = sha256::Hash::engine();
@@ -55,7 +67,7 @@ pub(super) fn root_hash(data: &[u8]) -> sha256::Hash {
 	*leaves.first().unwrap()
 }
 
-pub(super) fn tagged_hash<T: AsRef<[u8]>>(tag: sha256::Hash, msg: T) -> sha256::Hash {
+fn tagged_hash<T: AsRef<[u8]>>(tag: sha256::Hash, msg: T) -> sha256::Hash {
 	let engine = tagged_hash_engine(tag);
 	tagged_hash_from_engine(engine, msg)
 }
