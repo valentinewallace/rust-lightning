@@ -48,7 +48,7 @@ impl OfferBuilder {
 		let offer = OfferContents {
 			chains: None, metadata: None, amount: None, description, features: None,
 			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
-			node_id, send_invoice: None,
+			node_id,
 		};
 		OfferBuilder { offer }
 	}
@@ -141,12 +141,6 @@ impl OfferBuilder {
 			self.offer.quantity_max = None;
 		}
 
-		self
-	}
-
-	///
-	pub fn send_invoice(mut self) -> Self {
-		self.offer.send_invoice = Some(SendInvoice);
 		self
 	}
 
@@ -308,7 +302,6 @@ impl OfferContents {
 			quantity_min: self.quantity_min.map(Into::into),
 			quantity_max: self.quantity_max.map(Into::into),
 			node_id: self.node_id.as_ref(),
-			send_invoice: self.send_invoice.as_ref().map(|_| &()),
 		}
 	}
 }
@@ -353,7 +346,6 @@ tlv_stream!(struct OfferTlvStream {
 	(20, quantity_min: u64),
 	(22, quantity_max: u64),
 	(24, node_id: PublicKey),
-	(26, send_invoice: Empty),
 });
 
 #[derive(Clone, Debug, PartialEq)]
@@ -372,11 +364,9 @@ struct OnionMessagePath {
 }
 impl_writeable!(OnionMessagePath, { node_id, encrypted_recipient_data });
 
-type Empty = ();
-
 #[cfg(test)]
 mod tests {
-	use super::{Amount, BlindedPath, Destination, OfferBuilder, OnionMessagePath, SendInvoice};
+	use super::{Amount, BlindedPath, Destination, OfferBuilder, OnionMessagePath};
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
@@ -421,7 +411,6 @@ mod tests {
 		assert_eq!(offer.quantity_min(), 1);
 		assert_eq!(offer.quantity_max(), 1);
 		assert_eq!(offer.node_id(), pubkey());
-		assert_eq!(offer.send_invoice(), None);
 
 		assert_eq!(tlv_stream.chains, None);
 		assert_eq!(tlv_stream.metadata, None);
@@ -435,7 +424,6 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 		assert_eq!(tlv_stream.node_id, Some(&pubkey()));
-		assert_eq!(tlv_stream.send_invoice, None);
 	}
 
 	#[test]
@@ -739,15 +727,5 @@ mod tests {
 		assert_eq!(offer.quantity_max(), 9);
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, Some(9.into()));
-	}
-
-	#[test]
-	fn builds_offer_with_send_invoice() {
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
-			.send_invoice()
-			.build();
-		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.send_invoice(), Some(&SendInvoice));
-		assert_eq!(tlv_stream.send_invoice, Some(&()));
 	}
 }
