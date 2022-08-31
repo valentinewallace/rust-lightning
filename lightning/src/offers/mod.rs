@@ -13,4 +13,4 @@
 mod merkle;
 mod offer;
 
-pub use self::offer::{Amount, BlindedPath, CurrencyCode, Destination, Offer, OfferBuilder};
+pub use self::offer::{Amount, BlindedPath, CurrencyCode, Offer, OfferBuilder};

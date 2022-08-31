@@ -30,25 +30,13 @@ pub struct OfferBuilder {
 	offer: OfferContents,
 }
 
-///
-pub enum Destination {
-	///
-	NodeId(PublicKey),
-	///
-	Path(BlindedPath),
-}
-
 impl OfferBuilder {
 	///
-	pub fn new(description: String, destination: Destination) -> Self {
-		let (node_id, paths) = match destination {
-			Destination::NodeId(node_id) => (Some(node_id), None),
-			Destination::Path(path) => (None, Some(vec![path])),
-		};
+	pub fn new(description: String, node_id: PublicKey) -> Self {
 		let offer = OfferContents {
 			chains: None, metadata: None, amount: None, description, features: None,
-			absolute_expiry: None, issuer: None, paths, quantity_min: None, quantity_max: None,
-			node_id,
+			absolute_expiry: None, issuer: None, paths: None, quantity_min: None,
+			quantity_max: None, node_id: Some(node_id),
 		};
 		OfferBuilder { offer }
 	}
@@ -248,8 +236,7 @@ impl Offer {
 
 	///
 	pub fn node_id(&self) -> PublicKey {
-		self.contents.node_id.unwrap_or_else(||
-			self.contents.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
+		self.contents.node_id.unwrap()
 	}
 
 	#[cfg(test)]
@@ -366,7 +353,7 @@ impl_writeable!(OnionMessagePath, { node_id, encrypted_recipient_data });
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, BlindedPath, Destination, OfferBuilder, OnionMessagePath};
+	use super::{Amount, BlindedPath, OfferBuilder, OnionMessagePath};
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
@@ -395,7 +382,7 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_defaults() {
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey())).build();
+		let offer = OfferBuilder::new("foo".into(), pubkey()).build();
 		let tlv_stream = offer.as_tlv_stream();
 
 		assert_eq!(offer.as_bytes(), &offer.to_bytes()[..]);
@@ -434,20 +421,20 @@ mod tests {
 			genesis_block(Network::Testnet).block_hash(),
 		];
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.chain(Network::Bitcoin)
 			.build();
 		assert_eq!(offer.chain(), block_hash);
 		assert_eq!(offer.as_tlv_stream().chains, Some((&vec![block_hash]).into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.chain(Network::Bitcoin)
 			.chain(Network::Bitcoin)
 			.build();
 		assert_eq!(offer.chain(), block_hash);
 		assert_eq!(offer.as_tlv_stream().chains, Some((&vec![block_hash]).into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build();
@@ -457,13 +444,13 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_metadata() {
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.metadata(vec![42; 32])
 			.build();
 		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
 		assert_eq!(offer.as_tlv_stream().metadata, Some((&vec![42; 32]).into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.metadata(vec![42; 32])
 			.metadata(vec![43; 32])
 			.build();
@@ -476,7 +463,7 @@ mod tests {
 		let bitcoin_amount = Amount::Bitcoin { amount_msats: 1000 };
 		let currency_amount = Amount::Currency { iso4217_code: *b"USD", amount: 10 };
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.amount(bitcoin_amount.clone())
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -484,7 +471,7 @@ mod tests {
 		assert_eq!(tlv_stream.amount, Some(1000.into()));
 		assert_eq!(tlv_stream.currency, None);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.amount(currency_amount.clone())
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -492,7 +479,7 @@ mod tests {
 		assert_eq!(tlv_stream.amount, Some(10.into()));
 		assert_eq!(tlv_stream.currency, Some(b"USD"));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.amount(currency_amount.clone())
 			.amount(bitcoin_amount.clone())
 			.build();
@@ -503,13 +490,13 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_features() {
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.features(OfferFeatures::known())
 			.build();
 		assert_eq!(offer.features(), Some(&OfferFeatures::known()));
 		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::known()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.features(OfferFeatures::known())
 			.features(OfferFeatures::empty())
 			.build();
@@ -522,14 +509,14 @@ mod tests {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.absolute_expiry(future_expiry)
 			.build();
 		assert!(!offer.is_expired());
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(future_expiry.as_secs().into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.absolute_expiry(future_expiry)
 			.absolute_expiry(past_expiry)
 			.build();
@@ -566,7 +553,7 @@ mod tests {
 			},
 		];
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.path(paths[0].clone())
 			.path(paths[1].clone())
 			.build();
@@ -576,26 +563,17 @@ mod tests {
 		assert_ne!(pubkey(), blinded_pubkey(44));
 		assert_eq!(tlv_stream.paths, Some((&paths).into()));
 		assert_eq!(tlv_stream.node_id, Some(&pubkey()));
-
-		let offer = OfferBuilder::new("foo".into(), Destination::Path(paths[0].clone()))
-			.path(paths[1].clone())
-			.build();
-		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.paths(), Some(&paths));
-		assert_eq!(offer.node_id(), blinded_pubkey(44));
-		assert_eq!(tlv_stream.paths, Some((&paths).into()));
-		assert_eq!(tlv_stream.node_id, None);
 	}
 
 	#[test]
 	fn builds_offer_with_issuer() {
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.issuer("bar".into())
 			.build();
 		assert_eq!(offer.issuer(), Some(&String::from("bar")));
 		assert_eq!(offer.as_tlv_stream().issuer, Some((&String::from("bar")).into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.issuer("bar".into())
 			.issuer("baz".into())
 			.build();
@@ -609,7 +587,7 @@ mod tests {
 		let five = NonZeroU64::new(5).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_fixed(one)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -618,7 +596,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_fixed(ten)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -627,7 +605,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, Some(10.into()));
 		assert_eq!(tlv_stream.quantity_max, Some(10.into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_fixed(ten)
 			.quantity_fixed(five)
 			.build();
@@ -637,7 +615,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, Some(5.into()));
 		assert_eq!(tlv_stream.quantity_max, Some(5.into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(..ten)
 			.quantity_fixed(five)
 			.build();
@@ -654,7 +632,7 @@ mod tests {
 		let five = NonZeroU64::new(5).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(..)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -663,7 +641,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, Some(1.into()));
 		assert_eq!(tlv_stream.quantity_max, None);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(..ten)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -672,7 +650,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, Some(9.into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(one..ten)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -681,7 +659,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, Some(9.into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(five..=ten)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -691,7 +669,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_max, Some(10.into()));
 
 		let one = NonZeroU64::new(1).unwrap();
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(one..=one)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -700,7 +678,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(five..=five)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -709,7 +687,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, Some(5.into()));
 		assert_eq!(tlv_stream.quantity_max, Some(5.into()));
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_range(ten..five)
 			.build();
 		let tlv_stream = offer.as_tlv_stream();
@@ -718,7 +696,7 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_min, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 
-		let offer = OfferBuilder::new("foo".into(), Destination::NodeId(pubkey()))
+		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.quantity_fixed(five)
 			.quantity_range(..ten)
 			.build();
