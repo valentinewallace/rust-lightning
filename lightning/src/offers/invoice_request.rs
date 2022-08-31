@@ -16,10 +16,10 @@ use core::convert::TryFrom;
 use core::str::FromStr;
 use io;
 use ln::features::OfferFeatures;
-use offers::{PayerTlvStream, self};
 use offers::merkle::{SignatureTlvStream, self};
 use offers::offer::{Amount, OfferContents, OfferTlvStream, self};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
+use offers::payer::{PayerContents, PayerTlvStream, self};
 use util::ser::{Readable, WithoutLength, Writeable, Writer};
 
 ///
@@ -30,6 +30,7 @@ pub struct InvoiceRequest {
 
 ///
 pub(crate) struct InvoiceRequestContents {
+	payer: PayerContents,
 	offer: OfferContents,
 	chain: Option<BlockHash>,
 	amount_msats: Option<u64>,
@@ -37,7 +38,6 @@ pub(crate) struct InvoiceRequestContents {
 	quantity: Option<u64>,
 	payer_id: PublicKey,
 	payer_note: Option<String>,
-	payer_info: Option<Vec<u8>>,
 	signature: Option<Signature>,
 }
 
@@ -49,8 +49,8 @@ impl AsRef<[u8]> for InvoiceRequest {
 
 impl InvoiceRequestContents {
 	pub(super) fn as_tlv_stream(&self) -> ReferencedFullInvoiceRequestTlvStream {
-		let payer = offers::reference::PayerTlvStream {
-			payer_info: self.payer_info.as_ref().map(Into::into),
+		let payer = payer::reference::PayerTlvStream {
+			payer_info: self.payer.0.as_ref().map(Into::into),
 		};
 
 		let offer = self.offer.as_tlv_stream();
@@ -113,7 +113,7 @@ type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
 
 type ReferencedFullInvoiceRequestTlvStream<'a> = (
-	offers::reference::PayerTlvStream<'a>,
+	payer::reference::PayerTlvStream<'a>,
 	offer::reference::OfferTlvStream<'a>,
 	reference::InvoiceRequestTlvStream<'a>,
 	merkle::reference::SignatureTlvStream<'a>,
@@ -146,6 +146,7 @@ impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 			SignatureTlvStream { signature },
 		) = tlv_stream;
 
+		let payer = PayerContents(payer_info.map(Into::into));
 		let offer = OfferContents::try_from(offer_tlv_stream)?;
 
 		let chain = match chain {
@@ -187,11 +188,8 @@ impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 		let payer_note = payer_note.map(Into::into);
 
-		let payer_info = payer_info.map(Into::into);
-
 		Ok(InvoiceRequestContents {
-			offer, chain, amount_msats, features, quantity, payer_id, payer_note, payer_info,
-			signature,
+			payer, offer, chain, amount_msats, features, quantity, payer_id, payer_note, signature,
 		})
 	}
 }

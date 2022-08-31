@@ -14,10 +14,7 @@ mod invoice_request;
 mod merkle;
 mod offer;
 mod parse;
+mod payer;
 
 pub use self::offer::{Amount, BlindedPath, CurrencyCode, Offer, OfferBuilder};
 pub use self::parse::{ParseError, SemanticError};
-
-tlv_stream!(struct PayerTlvStream {
-	(0, payer_info: Vec<u8>),
-});
