@@ -9,18 +9,121 @@
 
 //! Data structures and encoding for `invoice_request` messages.
 
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::{Message, PublicKey, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use core::str::FromStr;
 use io;
 use ln::features::OfferFeatures;
 use offers::merkle::{SignatureTlvStream, self};
-use offers::offer::{Amount, OfferContents, OfferTlvStream, self};
+use offers::offer::{Offer, OfferContents, OfferTlvStream, self};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
 use offers::payer::{PayerContents, PayerTlvStream, self};
 use util::ser::{Readable, WithoutLength, Writeable, Writer};
+
+///
+const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
+
+///
+pub struct InvoiceRequestBuilder<'a> {
+	offer: &'a Offer,
+	invoice_request: InvoiceRequestContents,
+}
+
+impl<'a> InvoiceRequestBuilder<'a> {
+	pub(super) fn new(offer: &'a Offer, payer_id: PublicKey) -> Self {
+		Self {
+			offer,
+			invoice_request: InvoiceRequestContents {
+				payer: PayerContents(None), offer: offer.contents.clone(), chain: None,
+				amount_msats: None, features: None, quantity: None, payer_id, payer_note: None,
+				signature: None,
+			},
+		}
+	}
+
+	///
+	pub fn payer_info(mut self, payer_info: Vec<u8>) -> Self {
+		self.invoice_request.payer = PayerContents(Some(payer_info));
+		self
+	}
+
+	///
+	pub fn chain(mut self, network: Network) -> Result<Self, SemanticError> {
+		let block_hash = genesis_block(network).block_hash();
+		if !self.offer.supports_chain(block_hash) {
+			return Err(SemanticError::UnsupportedChain)
+		}
+
+		self.invoice_request.chain = Some(block_hash);
+		Ok(self)
+	}
+
+	///
+	pub fn amount_msats(mut self, amount_msats: u64) -> Result<Self, SemanticError> {
+		if !self.offer.is_sufficient_amount(amount_msats) {
+			return Err(SemanticError::InsufficientAmount);
+		}
+
+		self.invoice_request.amount_msats = Some(amount_msats);
+		Ok(self)
+	}
+
+	///
+	pub fn features(mut self, features: OfferFeatures) -> Self {
+		self.invoice_request.features = Some(features);
+		self
+	}
+
+	///
+	pub fn quantity(mut self, quantity: u64) -> Result<Self, SemanticError> {
+		if !self.offer.is_valid_quantity(quantity) {
+			return Err(SemanticError::InvalidQuantity);
+		}
+
+		self.invoice_request.quantity = Some(quantity);
+		Ok(self)
+	}
+
+	///
+	pub fn payer_note(mut self, payer_note: String) -> Self {
+		self.invoice_request.payer_note = Some(payer_note);
+		self
+	}
+
+	///
+	pub fn build_signed<F>(mut self, sign: F) -> Result<InvoiceRequest, secp256k1::Error>
+	where F: FnOnce(&Message) -> Signature
+	{
+		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
+		// unknown TLV records, which are not stored in `OfferContents`.
+		let (payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream, _) =
+			self.invoice_request.as_tlv_stream();
+		let offer_bytes = WithoutLength(&self.offer.bytes);
+		let unsigned_tlv_stream = (payer_tlv_stream, offer_bytes, invoice_request_tlv_stream);
+
+		let mut bytes = Vec::new();
+		unsigned_tlv_stream.write(&mut bytes).unwrap();
+
+		let pubkey = self.invoice_request.payer_id;
+		let signature = merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?;
+		self.invoice_request.signature = Some(signature);
+
+		// Append the signature TLV record to the bytes.
+		let signature_tlv_stream = merkle::reference::SignatureTlvStream {
+			signature: self.invoice_request.signature.as_ref(),
+		};
+		signature_tlv_stream.write(&mut bytes).unwrap();
+
+		Ok(InvoiceRequest {
+			bytes,
+			contents: self.invoice_request,
+		})
+	}
+}
 
 ///
 pub struct InvoiceRequest {
@@ -169,8 +272,7 @@ impl FromStr for InvoiceRequest {
 		let contents = InvoiceRequestContents::try_from(tlv_stream)?;
 
 		if let Some(signature) = &contents.signature {
-			let tag = concat!("lightning", "invoice_request", "signature");
-			merkle::verify_signature(signature, tag, &bytes, contents.payer_id)?;
+			merkle::verify_signature(signature, SIGNATURE_TAG, &bytes, contents.payer_id)?;
 		}
 
 		Ok(InvoiceRequest { bytes, contents })
@@ -191,25 +293,22 @@ impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 		let payer = PayerContents(payer_info.map(Into::into));
 		let offer = OfferContents::try_from(offer_tlv_stream)?;
 
-		let chain = match chain {
-			None => None,
-			Some(chain) if chain == offer.chain() => Some(chain),
-			Some(_) => return Err(SemanticError::UnsupportedChain),
-		};
+		if !offer.supports_chain(chain.unwrap_or_else(|| offer.implied_chain())) {
+			return Err(SemanticError::UnsupportedChain);
+		}
 
 		// TODO: Determine whether quantity should be accounted for
 		let amount_msats = match (offer.amount(), amount.map(Into::into)) {
 			// TODO: Handle currency case
-			(Some(Amount::Currency { .. }), _) => return Err(SemanticError::UnexpectedCurrency),
 			(Some(_), None) => return Err(SemanticError::MissingAmount),
-			(Some(Amount::Bitcoin { amount_msats: offer_amount_msats }), Some(amount_msats)) => {
-				if amount_msats < *offer_amount_msats {
+			(Some(_), Some(amount_msats)) => {
+				if !offer.is_sufficient_amount(amount_msats) {
 					return Err(SemanticError::InsufficientAmount);
 				} else {
 					Some(amount_msats)
 				}
 			},
-			(_, amount_msats) => amount_msats,
+			(None, amount_msats) => amount_msats,
 		};
 
 		if let Some(features) = &features {

@@ -20,6 +20,7 @@ use core::str::FromStr;
 use core::time::Duration;
 use io;
 use ln::features::OfferFeatures;
+use offers::invoice_request::InvoiceRequestBuilder;
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
 use util::ser::{WithLength, Writeable, Writer};
 
@@ -150,8 +151,8 @@ impl OfferBuilder {
 ///
 #[derive(Clone, Debug)]
 pub struct Offer {
-	bytes: Vec<u8>,
-	contents: OfferContents,
+	pub(super) bytes: Vec<u8>,
+	pub(super) contents: OfferContents,
 }
 
 ///
@@ -177,6 +178,11 @@ impl Offer {
 	}
 
 	///
+	pub fn supports_chain(&self, chain: BlockHash) -> bool {
+		self.contents.supports_chain(chain)
+	}
+
+	///
 	pub fn metadata(&self) -> Option<&Vec<u8>> {
 		self.contents.metadata.as_ref()
 	}
@@ -184,6 +190,11 @@ impl Offer {
 	///
 	pub fn amount(&self) -> Option<&Amount> {
 		self.contents.amount()
+	}
+
+	///
+	pub fn is_sufficient_amount(&self, amount_msats: u64) -> bool {
+		self.contents.is_sufficient_amount(amount_msats)
 	}
 
 	///
@@ -248,6 +259,11 @@ impl Offer {
 		self.contents.node_id.unwrap()
 	}
 
+	///
+	pub fn request_invoice(&self, payer_id: PublicKey) -> InvoiceRequestBuilder {
+		InvoiceRequestBuilder::new(self, payer_id)
+	}
+
 	#[cfg(test)]
 	fn as_bytes(&self) -> &[u8] {
 		&self.bytes
@@ -278,13 +294,34 @@ impl OfferContents {
 		self.chains
 			.as_ref()
 			.and_then(|chains| chains.first().copied())
-			.unwrap_or_else(|| genesis_block(Network::Bitcoin).block_hash())
+			.unwrap_or_else(|| self.implied_chain())
+	}
+
+	///
+	pub fn supports_chain(&self, chain: BlockHash) -> bool {
+		self.chains
+			.as_ref()
+			.map(|chains| chains.contains(&chain))
+			.unwrap_or_else(||chain == self.implied_chain())
+	}
+
+	pub(super) fn implied_chain(&self) -> BlockHash {
+		genesis_block(Network::Bitcoin).block_hash()
 	}
 
 	pub fn amount(&self) -> Option<&Amount> {
 		self.amount.as_ref()
 	}
 
+	pub fn is_sufficient_amount(&self, amount_msats: u64) -> bool {
+		match self.amount {
+			Some(Amount::Currency { .. }) => unimplemented!(),
+			Some(Amount::Bitcoin { amount_msats: offer_amount_msats }) => {
+				amount_msats >= offer_amount_msats
+			},
+			None => true,
+		}
+	}
 	pub fn quantity_min(&self) -> u64 {
 		self.quantity_min.unwrap_or(1)
 	}
@@ -526,6 +563,7 @@ mod tests {
 
 		assert_eq!(offer.as_bytes(), &offer.to_bytes()[..]);
 		assert_eq!(offer.chain(), genesis_block(Network::Bitcoin).block_hash());
+		assert!(offer.supports_chain(genesis_block(Network::Bitcoin).block_hash()));
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), "foo");
@@ -563,6 +601,7 @@ mod tests {
 		let offer = OfferBuilder::new("foo".into(), pubkey())
 			.chain(Network::Bitcoin)
 			.build();
+		assert!(offer.supports_chain(block_hash));
 		assert_eq!(offer.chain(), block_hash);
 		assert_eq!(offer.as_tlv_stream().chains, Some((&vec![block_hash]).into()));
 
@@ -577,6 +616,8 @@ mod tests {
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build();
+		assert!(offer.supports_chain(block_hashes[0]));
+		assert!(offer.supports_chain(block_hashes[1]));
 		assert_eq!(offer.chain(), block_hashes[0]);
 		assert_eq!(offer.as_tlv_stream().chains, Some((&block_hashes).into()));
 	}

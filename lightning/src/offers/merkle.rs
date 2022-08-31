@@ -20,15 +20,35 @@ tlv_stream!(struct SignatureTlvStream {
 	(240, signature: Signature),
 });
 
+pub(super) fn sign_message<F>(
+	sign: F, tag: &str, bytes: &[u8], pubkey: PublicKey,
+) -> Result<Signature, secp256k1::Error>
+where
+	F: FnOnce(&Message) -> Signature
+{
+	let digest = message_digest(tag, bytes);
+	let signature = sign(&digest);
+
+	let pubkey = pubkey.into();
+	let secp_ctx = Secp256k1::verification_only();
+	secp_ctx.verify_schnorr(&signature, &digest, &pubkey)?;
+
+	Ok(signature)
+}
+
 pub(super) fn verify_signature(
 	signature: &Signature, tag: &str, bytes: &[u8], pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
-	let tag = sha256::Hash::hash(tag.as_bytes());
-	let merkle_root = root_hash(bytes);
-	let digest = Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap();
+	let digest = message_digest(tag, bytes);
 	let pubkey = pubkey.into();
 	let secp_ctx = Secp256k1::verification_only();
 	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
+}
+
+fn message_digest(tag: &str, bytes: &[u8]) -> Message {
+	let tag = sha256::Hash::hash(tag.as_bytes());
+	let merkle_root = root_hash(bytes);
+	Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap()
 }
 
 fn root_hash(data: &[u8]) -> sha256::Hash {
