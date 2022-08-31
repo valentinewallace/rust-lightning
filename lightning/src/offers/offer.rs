@@ -427,7 +427,7 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
 		let OfferTlvStream {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
-			issuer, quantity_min, quantity_max, node_id, send_invoice,
+			issuer, quantity_min, quantity_max, node_id,
 		} = tlv_stream;
 
 		let supported_chains = [
@@ -491,11 +491,9 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			}
 		}
 
-		let send_invoice = send_invoice.map(|_| SendInvoice);
-
 		Ok(OfferContents {
 			chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
-			quantity_min, quantity_max, node_id, send_invoice,
+			quantity_min, quantity_max, node_id,
 		})
 	}
 }
