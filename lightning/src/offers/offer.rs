@@ -44,7 +44,6 @@ pub(crate) struct OfferContents {
 	quantity_min: Option<u64>,
 	quantity_max: Option<u64>,
 	node_id: Option<PublicKey>,
-	send_invoice: Option<SendInvoice>,
 }
 
 impl Offer {
@@ -120,11 +119,6 @@ impl Offer {
 		self.contents.node_id.unwrap_or_else(||
 			self.contents.paths.as_ref().unwrap().first().unwrap().path.0.last().unwrap().node_id)
 	}
-
-	///
-	pub fn send_invoice(&self) -> Option<&SendInvoice> {
-		self.contents.send_invoice.as_ref()
-	}
 }
 
 /// The amount required for an item in an [`Offer`] denominated in either bitcoin or another
@@ -147,10 +141,6 @@ pub enum Amount {
 
 /// An ISO 4712 three-letter currency code (e.g., USD).
 pub type CurrencyCode = [u8; 3];
-
-///
-#[derive(Clone, Debug)]
-pub struct SendInvoice;
 
 #[derive(Clone, Debug)]
 ///
