@@ -386,7 +386,7 @@ pub enum SemanticError {
 	///
 	MissingDescription,
 	///
-	MissingDestination,
+	MissingNodeId,
 	///
 	MissingPaths,
 	///
@@ -465,10 +465,9 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 
 		let issuer = issuer.map(Into::into);
 
-		let (node_id, paths) = match (node_id, paths.map(Into::<Vec<_>>::into)) {
-			(None, None) => return Err(SemanticError::MissingDestination),
-			(_, Some(paths)) if paths.is_empty() => return Err(SemanticError::MissingPaths),
-			(_, paths) => (node_id, paths),
+		let paths = match paths.map(Into::<Vec<_>>::into) {
+			Some(paths) if paths.is_empty() => return Err(SemanticError::MissingPaths),
+			paths => paths,
 		};
 
 		let quantity_min = quantity_min.map(Into::into);
@@ -489,6 +488,10 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			if quantity_max < 1 {
 				return Err(SemanticError::InvalidQuantity);
 			}
+		}
+
+		if node_id.is_none() {
+			return Err(SemanticError::MissingNodeId);
 		}
 
 		Ok(OfferContents {
