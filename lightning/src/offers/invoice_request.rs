@@ -20,7 +20,7 @@ use offers::{PayerTlvStream, self};
 use offers::merkle::{SignatureTlvStream, self};
 use offers::offer::{Amount, OfferContents, OfferTlvStream, self};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
-use util::ser::{Writeable, Writer};
+use util::ser::{WithoutLength, Writeable, Writer};
 
 ///
 pub struct InvoiceRequest {
@@ -69,6 +69,12 @@ impl InvoiceRequestContents {
 		};
 
 		(payer, offer, invoice_request, signature)
+	}
+}
+
+impl Writeable for InvoiceRequest {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
