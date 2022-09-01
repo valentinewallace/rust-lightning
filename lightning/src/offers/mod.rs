@@ -15,6 +15,7 @@ mod offer;
 mod parse;
 
 pub use self::offer::{Amount, BlindedPath, CurrencyCode, Offer, OfferBuilder};
+pub use self::parse::{ParseError, SemanticError};
 
 tlv_stream!(struct PayerTlvStream {
 	(0, payer_info: Vec<u8>),
