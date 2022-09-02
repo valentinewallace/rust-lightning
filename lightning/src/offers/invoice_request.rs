@@ -54,7 +54,8 @@ const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "sig
 ///     .features(OfferFeatures::known())
 ///     .quantity(5)?
 ///     .payer_note("foo".to_string())
-///     .build_signed(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))?
+///     .build()?
+///     .sign(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))?
 ///     .write(&mut buffer)
 ///     .unwrap();
 /// # Ok(())
@@ -126,8 +127,35 @@ impl<'a> InvoiceRequestBuilder<'a> {
 		self
 	}
 
-	///
-	pub fn build_signed<F>(mut self, sign: F) -> Result<InvoiceRequest, secp256k1::Error>
+	/// Builds the [`InvoiceRequest`] after checking for valid semantics.
+	pub fn build(self) -> Result<UnsignedInvoiceRequest<'a>, SemanticError> {
+		let chain = self.invoice_request.chain.unwrap_or_else(|| self.offer.implied_chain());
+		if !self.offer.supports_chain(chain) {
+			return Err(SemanticError::UnsupportedChain);
+		}
+
+		if self.offer.amount().is_some() && self.invoice_request.amount_msats.is_none() {
+			return Err(SemanticError::MissingAmount);
+		}
+
+		if self.offer.expects_quantity() && self.invoice_request.quantity.is_none() {
+			return Err(SemanticError::InvalidQuantity);
+		}
+
+		let InvoiceRequestBuilder { offer, invoice_request } = self;
+		Ok(UnsignedInvoiceRequest { offer, invoice_request })
+	}
+}
+
+/// A semantically valid [`InvoiceRequest`] that hasn't been signed.
+pub struct UnsignedInvoiceRequest<'a> {
+	offer: &'a Offer,
+	invoice_request: InvoiceRequestContents,
+}
+
+impl<'a> UnsignedInvoiceRequest<'a> {
+	/// Signs the invoice request using the given function.
+	pub fn sign<F>(mut self, sign: F) -> Result<InvoiceRequest, secp256k1::Error>
 	where F: FnOnce(&Message) -> Signature
 	{
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained

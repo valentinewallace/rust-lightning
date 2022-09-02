@@ -182,6 +182,10 @@ impl Offer {
 		self.contents.supports_chain(chain)
 	}
 
+	pub(super) fn implied_chain(&self) -> BlockHash {
+		self.contents.implied_chain()
+	}
+
 	///
 	pub fn metadata(&self) -> Option<&Vec<u8>> {
 		self.contents.metadata.as_ref()
