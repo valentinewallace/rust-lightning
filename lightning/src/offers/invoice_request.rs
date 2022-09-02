@@ -8,6 +8,43 @@
 // licenses.
 
 //! Data structures and encoding for `invoice_request` messages.
+//!
+//! An [`InvoiceRequest`] can be either built from a parsed [`Offer`] for the user-pays-merchant
+//! flow or built directly for the merchant-pays-user flow.
+//!
+//! ```
+//! extern crate bitcoin;
+//! extern crate lightning;
+//!
+//! use bitcoin::network::constants::Network;
+//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use lightning::ln::features::OfferFeatures;
+//! use lightning::offers::Offer;
+//! use lightning::util::ser::Writeable;
+//!
+//! # fn parse() -> Result<(), lightning::offers::ParseError> {
+//! let secp_ctx = Secp256k1::new();
+//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! let pubkey = PublicKey::from(keys);
+//! let mut buffer = Vec::new();
+//!
+//! // User-pays-merchant flow
+//! "lno1qcp4256ypq"
+//!     .parse::<Offer>()?
+//!     .request_invoice(pubkey)
+//!     .payer_info(vec![42; 64])
+//!     .chain(Network::Testnet)?
+//!     .amount_msats(1000)?
+//!     .features(OfferFeatures::known())
+//!     .quantity(5)?
+//!     .payer_note("foo".to_string())
+//!     .build()?
+//!     .sign(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))?
+//!     .write(&mut buffer)
+//!     .unwrap();
+//! # Ok(())
+//! # }
+//! ```
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
@@ -29,38 +66,9 @@ const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "sig
 
 /// Builds an [`InvoiceRequest`] from an [`Offer`] for the user-pays-merchant flow.
 ///
-/// ```
-/// extern crate bitcoin;
-/// extern crate lightning;
+/// See [module-level documentation] for usage.
 ///
-/// use bitcoin::network::constants::Network;
-/// use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-/// use lightning::ln::features::OfferFeatures;
-/// use lightning::offers::Offer;
-/// use lightning::util::ser::Writeable;
-///
-/// # fn parse() -> Result<(), lightning::offers::ParseError> {
-/// let secp_ctx = Secp256k1::new();
-/// let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
-/// let pubkey = PublicKey::from(keys);
-/// let mut buffer = Vec::new();
-///
-/// "lno1qcp4256ypq"
-///     .parse::<Offer>()?
-///     .request_invoice(pubkey)
-///     .payer_info(vec![42; 64])
-///     .chain(Network::Testnet)?
-///     .amount_msats(1000)?
-///     .features(OfferFeatures::known())
-///     .quantity(5)?
-///     .payer_note("foo".to_string())
-///     .build()?
-///     .sign(|digest| secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))?
-///     .write(&mut buffer)
-///     .unwrap();
-/// # Ok(())
-/// # }
-/// ```
+/// [module-level documentation]: self
 pub struct InvoiceRequestBuilder<'a> {
 	offer: &'a Offer,
 	invoice_request: InvoiceRequestContents,
