@@ -177,6 +177,7 @@ impl TryFrom<FullInvoiceRequestTlvStream> for InvoiceRequestContents {
 		}
 
 		let quantity = match quantity.map(Into::into) {
+			None if !offer.expects_quantity() => None,
 			Some(quantity) if offer.is_valid_quantity(quantity) => Some(quantity),
 			_ => return Err(SemanticError::InvalidQuantity),
 		};

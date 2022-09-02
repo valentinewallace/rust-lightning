@@ -239,6 +239,11 @@ impl Offer {
 	}
 
 	///
+	pub fn expects_quantity(&self) -> bool {
+		self.contents.expects_quantity()
+	}
+
+	///
 	pub fn node_id(&self) -> PublicKey {
 		self.contents.node_id.unwrap()
 	}
@@ -290,11 +295,13 @@ impl OfferContents {
 	}
 
 	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
-		if self.quantity_min.is_none() && self.quantity_max.is_none() {
-			false
-		} else {
-			quantity >= self.quantity_min() && quantity <= self.quantity_max()
-		}
+		self.expects_quantity()
+			&& quantity >= self.quantity_min()
+			&& quantity <= self.quantity_max()
+	}
+
+	pub fn expects_quantity(&self) -> bool {
+		self.quantity_min.is_some() || self.quantity_max.is_some()
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> reference::OfferTlvStream {
