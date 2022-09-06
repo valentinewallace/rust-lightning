@@ -41,6 +41,48 @@ pub(crate) struct InvoiceRequestContents {
 	signature: Option<Signature>,
 }
 
+impl InvoiceRequest {
+	///
+	pub fn payer_info(&self) -> Option<&Vec<u8>> {
+		self.contents.payer.0.as_ref()
+	}
+
+	///
+	pub fn chain(&self) -> BlockHash {
+		self.contents.chain.unwrap_or_else(|| self.contents.offer.chain())
+	}
+
+	///
+	pub fn amount_msats(&self) -> Option<u64> {
+		self.contents.amount_msats
+	}
+
+	///
+	pub fn features(&self) -> Option<&OfferFeatures> {
+		self.contents.features.as_ref()
+	}
+
+	///
+	pub fn quantity(&self) -> Option<u64> {
+		self.contents.quantity
+	}
+
+	///
+	pub fn payer_id(&self) -> PublicKey {
+		self.contents.payer_id
+	}
+
+	///
+	pub fn payer_note(&self) -> Option<&String> {
+		self.contents.payer_note.as_ref()
+	}
+
+	///
+	pub fn signature(&self) -> Option<Signature> {
+		self.contents.signature
+	}
+}
+
 impl AsRef<[u8]> for InvoiceRequest {
 	fn as_ref(&self) -> &[u8] {
 		&self.bytes
