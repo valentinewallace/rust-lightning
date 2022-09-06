@@ -20,7 +20,7 @@ use offers::{PayerTlvStream, self};
 use offers::merkle::{SignatureTlvStream, self};
 use offers::offer::{Amount, OfferContents, OfferTlvStream, self};
 use offers::parse::{Bech32Encode, ParseError, SemanticError};
-use util::ser::{WithoutLength, Writeable, Writer};
+use util::ser::{Readable, WithoutLength, Writeable, Writer};
 
 ///
 pub struct InvoiceRequest {
@@ -81,6 +81,16 @@ impl Writeable for InvoiceRequest {
 impl Writeable for InvoiceRequestContents {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.as_tlv_stream().write(writer)
+	}
+}
+
+impl TryFrom<Vec<u8>> for InvoiceRequest {
+	type Error = ParseError;
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let tlv_stream: FullInvoiceRequestTlvStream = Readable::read(&mut &bytes[..])?;
+		let contents = InvoiceRequestContents::try_from(tlv_stream)?;
+		Ok(InvoiceRequest { bytes, contents })
 	}
 }
 
