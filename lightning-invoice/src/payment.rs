@@ -144,6 +144,7 @@ use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
+use lightning::offers::Offer;
 use lightning::routing::scoring::{LockableScore, Score};
 use lightning::routing::router::{PaymentParameters, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
@@ -165,7 +166,7 @@ use std::time::SystemTime;
 /// See [module-level documentation] for details.
 ///
 /// [module-level documentation]: crate::payment
-pub type InvoicePayer<P, R, S, L, E> = InvoicePayerUsingTime::<P, R, S, L, E, ConfiguredTime>;
+pub type InvoicePayer<P, R, S, O, L, E> = InvoicePayerUsingTime::<P, R, S, O, L, E, ConfiguredTime>;
 
 #[cfg(not(feature = "no-std"))]
 type ConfiguredTime = std::time::Instant;
@@ -175,20 +176,23 @@ use time_utils;
 type ConfiguredTime = time_utils::Eternity;
 
 /// (C-not exported) generally all users should use the [`InvoicePayer`] type alias.
-pub struct InvoicePayerUsingTime<P: Deref, R, S: Deref, L: Deref, E: EventHandler, T: Time>
+pub struct InvoicePayerUsingTime<P: Deref, R, S: Deref, O: Deref, L: Deref, E: EventHandler, T: Time>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
+	O::Target: OnionMessenger,
 	L::Target: Logger,
 {
 	payer: P,
 	router: R,
 	scorer: S,
+	onion_messenger: O,
 	logger: L,
 	event_handler: E,
 	/// Caches the overall attempts at making a payment, which is updated prior to retrying.
 	payment_cache: Mutex<HashMap<PaymentHash, PaymentAttempts<T>>>,
+	invoice_negotiation_cache: Mutex<HashMap<PaymentId, PaymentAttempts<T>>>,
 	retry: Retry,
 }
 
@@ -260,6 +264,15 @@ pub trait Router<S: Score> {
 	) -> Result<Route, LightningError>;
 }
 
+///
+pub trait OnionMessenger {
+	///
+	fn request_invoice(offer: &Offer, amount_msat: Option<u64>, quantity: Option<u64>) -> Result<(), ()>;
+
+	///
+	fn release_pending_invoice(&self) -> Option<Invoice>;
+}
+
 /// Strategies available to retry payment path failures for an [`Invoice`].
 ///
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -299,11 +312,12 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, S, L, E, T>
+impl<P: Deref, R, S: Deref, O: Deref, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, S, O, L, E, T>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
+	O::Target: OnionMessenger,
 	L::Target: Logger,
 {
 	/// Creates an invoice payer that retries failed payment paths.
@@ -311,12 +325,13 @@ where
 	/// Will forward any [`Event::PaymentPathFailed`] events to the decorated `event_handler` once
 	/// `retry` has been exceeded for a given [`Invoice`].
 	pub fn new(
-		payer: P, router: R, scorer: S, logger: L, event_handler: E, retry: Retry
+		payer: P, router: R, scorer: S, onion_messenger: O, logger: L, event_handler: E, retry: Retry
 	) -> Self {
 		Self {
 			payer,
 			router,
 			scorer,
+			onion_messenger,
 			logger,
 			event_handler,
 			payment_cache: Mutex::new(HashMap::new()),
@@ -335,6 +350,16 @@ where
 		} else {
 			self.pay_invoice_using_amount(invoice, None)
 		}
+	}
+
+	pub fn pay_offer(&self, offer: &Offer, amount: Option<u64>, quantity: Option<u64>) -> Result<PaymentId, ()> {
+		if self.invoice_requests.contains(offer) { return Err(()) } // We're already waiting on an invoice for this offer
+		self.onion_messenger.request_invoice(offer, amount, quantity)
+	}
+
+	pub fn retry_pay_offer(&self, offer: &Offer, amount: Option<u64>, quantity: Option<u64>) -> Result<(), ()> {
+		if !self.invoice_requests.contains(offer) { return Err(()) } // We're not waiting on an invoice for this offer
+		if self.
 	}
 
 	/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
@@ -540,11 +565,12 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, S, L, E, T>
+impl<P: Deref, R, S: Deref, O: Deref, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, S, O, L, E, T>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
+	O::Target: OnionMessenger,
 	L::Target: Logger,
 {
 	fn handle_event(&self, event: &Event) {
