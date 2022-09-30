@@ -175,7 +175,8 @@ macro_rules! decode_tlv {
 }
 
 macro_rules! decode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
+		($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+		 $(, ($custom_type: tt, $custom_value: ident, $custom_range_min: expr, $custom_range_max: expr))?) => { {
 		use ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
@@ -226,10 +227,21 @@ macro_rules! decode_tlv_stream {
 						return Err(DecodeError::InvalidValue);
 					}
 				},)*
-				x if x % 2 == 0 => {
-					return Err(DecodeError::UnknownRequiredFeature);
-				},
-				_ => {},
+				t => {
+					$(
+						if t >= $custom_range_min && t < $custom_range_max {
+							if $custom_type.is_some() {
+								return Err(DecodeError::InvalidValue);
+							}
+							$custom_type = Some(t);
+							decode_tlv!(s, $custom_value, vec_type);
+							continue 'tlv_read;
+						}
+					)?
+					if t % 2 == 0 {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
+				}
 			}
 			s.eat_remaining()?;
 		}

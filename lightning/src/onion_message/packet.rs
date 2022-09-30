@@ -99,18 +99,18 @@ pub(super) enum Payload {
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
 		reply_path: Option<BlindedRoute>,
-		// Coming soon:
-		// message: Message,
+		message: Tlv,
 	}
 }
 
-// Coming soon:
-// enum Message {
-// 	InvoiceRequest(InvoiceRequest),
-// 	Invoice(Invoice),
-//	InvoiceError(InvoiceError),
-//	CustomMessage<T>,
-// }
+#[derive(Clone, Debug)]
+///
+pub struct Tlv {
+	///
+	pub tag: u64,
+	///
+	pub value: Vec<u8>,
+}
 
 /// Forward control TLVs in their blinded and unblinded form.
 pub(super) enum ForwardControlTlvs {
@@ -141,11 +141,13 @@ impl Writeable for (Payload, [u8; 32]) {
 				})
 			},
 			Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path
+				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path,
+				message: Tlv { tag, value, },
 			} => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, encrypted_bytes, vec_type)
+					(4, encrypted_bytes, vec_type),
+					(*tag, value, vec_type)
 				})
 			},
 			Payload::Forward(ForwardControlTlvs::Unblinded(control_tlvs)) => {
@@ -156,11 +158,13 @@ impl Writeable for (Payload, [u8; 32]) {
 			},
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs), reply_path,
+				message: Tlv { tag, value, },
 			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, write_adapter, required)
+					(4, write_adapter, required),
+					(*tag, value, vec_type)
 				})
 			},
 		}
@@ -176,10 +180,11 @@ impl ReadableArgs<SharedSecret> for Payload {
 		let mut reply_path: Option<BlindedRoute> = None;
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		let (mut message_type, mut message_bytes) = (None, None);
 		decode_tlv_stream!(&mut rd, {
 			(2, reply_path, option),
-			(4, read_adapter, (option: LengthReadableArgs, rho))
-		});
+			(4, read_adapter, (option: LengthReadableArgs, rho)),
+		}, (message_type, message_bytes, 64, u64::max_value()));
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 
 		match read_adapter {
@@ -188,8 +193,15 @@ impl ReadableArgs<SharedSecret> for Payload {
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				Ok(Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(tlvs), reply_path })
-			},
+				if message_type.is_none() || message_bytes.is_none() {
+					return Err(DecodeError::InvalidValue)
+				}
+				Ok(Payload::Receive {
+					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
+					reply_path,
+					message: Tlv { tag: message_type.unwrap(), value: message_bytes.unwrap() },
+				})
+			}
 		}
 	}
 }
