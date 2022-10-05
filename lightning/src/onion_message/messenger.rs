@@ -261,6 +261,9 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 				log_info!(self.logger,
 					"Received an onion message with path_id: {:02x?} and {}reply_path",
 						path_id, if reply_path.is_some() { "" } else { "no " });
+				if let Some(reply_path) = reply_path {
+					self.send_onion_message(&[], Destination::BlindedRoute(reply_path), None).unwrap();
+				}
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_node_id, next_blinding_override
