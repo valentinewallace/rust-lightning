@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
 use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use crate::payment::{InFlightHtlcs, Payer, Router};
+use crate::payment::{Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -10,7 +10,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, InFlightHtlcs, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};

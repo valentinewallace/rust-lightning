@@ -46,6 +46,7 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
+use crate::routing::gossip::NodeId;
 use crate::routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -70,6 +71,40 @@ use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
+
+/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
+/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
+/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
+/// details.
+#[cfg(not(any(test, feature = "_test_utils")))]
+pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
+#[cfg(any(test, feature = "_test_utils"))]
+pub struct InFlightHtlcs(pub HashMap<(u64, bool), u64>);
+
+impl InFlightHtlcs {
+	/// Create a new `InFlightHtlcs` via a mapping from:
+	/// (short_channel_id, source_pubkey < target_pubkey) -> used_liquidity_msat
+	pub fn new(inflight_map: HashMap<(u64, bool), u64>) -> Self {
+		InFlightHtlcs(inflight_map)
+	}
+
+	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
+	/// id.
+	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+		self.0.get(&(channel_scid, source < target)).map(|v| *v)
+	}
+}
+
+impl Writeable for InFlightHtlcs {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
+}
+
+impl Readable for InFlightHtlcs {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, msgs::DecodeError> {
+		let infight_map: HashMap<(u64, bool), u64> = Readable::read(reader)?;
+		Ok(Self(infight_map))
+	}
+}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
