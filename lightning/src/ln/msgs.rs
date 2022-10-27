@@ -1031,8 +1031,11 @@ mod fuzzy_internal_msgs {
 		Legacy { // aka Realm-0
 			short_channel_id: u64,
 		},
-		NonFinalNode {
+		NonFinalNode { // rename to ChannelRelay
 			short_channel_id: u64,
+		},
+		NodeRelay {
+			next_node_id: PublicKey,
 		},
 		FinalNode {
 			payment_data: Option<FinalOnionHopData>,
@@ -1496,12 +1499,16 @@ impl Readable for OnionHopData {
 			let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
+			let mut next_node_id: Option<PublicKey> = None;
+			let mut trampoline_onion_packet: Option<OnionPacket> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
 			decode_tlv_stream!(&mut rd, {
 				(2, amt, required),
 				(4, cltv_value, required),
 				(6, short_id, option),
 				(8, payment_data, option),
+				(10, next_node_id, option),
+				(12, trampoline_onion_packet, option),
 				// See https://github.com/lightning/blips/blob/master/blip-0003.md
 				(5482373484, keysend_preimage, option)
 			});
@@ -1510,6 +1517,11 @@ impl Readable for OnionHopData {
 				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
 				OnionHopDataFormat::NonFinalNode {
 					short_channel_id,
+				}
+			} else if let Some(next_node_id) = next_node_id {
+				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
+				OnionHopDataFormat::NodeRelay {
+					next_node_id,
 				}
 			} else {
 				if let &Some(ref data) = &payment_data {
@@ -1520,6 +1532,7 @@ impl Readable for OnionHopData {
 				OnionHopDataFormat::FinalNode {
 					payment_data,
 					keysend_preimage,
+					trampoline_onion_packet,
 				}
 			};
 			(format, amt.0, cltv_value.0)
