@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
 use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use crate::payment::{Payer, Router};
+use crate::payment::{Payer, ProbingRouter};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -10,7 +10,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, InFlightHtlcs, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, InFlightHtlcs, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY, Router};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
@@ -575,7 +575,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
 		self.scorer.lock().payment_path_successful(path);
 	}
+}
 
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> ProbingRouter for DefaultRouter<G, L, S> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
 	fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
 		self.scorer.lock().probe_successful(path);
 	}

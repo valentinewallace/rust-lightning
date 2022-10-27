@@ -35,7 +35,7 @@
 //! #
 //! # use lightning::io;
 //! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-//! # use lightning::ln::channelmanager::{ChannelDetails, InFlightHtlcs, PaymentId, PaymentSendFailure};
+//! # use lightning::ln::channelmanager::{ChannelDetails, InFlightHtlcs, PaymentId, PaymentSendFailure, Router};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing::gossip::NodeId;
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
@@ -44,7 +44,7 @@
 //! # use lightning::util::logger::{Logger, Record};
 //! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
-//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry, Router};
+//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry, ProbingRouter};
 //! # use secp256k1::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
@@ -79,6 +79,8 @@
 //! #
 //! #     fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {  unimplemented!() }
 //! #     fn notify_payment_path_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
+//! # }
+//! # impl ProbingRouter for FakeRouter {
 //! #     fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
 //! #     fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) { unimplemented!() }
 //! # }
@@ -141,7 +143,7 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 
 use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, InFlightHtlcs, PaymentId, PaymentSendFailure};
+use lightning::ln::channelmanager::{ChannelDetails, InFlightHtlcs, PaymentId, PaymentSendFailure, Router};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::gossip::NodeId;
 use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters};
@@ -175,7 +177,7 @@ use crate::time_utils;
 type ConfiguredTime = time_utils::Eternity;
 
 /// (C-not exported) generally all users should use the [`InvoicePayer`] type alias.
-pub struct InvoicePayerUsingTime<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time>
+pub struct InvoicePayerUsingTime<P: Deref, R: ProbingRouter, L: Deref, E: EventHandler, T: Time>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -264,17 +266,10 @@ pub trait Payer {
 	fn abandon_payment(&self, payment_id: PaymentId);
 }
 
-/// A trait defining behavior for routing an [`Invoice`] payment.
-pub trait Router {
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
-	fn find_route(
-		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError>;
-	/// Lets the router know that payment through a specific path has failed.
-	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
-	/// Lets the router know that payment through a specific path was successful.
-	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
+/// A trait defining behavior for a [`Router`] implementation that also supports probing.
+///
+/// [`Router`]: lightning::ln::channelmanager::Router
+pub trait ProbingRouter: Router {
 	/// Lets the router know that a payment probe was successful.
 	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
 	/// Lets the router know that a payment probe failed.
@@ -320,7 +315,7 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
+impl<P: Deref, R: ProbingRouter, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -654,7 +649,7 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, L, E, T>
+impl<P: Deref, R: ProbingRouter, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -1781,7 +1776,7 @@ mod tests {
 		}
 	}
 
-	impl Router for TestRouter {
+	impl channelmanager::Router for TestRouter {
 		fn find_route(
 			&self, payer: &PublicKey, route_params: &RouteParameters,
 			_first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: channelmanager::InFlightHtlcs
@@ -1822,7 +1817,9 @@ mod tests {
 		fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
 			self.scorer.lock().payment_path_successful(path);
 		}
+	}
 
+	impl ProbingRouter for TestRouter {
 		fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
 			self.scorer.lock().probe_successful(path);
 		}
@@ -1834,7 +1831,7 @@ mod tests {
 
 	struct FailingRouter;
 
-	impl Router for FailingRouter {
+	impl channelmanager::Router for FailingRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
 			_inflight_htlcs: channelmanager::InFlightHtlcs
@@ -1845,7 +1842,9 @@ mod tests {
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
+	}
 
+	impl ProbingRouter for FailingRouter {
 		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
 		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
@@ -2096,7 +2095,7 @@ mod tests {
 	// *** Full Featured Functional Tests with a Real ChannelManager ***
 	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
 
-	impl Router for ManualRouter {
+	impl channelmanager::Router for ManualRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
 			_inflight_htlcs: channelmanager::InFlightHtlcs
@@ -2107,7 +2106,8 @@ mod tests {
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
-
+	}
+	impl ProbingRouter for ManualRouter {
 		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
 		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}

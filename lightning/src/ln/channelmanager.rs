@@ -106,6 +106,19 @@ impl Readable for InFlightHtlcs {
 	}
 }
 
+/// A trait defining behavior for routing an payment.
+pub trait Router {
+	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError>;
+	/// Lets the router know that payment through a specific path has failed.
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
+	/// Lets the router know that payment through a specific path was successful.
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
+}
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
