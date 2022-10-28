@@ -777,11 +777,12 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		channel_monitors.insert(chanmon_1.get_funding_txo().0, &mut chanmon_1);
 		channel_monitors.insert(chanmon_2.get_funding_txo().0, &mut chanmon_2);
 
-		let chanmgr = <(_, ChannelManager<_, _, _, _, _>)>::read(
+		let chanmgr = <(_, ChannelManager<_, _, _, _, _, _>)>::read(
 			&mut &nodes[1].node.encode()[..], ChannelManagerReadArgs {
 				default_config: *nodes[1].node.get_current_default_configuration(),
 				keys_manager: nodes[1].keys_manager,
 				fee_estimator: node_cfgs[1].fee_estimator,
+				router: &node_cfgs[1].router,
 				chain_monitor: &chain_monitor,
 				tx_broadcaster: nodes[1].tx_broadcaster.clone(),
 				logger: nodes[1].logger,
