@@ -235,8 +235,8 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
@@ -244,6 +244,7 @@ where
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	use std::time::SystemTime;
@@ -265,8 +266,8 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
@@ -275,6 +276,7 @@ where
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	use std::time::SystemTime;
@@ -292,8 +294,8 @@ where
 /// See [`create_invoice_from_channelmanager_with_description_hash`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
@@ -302,6 +304,7 @@ where
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -314,8 +317,8 @@ where
 /// See [`create_invoice_from_channelmanager`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
@@ -324,6 +327,7 @@ where
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -335,8 +339,8 @@ where
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
@@ -345,6 +349,7 @@ where
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
@@ -590,12 +595,13 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> ProbingRouter for D
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, R, L>
 where
 	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	fn node_id(&self) -> PublicKey {

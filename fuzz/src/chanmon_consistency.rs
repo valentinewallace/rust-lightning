@@ -40,7 +40,7 @@ use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{self, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
+use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::errors::APIError;
@@ -49,7 +49,7 @@ use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::events::MessageSendEventsProvider;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use lightning::routing::router::{Route, RouteHop};
+use lightning::routing::router::{Route, RouteHop, RouteParameters};
 
 use crate::utils::test_logger::{self, Output};
 use crate::utils::test_persister::TestPersister;
@@ -83,6 +83,24 @@ impl FeeEstimator for FuzzEstimator {
 			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}
+}
+
+struct FuzzRouter {}
+
+impl channelmanager::Router for FuzzRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&channelmanager::ChannelDetails]>,
+		_inflight_htlcs: channelmanager::InFlightHtlcs
+	) -> Result<Route, msgs::LightningError> {
+		Err(msgs::LightningError {
+			err: String::from("Not implemented"),
+			action: msgs::ErrorAction::IgnoreError
+		})
+	}
+
+	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+
+	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 }
 
 pub struct TestBroadcaster {}
@@ -292,7 +310,7 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 	}
 }
 
-type ChanMan = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
+type ChanMan = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<FuzzRouter>, Arc<dyn Logger>>;
 
 #[inline]
 fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(PaymentSecret, PaymentHash)> {
@@ -357,6 +375,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster{});
+	let router = Arc::new(FuzzRouter {});
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => { {
@@ -375,7 +394,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				network,
 				best_block: BestBlock::from_genesis(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), Some(router.clone()), Arc::clone(&logger), keys_manager.clone(), config, params),
 			monitor, keys_manager)
 		} }
 	}
@@ -409,6 +428,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				fee_estimator: $fee_estimator.clone(),
 				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
+				router: Some(router.clone()),
 				logger,
 				default_config: config,
 				channel_monitors: monitor_refs,

@@ -49,8 +49,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// use lightning::chain::chaininterface::FeeEstimator;
 /// use lightning::chain::keysinterface;
 /// use lightning::chain::keysinterface::KeysInterface;
-/// use lightning::ln::channelmanager::ChannelManager;
-/// use lightning::ln::channelmanager::ChannelManagerReadArgs;
+/// use lightning::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, Router};
 /// use lightning::util::config::UserConfig;
 /// use lightning::util::logger::Logger;
 /// use lightning::util::ser::ReadableArgs;
@@ -65,6 +64,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 	S: keysinterface::Sign,
 /// 	T: BroadcasterInterface,
 /// 	F: FeeEstimator,
+/// 	R: Router,
 /// 	L: Logger,
 /// 	C: chain::Filter,
 /// 	P: chainmonitor::Persist<S>,
@@ -75,6 +75,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 	keys_manager: &K,
 /// 	tx_broadcaster: &T,
 /// 	fee_estimator: &F,
+/// 	router: &R,
 /// 	logger: &L,
 /// 	persister: &P,
 /// ) {
@@ -91,11 +92,12 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 			fee_estimator,
 /// 			chain_monitor,
 /// 			tx_broadcaster,
+/// 			Some(router),
 /// 			logger,
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &R, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
