@@ -119,6 +119,27 @@ pub trait Router {
 	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
 }
 
+// Used in private nodes that do not forward payments, since ChannelManager's router is only used in
+// trampoline forwards.
+struct IgnoringRouter {}
+impl Deref for IgnoringRouter {
+	type Target = IgnoringRouter;
+	fn deref(&self) -> &Self { self }
+}
+impl Router for IgnoringRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _route_params: &RouteParameters,
+		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError> {
+		Err(msgs::LightningError {
+			err: String::from("Not implemented"),
+			action: msgs::ErrorAction::IgnoreError
+		})
+	}
+	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
+}
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -1643,6 +1664,20 @@ macro_rules! post_handle_chan_restoration {
 	} }
 }
 
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, IgnoringRouter, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+	      T::Target: BroadcasterInterface,
+	      K::Target: KeysInterface,
+	      F::Target: FeeEstimator,
+	      L::Target: Logger,
+{
+	/// Similar to [`ChannelManager::new_public`], but used in private nodes that do not support
+	/// forwarding payments. None of it channels will be announced to the network.
+	pub fn new_private(fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
+		Self::new(fee_est, chain_monitor, tx_broadcaster, IgnoringRouter {}, logger, keys_manager, config, params, false)
+	}
+}
+
 impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, K, F, R, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	      T::Target: BroadcasterInterface,
@@ -1652,6 +1687,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 	      L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
+	/// For use in a public lightning node that supports forwarding payments.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
 	/// ChannelMessageHandler.
@@ -1661,7 +1697,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
 	/// from after `params.latest_hash`.
-	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: Option<R>, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
+	pub fn new_public(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
+		Self::new(fee_est, chain_monitor, tx_broadcaster, router, logger, keys_manager, config, params, true)
+	}
+
+	fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters, is_public: bool) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 		let inbound_pmt_key_material = keys_manager.get_inbound_payment_key_material();
@@ -1672,7 +1712,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
 			chain_monitor,
 			tx_broadcaster,
-			router,
+			router: if is_public { Some(router) } else { None },
 
 			best_block: RwLock::new(params.best_block),
 
@@ -7996,7 +8036,7 @@ pub mod bench {
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
-		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, Some(&router), &logger_a, &keys_manager_a, config.clone(), ChainParameters {
+		let node_a = ChannelManager::new_public(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});
@@ -8006,7 +8046,7 @@ pub mod bench {
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
-		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, Some(&router), &logger_b, &keys_manager_b, config.clone(), ChainParameters {
+		let node_b = ChannelManager::new_public(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});

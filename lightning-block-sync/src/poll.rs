@@ -148,18 +148,19 @@ impl ValidatedBlockHeader {
 		Ok(())
 	}
 
-    /// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
-    /// into [`ChannelManager::new`] as part of its [`ChainParameters`]. Useful for ensuring that
-    /// the [`SpvClient`] and [`ChannelManager`] are initialized to the same block during a fresh
-    /// start.
-    ///
-    /// [`SpvClient`]: crate::SpvClient
-    /// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
-    /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
-    /// [`ChannelManager::new`]: lightning::ln::channelmanager::ChannelManager::new
-    pub fn to_best_block(&self) -> BestBlock {
-        BestBlock::new(self.block_hash, self.inner.height)
-    }
+	/// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
+	/// into [`ChannelManager::new_public`] and [`ChannelManager::new_private`] as part of their
+	/// [`ChainParameters`]. Useful for ensuring that the [`SpvClient`] and [`ChannelManager`] are
+	/// initialized to the same block during a fresh start.
+	///
+	/// [`SpvClient`]: crate::SpvClient
+	/// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
+	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::new_public`]: lightning::ln::channelmanager::ChannelManager::new_public
+	/// [`ChannelManager::new_private`]: lightning::ln::channelmanager::ChannelManager::new_private
+	pub fn to_best_block(&self) -> BestBlock {
+		BestBlock::new(self.block_hash, self.inner.height)
+	}
 }
 
 /// A block with validated data against its transaction list and corresponding block hash.

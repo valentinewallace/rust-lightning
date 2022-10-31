@@ -418,7 +418,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		network,
 		best_block: BestBlock::from_genesis(network),
 	};
-	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Some(router), Arc::clone(&logger), keys_manager.clone(), config, params));
+	let channelmanager = Arc::new(ChannelManager::new_public(fee_est.clone(), monitor.clone(), broadcast.clone(), router, Arc::clone(&logger), keys_manager.clone(), config, params));
 	// Adding new calls to `KeysInterface::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.

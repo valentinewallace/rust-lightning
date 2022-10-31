@@ -394,7 +394,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				network,
 				best_block: BestBlock::from_genesis(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), Some(router.clone()), Arc::clone(&logger), keys_manager.clone(), config, params),
+			(ChannelManager::new_public($fee_estimator.clone(), monitor.clone(), broadcast.clone(), router.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
 			monitor, keys_manager)
 		} }
 	}
