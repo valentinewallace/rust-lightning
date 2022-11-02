@@ -2203,7 +2203,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 					msg: "We require payment_secrets",
 				});
 			},
-			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
+			msgs::OnionHopDataFormat::ChannelRelay { .. } => {
 				return Err(ReceiveError {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
@@ -2338,7 +2338,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 
 				let short_channel_id = match next_hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::ChannelRelay { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::FinalNode { .. } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
 					},

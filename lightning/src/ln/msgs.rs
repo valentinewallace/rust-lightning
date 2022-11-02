@@ -1030,7 +1030,7 @@ mod fuzzy_internal_msgs {
 		Legacy { // aka Realm-0
 			short_channel_id: u64,
 		},
-		NonFinalNode {
+		ChannelRelay {
 			short_channel_id: u64,
 		},
 		FinalNode {
@@ -1465,7 +1465,7 @@ impl Writeable for OnionHopData {
 				self.outgoing_cltv_value.write(w)?;
 				w.write_all(&[0;12])?;
 			},
-			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
+			OnionHopDataFormat::ChannelRelay { short_channel_id } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
@@ -1507,7 +1507,7 @@ impl Readable for OnionHopData {
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {
 				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
-				OnionHopDataFormat::NonFinalNode {
+				OnionHopDataFormat::ChannelRelay {
 					short_channel_id,
 				}
 			} else {
@@ -2685,7 +2685,7 @@ mod tests {
 	#[test]
 	fn encoding_nonfinal_onion_hop_data() {
 		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
+			format: OnionHopDataFormat::ChannelRelay {
 				short_channel_id: 0xdeadbeef1bad1dea,
 			},
 			amt_to_forward: 0x0badf00d01020304,
@@ -2695,7 +2695,7 @@ mod tests {
 		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
 		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = msg.format {
+		if let OnionHopDataFormat::ChannelRelay { short_channel_id } = msg.format {
 			assert_eq!(short_channel_id, 0xdeadbeef1bad1dea);
 		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
@@ -2905,7 +2905,7 @@ mod tests {
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
 		use crate::util::ser::HighZeroBytesDroppedBigSize;
 		let payload = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
+			format: OnionHopDataFormat::ChannelRelay {
 				short_channel_id: 0xdeadbeef1bad1dea,
 			},
 			amt_to_forward: 1000,
@@ -2913,7 +2913,7 @@ mod tests {
 		};
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];
-		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
+		if let OnionHopDataFormat::ChannelRelay { short_channel_id } = payload.format {
 			encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, vec_type),
 				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
