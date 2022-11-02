@@ -2217,7 +2217,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 					msg: "Got non final data with an HMAC of 0",
 				});
 			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+			msgs::OnionHopDataFormat::FinalNode {
+				payment_data, keysend_preimage, trampoline_onion_packet: _
+			} => {
 				if payment_data.is_some() && keysend_preimage.is_some() {
 					return Err(ReceiveError {
 						err_code: 0x4000|22,

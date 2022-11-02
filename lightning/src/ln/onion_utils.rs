@@ -162,6 +162,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 								total_msat,
 							})
 						} else { None },
+						trampoline_onion_packet: None, // TODO
 						keysend_preimage: *keysend_preimage,
 					}
 				} else {

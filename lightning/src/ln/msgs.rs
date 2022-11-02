@@ -1016,6 +1016,7 @@ mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
+	use super::OnionPacket;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1039,6 +1040,7 @@ mod fuzzy_internal_msgs {
 		},
 		FinalNode {
 			payment_data: Option<FinalOnionHopData>,
+			trampoline_onion_packet: Option<OnionPacket>,
 			keysend_preimage: Option<PaymentPreimage>,
 		},
 	}
@@ -1483,11 +1485,14 @@ impl Writeable for OnionHopData {
 					(10, next_node_id, required)
 				});
 			},
-			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
+			OnionHopDataFormat::FinalNode {
+				ref payment_data, ref trampoline_onion_packet, ref keysend_preimage
+			} => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
+					(12, trampoline_onion_packet, option),
 					(5482373484, keysend_preimage, option)
 				});
 			},
@@ -1507,6 +1512,7 @@ impl Readable for OnionHopData {
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
 			let mut next_node_id: Option<PublicKey> = None;
+			let mut trampoline_onion_packet: Option<OnionPacket> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
 			decode_tlv_stream!(&mut rd, {
 				(2, amt, required),
@@ -1514,6 +1520,7 @@ impl Readable for OnionHopData {
 				(6, short_id, option),
 				(8, payment_data, option),
 				(10, next_node_id, option),
+				(12, trampoline_onion_packet, option),
 				// See https://github.com/lightning/blips/blob/master/blip-0003.md
 				(5482373484, keysend_preimage, option)
 			});
@@ -1536,6 +1543,7 @@ impl Readable for OnionHopData {
 				}
 				OnionHopDataFormat::FinalNode {
 					payment_data,
+					trampoline_onion_packet,
 					keysend_preimage,
 				}
 			};
@@ -2725,6 +2733,7 @@ mod tests {
 		let mut msg = msgs::OnionHopData {
 			format: OnionHopDataFormat::FinalNode {
 				payment_data: None,
+				trampoline_onion_packet: None,
 				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
@@ -2748,6 +2757,7 @@ mod tests {
 					payment_secret: expected_payment_secret,
 					total_msat: 0x1badca1f
 				}),
+				trampoline_onion_packet: None,
 				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
@@ -2762,6 +2772,7 @@ mod tests {
 				payment_secret,
 				total_msat: 0x1badca1f
 			}),
+			trampoline_onion_packet: None,
 			keysend_preimage: None,
 		} = msg.format {
 			assert_eq!(payment_secret, expected_payment_secret);
