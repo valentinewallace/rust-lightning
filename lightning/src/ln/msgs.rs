@@ -1013,6 +1013,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 }
 
 mod fuzzy_internal_msgs {
+	use bitcoin::secp256k1::PublicKey;
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 
@@ -1032,6 +1033,9 @@ mod fuzzy_internal_msgs {
 		},
 		ChannelRelay {
 			short_channel_id: u64,
+		},
+		NodeRelay {
+			next_node_id: PublicKey,
 		},
 		FinalNode {
 			payment_data: Option<FinalOnionHopData>,
@@ -1472,6 +1476,13 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id, required)
 				});
 			},
+			OnionHopDataFormat::NodeRelay { next_node_id } => {
+				encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(10, next_node_id, required)
+				});
+			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
@@ -1495,12 +1506,14 @@ impl Readable for OnionHopData {
 			let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
+			let mut next_node_id: Option<PublicKey> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
 			decode_tlv_stream!(&mut rd, {
 				(2, amt, required),
 				(4, cltv_value, required),
 				(6, short_id, option),
 				(8, payment_data, option),
+				(10, next_node_id, option),
 				// See https://github.com/lightning/blips/blob/master/blip-0003.md
 				(5482373484, keysend_preimage, option)
 			});
@@ -1509,6 +1522,11 @@ impl Readable for OnionHopData {
 				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
 				OnionHopDataFormat::ChannelRelay {
 					short_channel_id,
+				}
+			} else if let Some(next_node_id) = next_node_id {
+				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
+				OnionHopDataFormat::NodeRelay {
+					next_node_id,
 				}
 			} else {
 				if let &Some(ref data) = &payment_data {

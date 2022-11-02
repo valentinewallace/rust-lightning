@@ -2210,6 +2210,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 					msg: "Got non final data with an HMAC of 0",
 				});
 			},
+			msgs::OnionHopDataFormat::NodeRelay { .. } => {
+				return Err(ReceiveError {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "Got non final data with an HMAC of 0",
+				});
+			},
 			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
 				if payment_data.is_some() && keysend_preimage.is_some() {
 					return Err(ReceiveError {
@@ -2339,6 +2346,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 				let short_channel_id = match next_hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::ChannelRelay { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::NodeRelay { .. } => {
+						return_err!("Node Relay OnionHopData provided for us in a non-trampoline payment", 0x4000 | 22, &[0;0]);
+					},
 					msgs::OnionHopDataFormat::FinalNode { .. } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
 					},
