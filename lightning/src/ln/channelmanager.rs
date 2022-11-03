@@ -165,6 +165,11 @@ pub(super) enum PendingHTLCRouting {
 		/// outbound SCID alias, or a phantom node SCID.
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
+	ForwardTrampoline {
+		trampoline_packet: msgs::OnionPacket,
+		/// The node id from the onion that we should forward to.
+		next_node_id: PublicKey,
+	},
 	Receive {
 		payment_data: msgs::FinalOnionHopData,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
@@ -2325,7 +2330,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 		let pending_forward_info = match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
-				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
+				let outer_onion_status = match self.construct_recv_pending_htlc_info(
+					next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None)
+				{
 					Ok(info) => {
 						// Note that we could obviously respond immediately with an update_fulfill_htlc
 						// message, however that would leak that we are the recipient of this payment, so
@@ -2334,6 +2341,50 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 						PendingHTLCStatus::Forward(info)
 					},
 					Err(ReceiveError { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				};
+				if let msgs::OnionHopData {
+					format: msgs::OnionHopDataFormat::FinalNode {
+						payment_data, keysend_preimage, trampoline_onion_packet: Some(trampoline_packet),
+					}, amt_to_forward, outgoing_cltv_value
+				} = next_hop_data {
+					if keysend_preimage.is_some() || payment_data.is_none() {
+						return_err!("Received trampoline payment without payment data or with keysend preimage", 0x4000 | 22, &[0;0]);
+					}
+					let trampoline_packet_ss = SharedSecret::new(&trampoline_packet.public_key.unwrap(), &self.our_network_key).secret_bytes();
+					let next_trampoline_hop = onion_utils::decode_next_payment_hop(trampoline_packet_ss, &trampoline_packet.hop_data[..], trampoline_packet.hmac, msg.payment_hash).unwrap(); // TODO no unwrap
+					match next_trampoline_hop {
+						onion_utils::Hop::Receive(next_trampoline_hop_data) => {
+							let trampoline_receive_info = self.construct_recv_pending_htlc_info(next_trampoline_hop_data, trampoline_packet_ss, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None).unwrap();
+							// TODO check that inner payload fields match outer payload fields
+							outer_onion_status
+						},
+						onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+							if let msgs::OnionHopData {
+								format: msgs::OnionHopDataFormat::NodeRelay { next_node_id },
+								amt_to_forward, outgoing_cltv_value,
+							} = next_hop_data {
+								PendingHTLCStatus::Forward(PendingHTLCInfo {
+									routing: PendingHTLCRouting::ForwardTrampoline {
+										trampoline_packet: msgs::OnionPacket {
+											version: 0,
+											public_key: onion_utils::next_hop_packet_pubkey(&self.secp_ctx, trampoline_packet.public_key.unwrap(), &trampoline_packet_ss),
+											hop_data: new_packet_bytes,
+											hmac: next_hop_hmac,
+										},
+										next_node_id,
+									},
+									payment_hash: msg.payment_hash.clone(),
+									incoming_shared_secret: shared_secret,
+									amt_to_forward,
+									outgoing_cltv_value,
+								})
+							} else {
+								return_err!("Invalid OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
+							}
+						}
+					}
+				} else {
+					outer_onion_status
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
