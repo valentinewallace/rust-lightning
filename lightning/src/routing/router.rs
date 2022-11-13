@@ -45,6 +45,7 @@ pub trait Router {
 #[cfg(not(any(test, feature = "_test_utils")))]
 pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
 #[cfg(any(test, feature = "_test_utils"))]
+#[derive(Clone)]
 pub struct InFlightHtlcs(pub HashMap<(u64, bool), u64>);
 
 impl InFlightHtlcs {
