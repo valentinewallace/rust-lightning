@@ -10522,3 +10522,42 @@ fn test_trivial_inflight_htlc_tracking() {
 		assert_eq!(used_liquidity, Some(500000));
 	}
 }
+
+#[test]
+fn test_holding_cell_inflight_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+
+	// Queue up two payments - one will be delivered right away, one immediately goes into the
+	// holding cell as nodes[0] is AwaitingRAA.
+	{
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		check_added_monitors!(nodes[0], 0);
+	}
+
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+	{
+		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let channel = channel_lock.by_id.get(&channel_id).unwrap();
+
+		let used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(used_liquidity, Some(2000000));
+	}
+
+	// Clear pending events so test doesn't throw a "Had excess message on node..." error
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
