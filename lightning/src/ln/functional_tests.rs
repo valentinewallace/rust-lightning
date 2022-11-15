@@ -24,7 +24,7 @@ use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, Pa
 use crate::ln::channel::{Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
-use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
+use crate::routing::gossip::{NetworkGraph, NetworkUpdate, NodeId};
 use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -10501,4 +10501,75 @@ fn test_non_final_funding_tx() {
 	tx.lock_time = PackedLockTime(tx.lock_time.0 - 1);
 	assert!(nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+}
+
+
+#[test]
+fn test_trivial_inflight_htlc_tracking() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+
+	// Send and claim the payment. Inflight HTLCs should be empty.
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 500000);
+	assert_eq!(node_chanmgrs[0].compute_inflight_htlcs().0.len(), 0);
+
+	// Send the payment, but do not claim it. Our inflight HTLCs should contain the pending payment
+	route_payment(&nodes[0], &vec!(&nodes[1])[..], 500000);
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+	{
+		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let channel = channel_lock.by_id.get(&chan_id).unwrap();
+
+		let used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(used_liquidity, Some(500000));
+	}
+}
+
+#[test]
+fn test_holding_cell_inflight_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+
+	// Queue up two payments - one will be delivered right away, one immediately goes into the
+	// holding cell as nodes[0] is AwaitingRAA.
+	{
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		check_added_monitors!(nodes[0], 0);
+	}
+
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+	{
+		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let channel = channel_lock.by_id.get(&channel_id).unwrap();
+
+		let used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(used_liquidity, Some(2000000));
+	}
+
+	// Clear pending events so test doesn't throw a "Had excess message on node..." error
+	nodes[0].node.get_and_clear_pending_msg_events();
 }
