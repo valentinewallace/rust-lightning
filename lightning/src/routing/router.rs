@@ -36,6 +36,14 @@ pub trait Router {
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
+	/// Lets the router know that payment through a specific path has failed.
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
+	/// Lets the router know that payment through a specific path was successful.
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
+	/// Lets the router know that a payment probe was successful.
+	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
+	/// Lets the router know that a payment probe failed.
+	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 }
 
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
