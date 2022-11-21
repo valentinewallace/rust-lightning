@@ -321,8 +321,12 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// Useful for custom [`Router`] implementations to wrap their [`Score`] on-the-fly when calling
 /// [`find_route`].
 ///
+/// Not to be used in conjunction with [`DefaultRouter`] because `DefaultRouter` automatically wraps
+/// its scorer with a `ScorerAccountingForInFlightHtlcs` when finding a route.
+///
 /// [`Router`]: crate::routing::router::Router
 /// [`find_route`]: crate::routing::router::find_route
+/// [`DefaultRouter`]: crate::routing::router::DefaultRouter
 pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score>
 {
 	scorer: &'a mut S,
