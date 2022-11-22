@@ -21,8 +21,9 @@ use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::script::ShutdownScript;
-use crate::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters, Router};
-use crate::routing::scoring::FixedPenaltyScorer;
+use crate::routing::gossip::NetworkGraph;
+use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router};
+use crate::routing::scoring::{FixedPenaltyScorer, ScorerAccountingForInFlightHtlcs};
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::events;
 use crate::util::logger::{Logger, Level, Record};
@@ -72,17 +73,21 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
-pub struct TestRouter {}
+pub struct TestRouter<'a> {
+	network_graph: &'a NetworkGraph<Arc<TestLogger>>,
+}
 
-impl Router for TestRouter {
+impl<'a> Router for TestRouter<'a> {
 	fn find_route(
-		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&channelmanager::ChannelDetails]>,
-		_inflight_htlcs: InFlightHtlcs
+		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
-		Err(msgs::LightningError {
-			err: String::from("Not implemented"),
-			action: msgs::ErrorAction::IgnoreError
-		})
+		let logger = TestLogger::new();
+		find_route(
+			payer, params, &self.network_graph, first_hops, &logger,
+			&ScorerAccountingForInFlightHtlcs::new(&mut TestScorer { penalty_msat: 0 }, inflight_htlcs),
+			&[42; 32]
+		)
 	}
 	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}

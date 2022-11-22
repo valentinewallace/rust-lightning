@@ -257,19 +257,20 @@ pub struct TestChanMonCfg {
 	pub fee_estimator: test_utils::TestFeeEstimator,
 	pub chain_source: test_utils::TestChainSource,
 	pub persister: test_utils::TestPersister,
-	pub logger: test_utils::TestLogger,
+	pub logger: Arc<test_utils::TestLogger>,
 	pub keys_manager: test_utils::TestKeysInterface,
+	network_graph: NetworkGraph<Arc<test_utils::TestLogger>>
 }
 
 pub struct NodeCfg<'a> {
 	pub chain_source: &'a test_utils::TestChainSource,
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
 	pub fee_estimator: &'a test_utils::TestFeeEstimator,
-	pub router: test_utils::TestRouter,
+	pub router: test_utils::TestRouter<'a>,
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
-	pub logger: &'a test_utils::TestLogger,
-	pub network_graph: NetworkGraph<&'a test_utils::TestLogger>,
+	pub logger: Arc<test_utils::TestLogger>,
+	pub network_graph: &'a NetworkGraph<Arc<test_utils::TestLogger>>,
 	pub node_seed: [u8; 32],
 	pub features: InitFeatures,
 }
@@ -278,12 +279,12 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_source: &'c test_utils::TestChainSource,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub fee_estimator: &'c test_utils::TestFeeEstimator,
-	pub router: &'b test_utils::TestRouter,
+	pub router: &'b test_utils::TestRouter<'c>,
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestLogger>,
-	pub network_graph: &'b NetworkGraph<&'c test_utils::TestLogger>,
-	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<&'c test_utils::TestLogger>, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+	pub node: &'a ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>,
+	pub network_graph: &'c NetworkGraph<Arc<test_utils::TestLogger>>,
+	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<Arc<test_utils::TestLogger>>, &'c test_utils::TestChainSource, Arc<test_utils::TestLogger>>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -321,7 +322,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			}
 
 			// Check that if we serialize the Router, we can deserialize it again.
-			{
+			let network_graph = {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.network_graph.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph<_>>::read(&mut io::Cursor::new(&w.0), self.logger).unwrap();
@@ -349,7 +350,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						None => break,
 					};
 				}
-			}
+				network_graph_deser
+			};
 
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
@@ -385,7 +387,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					default_config: *self.node.get_current_default_configuration(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
-					router: &test_utils::TestRouter {},
+					router: &test_utils::TestRouter { network_graph: &network_graph },
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -622,7 +624,7 @@ macro_rules! check_added_monitors {
 	}
 }
 
-pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestLogger> {
+pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
@@ -2112,18 +2114,19 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
+		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let network_graph = NetworkGraph::new(chain_source.genesis_hash, logger.clone());
 
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager });
+		chan_mon_cfgs.push(TestChanMonCfg { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, network_graph });
 	}
 
 	chan_mon_cfgs
 }
 
-pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
+pub fn create_node_cfgs<'a, 'b>(node_count: usize, chanmon_cfgs: &'b Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
@@ -2131,15 +2134,15 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
 			chain_source: &chanmon_cfgs[i].chain_source,
-			logger: &chanmon_cfgs[i].logger,
+			logger: chanmon_cfgs[i].logger.clone(),
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter {},
+			router: test_utils::TestRouter { network_graph: &chanmon_cfgs[i].network_graph },
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
 			features: channelmanager::provided_init_features(),
-			network_graph: NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash, &chanmon_cfgs[i].logger),
+			network_graph: &chanmon_cfgs[i].network_graph,
 		});
 	}
 
@@ -2162,7 +2165,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter, &'b test_utils::TestLogger>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'b>, &'b test_utils::TestLogger>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let network = Network::Testnet;
