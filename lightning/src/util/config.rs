@@ -505,8 +505,37 @@ pub struct UserConfig {
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	pub manually_accept_inbound_channels: bool,
+	///
+	pub payment_retry_strategy: Retry,
 }
 
+/// Strategies available to retry payment path failures for an [`Invoice`].
+///
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Retry {
+	/// Max number of attempts to retry payment.
+	///
+	/// Note that this is the number of *path* failures, not full payment retries. For multi-path
+	/// payments, if this is less than the total number of paths, we will never even retry all of the
+	/// payment's paths.
+	Attempts(usize),
+	#[cfg(feature = "std")]
+	/// Time elapsed before abandoning retries for a payment.
+	Timeout(Duration),
+}
+
+impl Retry {
+	fn is_retryable_now<T: Time>(&self, attempts: &PaymentAttempts<T>) -> bool {
+		match (self, attempts) {
+			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
+				max_retry_count >= &count
+			},
+			#[cfg(feature = "std")]
+			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. } ) =>
+				*max_duration >= T::now().duration_since(*first_attempted_at),
+		}
+	}
+}
 impl Default for UserConfig {
 	fn default() -> Self {
 		UserConfig {

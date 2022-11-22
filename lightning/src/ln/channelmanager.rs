@@ -58,6 +58,7 @@ use crate::util::{byte_utils, events};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
+use crate::util::time::Time;
 use crate::util::logger::{Level, Logger};
 use crate::util::errors::APIError;
 
@@ -70,6 +71,40 @@ use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, FairRwLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
+
+/// Storing minimal payment attempts information required for determining if a outbound payment can
+/// be retried.
+#[derive(Clone, Copy)]
+struct PaymentAttempts<T: Time> {
+	/// This count will be incremented only after the result of the attempt is known. When it's 0,
+	/// it means the result of the first attempt is now known yet.
+	count: usize,
+	/// This field is only used when retry is [`Retry::Timeout`] which is only build with feature std
+	first_attempted_at: T
+}
+
+impl<T: Time> PaymentAttempts<T> {
+	fn new() -> Self {
+		PaymentAttempts {
+			count: 0,
+			first_attempted_at: T::now()
+		}
+	}
+}
+
+impl<T: Time> Display for PaymentAttempts<T> {
+	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+		#[cfg(feature = "no-std")]
+		return write!( f, "attempts: {}", self.count);
+		#[cfg(not(feature = "no-std"))]
+		return write!(
+			f,
+			"attempts: {}, duration: {}s",
+			self.count,
+			T::now().duration_since(self.first_attempted_at).as_secs()
+		);
+	}
+}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -463,6 +498,7 @@ pub(crate) enum PendingOutboundPayment {
 		total_msat: u64,
 		/// Our best known block height at the time this payment was initiated.
 		starting_block_height: u32,
+		payment_attempts: PaymentAttempts,
 	},
 	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
 	/// been resolved. This ensures we don't look up pending payments in ChannelMonitors on restart
@@ -2568,6 +2604,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 				Err(APIError::ChannelUnavailable { err: e.err })
 			},
 		}
+	}
+
+	/// Similar to [`ChannelManager::send_payment`], except `ChannelManager` will use the router
+	/// that was provided to [`ChannelManager::new`] to find a route for the payment.
+	pub fn send_auto_routed_payment(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+		let route = self.router.find_route(
+			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
+		).map_err(|e| PaymentError::Routing(e))?;
+		send_payment_with_route(route..)
 	}
 
 	/// Sends a payment along a given route.

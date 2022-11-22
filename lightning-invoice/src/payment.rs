@@ -162,6 +162,118 @@ use core::time::Duration;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
+/// Pays the given [`Invoice`], caching it for later use in case a retry is needed.
+///
+/// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
+/// as the payment is still pending. Once the payment completes or fails, you must ensure that
+/// a second payment with the same [`PaymentHash`] is never sent.
+///
+/// If you wish to use a different payment idempotency token, see
+/// [`Self::pay_invoice_with_id`].
+pub fn pay_invoice<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	invoice: &Invoice, channelmanager: &ChannelManager<M, T, K, F, R, L>) -> Result<PaymentId, PaymentError>
+{
+	let payment_id = PaymentId(invoice.payment_hash().into_inner());
+	pay_invoice_with_id(invoice, payment_id, channelmanager).map(|()| payment_id)
+}
+
+/// Pays the given [`Invoice`] with a custom idempotency key, caching the invoice for later use
+/// in case a retry is needed.
+///
+/// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
+/// payment completes or fails, no idempotency guarantees are made.
+///
+/// You should ensure that the [`Invoice::payment_hash`] is unique and the same [`PaymentHash`]
+/// has never been paid before.
+///
+/// See [`Self::pay_invoice`] for a variant which uses the [`PaymentHash`] for the idempotency
+/// token.
+pub fn pay_invoice_with_id<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	invoice: &Invoice, payment_id: PaymentId, channelmanager: &ChannelManager<M, T, K, F, R, L>) -> Result<(), PaymentError>
+{
+	if invoice.amount_milli_satoshis().is_none() {
+		Err(PaymentError::Invoice("amount missing"))
+	} else {
+		pay_invoice_using_amount(invoice, None, payment_id, channelmanager)
+	}
+}
+
+/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
+/// case a retry is needed.
+///
+/// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
+/// as the payment is still pending. Once the payment completes or fails, you must ensure that
+/// a second payment with the same [`PaymentHash`] is never sent.
+///
+/// If you wish to use a different payment idempotency token, see
+/// [`Self::pay_zero_value_invoice_with_id`].
+pub fn pay_zero_value_invoice<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	invoice: &Invoice, amount_msats: u64, channelmanager: &ChannelManager<M, T, K, F, R, L>
+) -> Result<PaymentId, PaymentError> {
+	let payment_id = PaymentId(invoice.payment_hash().into_inner());
+	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, channelmanager).map(|()| payment_id)
+}
+
+/// Pays the given zero-value [`Invoice`] using the given amount and custom idempotency key,
+/// caching the invoice for later use in case a retry is needed.
+///
+/// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
+/// payment completes or fails, no idempotency guarantees are made.
+///
+/// You should ensure that the [`Invoice::payment_hash`] is unique and the same [`PaymentHash`]
+/// has never been paid before.
+///
+/// See [`Self::pay_zero_value_invoice`] for a variant which uses the [`PaymentHash`] for the
+/// idempotency token.
+pub fn pay_zero_value_invoice_with_id<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	invoice: &Invoice, amount_msats: u64, payment_id: PaymentId, channelmanager: &ChannelManager<M, T, K, F, R, L>
+) -> Result<(), PaymentError> {
+	if invoice.amount_milli_satoshis().is_some() {
+		Err(PaymentError::Invoice("amount unexpected"))
+	} else {
+		pay_invoice_using_amount(invoice, Some(amount_msats), payment_id, channelmanager)
+	}
+}
+
+fn pay_invoice_using_amount<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
+	invoice: &Invoice, amount_msats: Option<u64>, payment_id: PaymentId, channelmanager: &ChannelManager<M, T, K, F, R, L>
+) -> Result<(), PaymentError> {
+	debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
+
+	let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
+	// match self.payment_cache.lock().unwrap().entry(payment_hash) {
+	//   hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
+	//   hash_map::Entry::Vacant(entry) => entry.insert(PaymentAttempts::new()),
+	// };
+
+	let payment_secret = Some(invoice.payment_secret().clone());
+	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
+		.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
+		.with_route_hints(invoice.route_hints());
+	if let Some(features) = invoice.features() {
+		payment_params = payment_params.with_features(features.clone());
+	}
+	let route_params = RouteParameters {
+		payment_params,
+		final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
+		final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+	};
+
+	// let send_payment = |route: &Route| {
+	//   self.payer.send_payment(route, payment_hash, &payment_secret, payment_id)
+	// };
+
+	#[cfg(feature = "std")] {
+		if has_expired(params) {
+			log_trace!(self.logger, "Invoice expired prior to send for payment {}", log_bytes!(payment_hash.0));
+			return Err(PaymentError::Invoice("Invoice expired prior to send"));
+		}
+	}
+	channelmanager.send_payment(payment_hash, payment_secret, payment_id, payment_params)
+	// self.pay_internal(&route_params, payment_hash, send_payment)
+	//   .map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
+}
+
 /// A utility for paying [`Invoice`]s and sending spontaneous payments.
 ///
 /// See [module-level documentation] for details.
