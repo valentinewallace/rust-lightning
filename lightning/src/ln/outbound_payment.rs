@@ -40,6 +40,8 @@ pub(crate) enum PendingOutboundPayment {
 		session_privs: HashSet<[u8; 32]>,
 	},
 	Retryable {
+		retry_strategy: Retry,
+		attempts: PaymentAttempts,
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
 		payment_secret: Option<PaymentSecret>,
@@ -73,6 +75,17 @@ pub(crate) enum PendingOutboundPayment {
 }
 
 impl PendingOutboundPayment {
+	fn increment_attempts(&mut self) {
+		if let PendingOutboundPayment::Retryable { attempts, .. } = self {
+			attempts.count += 1;
+		}
+	}
+	fn is_retryable(&self) -> bool {
+		if let PendingOutboundPayment::Retryable { retry_strategy, attempts, .. } = self {
+			return retry_strategy.is_retryable_now(&attempts)
+		}
+		false
+	}
 	pub(super) fn is_fulfilled(&self) -> bool {
 		match self {
 			PendingOutboundPayment::Fulfilled { .. } => true,
@@ -508,6 +521,8 @@ impl OutboundPayments {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
 				let payment = entry.insert(PendingOutboundPayment::Retryable {
+					retry_strategy,
+					attempts: PaymentAttempts::new(),
 					session_privs: HashSet::new(),
 					pending_amt_msat: 0,
 					pending_fee_msat: Some(0),
@@ -911,7 +926,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, pending_fee_msat, option),
 		(2, payment_hash, required),
+		(3, retry_strategy, (static_value, Retry::Attempts(0))),
 		(4, payment_secret, option),
+		(5, attempts, (static_value, PaymentAttempts::new())),
 		(6, total_msat, required),
 		(8, pending_amt_msat, required),
 		(10, starting_block_height, required),
