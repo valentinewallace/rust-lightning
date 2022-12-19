@@ -650,8 +650,14 @@ impl OutboundPayments {
 		} else if has_err {
 			// If we failed to send any paths, we should remove the new PaymentId from the
 			// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
-			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
-			debug_assert!(removed, "We should always have a pending payment to remove here");
+			if !self.pending_outbound_payments.lock().unwrap().get(&payment_id)
+				.map_or(false, |payment| payment.is_retryable())
+			{
+				// If we failed to send any paths, we should remove the new PaymentId from the
+				// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
+				let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
+				debug_assert!(removed, "We should always have a pending payment to remove here");
+			}
 			Err(PaymentSendFailure::AllFailedResendSafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
 			Ok(())
