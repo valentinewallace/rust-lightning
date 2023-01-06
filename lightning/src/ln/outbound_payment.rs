@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
+use crate::ln::channelmanager::{HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, RoutePath};
@@ -29,6 +29,7 @@ use crate::util::time::tests::SinceEpoch;
 use core::cmp;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
+use core::time::Duration;
 
 use crate::prelude::*;
 use crate::sync::Mutex;
@@ -86,6 +87,11 @@ impl PendingOutboundPayment {
 			return retry_strategy.is_retryable_now(&attempts)
 		}
 		false
+	}
+	pub fn insert_previously_failed_scid(&mut self, scid: u64) {
+		if let PendingOutboundPayment::Retryable { route_params: Some(params), .. } = self {
+			params.payment_params.previously_failed_channels.push(scid);
+		}
 	}
 	pub(super) fn is_fulfilled(&self) -> bool {
 		match self {
@@ -788,7 +794,8 @@ impl OutboundPayments {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
-		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
+		let mut pending_retry_ev = None;
+		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				return
@@ -797,6 +804,7 @@ impl OutboundPayments {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
 				return
 			}
+			let is_retryable = payment.get().is_retryable();
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
@@ -807,10 +815,11 @@ impl OutboundPayments {
 					payment.remove();
 				}
 			}
+			is_retryable
 		} else {
 			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 			return
-		}
+		};
 		let mut retry = if let Some(payment_params_data) = payment_params {
 			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 			Some(RouteParameters {
@@ -847,7 +856,14 @@ impl OutboundPayments {
 				// process_onion_failure we should close that channel as it implies our
 				// next-hop is needlessly blaming us!
 				if let Some(scid) = short_channel_id {
+					outbounds.get_mut(&payment_id).map(|pmt| pmt.insert_previously_failed_scid(scid));
 					retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
+				}
+				if payment_retryable && attempts_remaining && retry.is_some() {
+					debug_assert!(full_failure_ev.is_none());
+					pending_retry_ev = Some(events::Event::PendingHTLCsForwardable {
+						time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
+					});
 				}
 				events::Event::PaymentPathFailed {
 					payment_id: Some(*payment_id),
@@ -868,6 +884,7 @@ impl OutboundPayments {
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_events.push(path_failure);
 		if let Some(ev) = full_failure_ev { pending_events.push(ev); }
+		if let Some(ev) = pending_retry_ev { pending_events.push(ev); }
 	}
 
 	pub(super) fn abandon_payment(&self, payment_id: PaymentId) -> Option<events::Event> {
