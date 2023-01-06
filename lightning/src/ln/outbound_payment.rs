@@ -42,6 +42,7 @@ pub(crate) enum PendingOutboundPayment {
 	Retryable {
 		retry_strategy: Retry,
 		attempts: PaymentAttempts,
+		route_params: Option<RouteParameters>,
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
 		payment_secret: Option<PaymentSecret>,
@@ -523,6 +524,7 @@ impl OutboundPayments {
 				let payment = entry.insert(PendingOutboundPayment::Retryable {
 					retry_strategy,
 					attempts: PaymentAttempts::new(),
+					route_params,
 					session_privs: HashSet::new(),
 					pending_amt_msat: 0,
 					pending_fee_msat: Some(0),
@@ -930,6 +932,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(4, payment_secret, option),
 		(5, attempts, (static_value, PaymentAttempts::new())),
 		(6, total_msat, required),
+		(7, route_params, option),
 		(8, pending_amt_msat, required),
 		(10, starting_block_height, required),
 	},
