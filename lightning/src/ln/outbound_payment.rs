@@ -15,10 +15,10 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
-use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, RoutePath};
+use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;
 use crate::util::events;
 use crate::util::logger::Logger;
@@ -237,6 +237,16 @@ impl Retry {
 	}
 }
 
+#[cfg(feature = "std")]
+pub(super) fn has_expired(route_params: &RouteParameters) -> bool {
+	if let Some(expiry_time) = route_params.payment_params.expiry_time {
+		if let Ok(elapsed) = std::time::SystemTime::UNIX_EPOCH.elapsed() {
+			return elapsed > core::time::Duration::from_secs(expiry_time)
+		}
+	}
+	false
+}
+
 pub(crate) type PaymentAttempts = PaymentAttemptsUsingTime<ConfiguredTime>;
 
 /// Storing minimal payment attempts information required for determining if a outbound payment can
@@ -403,6 +413,91 @@ impl OutboundPayments {
 		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
 			Err(e) => Err(e)
+		}
+	}
+
+	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
+		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32, logger: &L, send_payment_along_path: SP,
+	)
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
+		IH: Fn() -> InFlightHtlcs,
+		FH: Fn() -> Vec<ChannelDetails>,
+		L::Target: Logger,
+	{
+		let outbounds = self.pending_outbound_payments.lock().unwrap();
+		let mut retryable_htlcs = Vec::new();
+		for (payment_id, pmt) in outbounds.iter() {
+			if !pmt.is_retryable() { continue }
+			if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, route_params: Some(params), .. } = pmt {
+				if pending_amt_msat < total_msat {
+					let mut route_params = params.clone();
+					route_params.final_value_msat = total_msat.saturating_sub(*pending_amt_msat);
+					retryable_htlcs.push((*payment_id, route_params));
+				}
+			}
+		}
+		core::mem::drop(outbounds);
+		for (payment_id, route_params) in retryable_htlcs.into_iter() {
+			if let Err(e) = self.retry_payment(payment_id, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, &send_payment_along_path) {
+				log_trace!(logger, "Errored retrying payment: {:?}", e);
+			}
+		}
+	}
+
+	fn retry_payment<R: Deref, NS: Deref, ES: Deref, F>(
+		&self, payment_id: PaymentId, route_params: RouteParameters, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
+	) -> Result<(), PaymentSendFailure>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+	{
+		#[cfg(feature = "std")] {
+			if has_expired(&route_params) {
+				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+					err: format!("Invoice expired for payment id {}; not retrying", log_bytes!(payment_id.0)),
+				}))
+			}
+		}
+
+		if !self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id)
+			.map_or(false, |payment| {
+				let is_retryable = payment.is_retryable();
+				if is_retryable { payment.increment_attempts(); }
+				is_retryable
+			})
+		{
+			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+				err: format!("Payment {} is not retryable", log_bytes!(payment_id.0)),
+			}))
+		}
+
+		let route = router.find_route(
+			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
+			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs
+		).map_err(|e| PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+			err: format!("Failed to find a route for payment {}: {:?}", log_bytes!(payment_id.0), e), // TODO: add APIError::RouteNotFound
+		}))?;
+
+		match self.retry_payment_with_route(&route, payment_id, entropy_source, node_signer, best_block_height, &send_payment_along_path) {
+			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
+				self.retry_payment(payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path)
+			},
+			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), .. }) => {
+				let _ = self.retry_payment(payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path);
+				Ok(())
+			},
+			res => res,
 		}
 	}
 
