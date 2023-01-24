@@ -2012,8 +2012,7 @@ fn auto_retry_zero_attempts_send_error() {
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
 	let err = nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap_err();
-	if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
-		assert!(err.contains("is not retryable"));
+	if let PaymentSendFailure::AllFailedResendSafe(_) = err {
 	} else { panic!("Unexpected error"); }
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 2); // channel close messages
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 1); // channel close event
@@ -2328,6 +2327,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_fourth_raa);
 	check_added_monitors!(nodes[0], 1);
 
+	// TODO update this comment and top-level comment
 	// At this point A has sent two HTLCs which both failed due to lack of fee. It now has two
 	// pending `PaymentPathFailed` events, one with `all_paths_failed` unset, and the second
 	// with it set. The first event will use up the only retry we are allowed, with the second
