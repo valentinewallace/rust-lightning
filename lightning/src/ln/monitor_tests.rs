@@ -1241,11 +1241,10 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	test_spendable_output(&nodes[1], &as_revoked_txn[0]);
 
 	let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
-	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
+	expect_payment_failed_conditions_event(payment_failed_events.clone(),
 		dust_payment_hash, false, PaymentFailedConditions::new());
-	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
+	expect_payment_failed_conditions_event(payment_failed_events.clone(),
 		missing_htlc_payment_hash, false, PaymentFailedConditions::new());
-	assert!(payment_failed_events.is_empty());
 
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[if confirm_htlc_spend_first { 2 } else { 3 }]);

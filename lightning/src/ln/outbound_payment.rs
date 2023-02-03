@@ -1003,6 +1003,7 @@ impl OutboundPayments {
 		#[cfg(not(test))]
 		let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
+		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -1019,7 +1020,7 @@ impl OutboundPayments {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
 				return
 			}
-			let is_retryable_now = payment.get().is_auto_retryable_now();
+			let mut is_retryable_now = payment.get().is_auto_retryable_now();
 			if let Some(scid) = short_channel_id {
 				payment.get_mut().insert_previously_failed_scid(scid);
 			}
@@ -1050,6 +1051,12 @@ impl OutboundPayments {
 				});
 			}
 
+			// Abandon if we were rejected by the destination, the payment is not retryable, or no retry
+			// parameters are available
+			if !payment_is_probe && (!is_retryable_now || !payment_retryable || retry.is_none()) {
+				let _ = payment.get_mut().mark_abandoned(); // we'll only Err if it's a legacy payment
+				is_retryable_now = false;
+			}
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
@@ -1069,7 +1076,7 @@ impl OutboundPayments {
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
-			if payment_is_probe(payment_hash, &payment_id, probing_cookie_secret) {
+			if payment_is_probe {
 				if !payment_retryable {
 					events::Event::ProbeSuccessful {
 						payment_id: *payment_id,
