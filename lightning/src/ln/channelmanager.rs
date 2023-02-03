@@ -2577,6 +2577,7 @@ where
 	///
 	/// [`send_payment`]: [`ChannelManager::send_payment`]
 	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
+	#[cfg(test)]
 	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
@@ -2604,6 +2605,7 @@ where
 	/// [`retry_payment`]: Self::retry_payment
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	#[cfg(test)]
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.abandon_payment(payment_id, &self.pending_events);
