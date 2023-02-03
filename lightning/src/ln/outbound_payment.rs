@@ -489,7 +489,8 @@ impl OutboundPayments {
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, logger: &L, send_payment_along_path: SP,
+		best_block_height: u32, pending_events: &Mutex<Vec<events::Event>>, logger: &L,
+		send_payment_along_path: SP,
 	)
 	where
 		R::Target: Router,
@@ -523,10 +524,14 @@ impl OutboundPayments {
 					}
 				}
 			}
+			core::mem::drop(outbounds);
 			if let Some((payment_id, route_params)) = retry_id_route_params {
-				core::mem::drop(outbounds);
 				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
 					log_info!(logger, "Errored retrying payment: {:?}", e);
+					// If we error on retry, there is no chance of the payment succeeding and no HTLCs have
+					// been irrevocably committed to, so we can safely abandon. See docs on `pay_internal` for
+					// more information.
+					self.abandon_payment(payment_id, pending_events);
 				}
 			} else { break }
 		}
@@ -1205,6 +1210,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 #[cfg(test)]
 mod tests {
+	use super::*;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -1212,11 +1218,11 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, PaymentSendFailure};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{OutboundPayments, Retry};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters};
 	use crate::sync::Arc;
 	use crate::util::errors::APIError;
+	use crate::util::events::Event;
 	use crate::util::test_utils;
 
 	#[test]
@@ -1300,5 +1306,55 @@ mod tests {
 		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
 			assert!(err.contains("Failed to find a route"));
 		} else { panic!("Unexpected error"); }
+	}
+
+	#[test]
+	fn fail_on_retry_error() {
+		let outbound_payments = OutboundPayments::new();
+		let logger = test_utils::TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let router = test_utils::TestRouter::new(network_graph);
+		let secp_ctx = Secp256k1::new();
+		let session_priv = [42; 32];
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+		{
+			let mut random_bytes_override = keys_manager.override_random_bytes.lock().unwrap();
+			*random_bytes_override = Some(session_priv);
+		}
+
+		let payment_params = PaymentParameters::from_node_id(
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 1000,
+			final_cltv_expiry_delta: 0,
+		};
+		router.expect_find_route(route_params.clone(),
+			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
+		let our_payment_id = PaymentId([0; 32]);
+		let our_payment_hash = PaymentHash([0; 32]);
+		outbound_payments.add_new_pending_payment(our_payment_hash, None, our_payment_id, None,
+			&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
+			Some(route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
+		{
+			// Simulate that there are more sats that need to be sent that are pending.
+			let mut pending_outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+			if let Some(PendingOutboundPayment::Retryable { ref mut total_msat, .. }) = pending_outbounds.get_mut(&our_payment_id) {
+				*total_msat += 1000;
+			}
+		}
+
+		let pending_events_mtx = Mutex::new(vec![]);
+		outbound_payments.check_retry_payments(&&router, || vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &pending_events_mtx, &&logger, |_, _, _, _, _, _, _, _, _| Ok(()));
+		let pending_events = pending_events_mtx.lock().unwrap();
+		assert_eq!(pending_events.len(), 1);
+		match pending_events[0] {
+			Event::PaymentFailed { payment_id, payment_hash } => {
+				assert_eq!(payment_id, our_payment_id);
+				assert_eq!(payment_hash, our_payment_hash);
+			},
+			_ => panic!()
+		}
 	}
 }
