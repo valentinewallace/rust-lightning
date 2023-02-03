@@ -15,7 +15,6 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
-use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails};
 use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
@@ -43,60 +42,6 @@ use {
 };
 
 #[test]
-fn retry_single_path_payment() {
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-
-	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1);
-	// Rebalance to find a route
-	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
-
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
-
-	// Rebalance so that the first hop fails.
-	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
-
-	// Make sure the payment fails on the first hop.
-	let payment_id = PaymentId(payment_hash.0);
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	check_added_monitors!(nodes[1], 0);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1.2 }]);
-	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	assert!(htlc_updates.update_add_htlcs.is_empty());
-	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
-	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
-	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
-	check_added_monitors!(nodes[1], 1);
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
-
-	// Rebalance the channel so the retry succeeds.
-	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
-
-	// Mine two blocks (we expire retries after 3, so this will check that we don't expire early)
-	connect_blocks(&nodes[0], 2);
-
-	// Retry the payment and make sure it succeeds.
-	nodes[0].node.retry_payment(&route, payment_id).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 100_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
-}
-
-#[test]
 fn mpp_failure() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -122,7 +67,7 @@ fn mpp_failure() {
 }
 
 #[test]
-fn mpp_retry() {
+fn mpp_partial_failure_no_retry() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
@@ -130,12 +75,12 @@ fn mpp_retry() {
 
 	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2);
-	let (chan_3_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 1, 3);
+	let (chan_3_update, _, chan_3_id, _) = create_announced_chan_between_nodes(&nodes, 1, 3);
 	let (chan_4_update, _, chan_4_id, _) = create_announced_chan_between_nodes(&nodes, 3, 2);
 	// Rebalance
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
 
-	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 1_000_000);
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 1_000_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
@@ -183,30 +128,30 @@ fn mpp_retry() {
 	check_added_monitors!(nodes[2], 1);
 	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], htlc_updates.commitment_signed, false);
+	// There won't be a `PaymentFailed` event until the mpp times out on the receiver's end, causing
+	// them to fail it back.
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
 
-	// Rebalance the channel so the second half of the payment can succeed.
-	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
+	for _ in 0..MPP_TIMEOUT_TICKS {
+		nodes[3].node.timer_tick_occurred();
+	}
 
-	// Make sure it errors as expected given a too-large amount.
-	if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = nodes[0].node.retry_payment(&route, payment_id) {
-		assert!(err.contains("over total_payment_amt_msat"));
-	} else { panic!("Unexpected error"); }
+	// Failed HTLC from node 3 -> 1
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], vec![HTLCDestination::FailedPayment { payment_hash }]);
+	let htlc_fail_updates_3_1 = get_htlc_update_msgs!(nodes[3], nodes[1].node.get_our_node_id());
+	assert_eq!(htlc_fail_updates_3_1.update_fail_htlcs.len(), 1);
+	nodes[1].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &htlc_fail_updates_3_1.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[3], 1);
+	commitment_signed_dance!(nodes[1], nodes[3], htlc_fail_updates_3_1.commitment_signed, false);
 
-	// Make sure it errors as expected given the wrong payment_id.
-	if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = nodes[0].node.retry_payment(&route, PaymentId([0; 32])) {
-		assert!(err.contains("not found"));
-	} else { panic!("Unexpected error"); }
-
-	// Retry the second half of the payment and make sure it succeeds.
-	let mut path = route.clone();
-	path.paths.remove(0);
-	nodes[0].node.retry_payment(&path, payment_id).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+	// Failed HTLC from node 1 -> 0
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_3_id }]);
+	let htlc_fail_updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(htlc_fail_updates_1_0.update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates_1_0.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[1], 1);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates_1_0.commitment_signed, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
 }
 
 fn do_mpp_receive_timeout(send_partial_mpp: bool) {
@@ -361,8 +306,7 @@ fn no_pending_leak_on_initial_send_failure() {
 
 fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// If we send a pending payment and `send_payment` returns success, we should always either
-	// return a payment failure event or a payment success event, and on failure the payment should
-	// be retryable.
+	// return a payment failure event or a payment success event.
 	//
 	// In order to do so when the ChannelManager isn't immediately persisted (which is normal - its
 	// always persisted asynchronously), the ChannelManager has to reload some payment data from
@@ -380,15 +324,15 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
+	let (_, _, _, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Serialize the ChannelManager prior to sending payments
 	let nodes_0_serialized = nodes[0].node.encode();
 
 	// Send two payments - one which will get to nodes[2] and will be claimed, one which we'll time
 	// out and retry.
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
-	let (payment_preimage_1, payment_hash_1, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, _, _) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -498,40 +442,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
 	}
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
-
-	// Finally, retry the payment (which was reloaded from the ChannelMonitor when nodes[0] was
-	// reloaded) via a route over the new channel, which work without issue and eventually be
-	// received and claimed at the recipient just like any other payment.
-	let (mut new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
-
-	// Update the fee on the middle hop to ensure PaymentSent events have the correct (retried) fee
-	// and not the original fee. We also update node[1]'s relevant config as
-	// do_claim_payment_along_route expects us to never overpay.
-	{
-		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
-			.unwrap().lock().unwrap();
-		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
-		let mut new_config = channel.config();
-		new_config.forwarding_fee_base_msat += 100_000;
-		channel.update_config(&new_config);
-		new_route.paths[0][0].fee_msat += 100_000;
-	}
-
-	// Force expiration of the channel's previous config.
-	for _ in 0..EXPIRE_PREV_CONFIG_TICKS {
-		nodes[1].node.timer_tick_occurred();
-	}
-
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
-	nodes[0].node.retry_payment(&new_route, PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
-	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0][0].fee_msat));
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
 }
 
 #[test]
@@ -667,14 +578,14 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// (which should also still work).
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	// We set mpp_parts_remain to avoid having abandon_payment called
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
 	nodes_0_serialized = nodes[0].node.encode();
 
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_ok());
+	// After the payment failed, we're free to send it again.
+	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_ok());
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], second_persister, second_new_chain_monitor, second_nodes_0_deserialized);
@@ -684,19 +595,20 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
 	// the payment is not (spuriously) listed as still pending.
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_ok());
+	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_ok());
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], if use_dust { 1_000 } else { 1_000_000 }, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_err());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
 	nodes_0_serialized = nodes[0].node.encode();
 
-	// Ensure that after reload we cannot retry the payment.
+	// Check that after reload we can send the payment again (though we shouldn't, since it was
+	// claimed previously).
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], third_persister, third_new_chain_monitor, third_nodes_0_deserialized);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
@@ -1232,20 +1144,17 @@ fn abandoned_send_payment_idempotent() {
 	nodes[1].node.fail_htlc_backwards(&first_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::FailedPayment { payment_hash: first_payment_hash }]);
 
-	pass_failed_payment_back_no_abandon(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash);
-	check_send_rejected!();
-
-	// Until we abandon the payment, no matter how many timer ticks pass, we still cannot reuse the
+	// Until we abandon the payment upon path failure, no matter how many timer ticks pass, we still cannot reuse the
 	// PaymentId.
 	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
 		nodes[0].node.timer_tick_occurred();
 	}
 	check_send_rejected!();
 
-	nodes[0].node.abandon_payment(payment_id);
-	get_event!(nodes[0], Event::PaymentFailed);
+	pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash);
 
-	// However, we can reuse the PaymentId immediately after we `abandon_payment`.
+	// However, we can reuse the PaymentId immediately after we `abandon_payment` upon passing the
+	// failed payment back.
 	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
@@ -1678,13 +1587,16 @@ fn do_automatic_retries(test: AutoRetry) {
 			let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 			check_added_monitors!(&nodes[1], 1);
 			assert!(update_1.update_fail_htlcs.len() == 1);
+			assert!(update_1.update_add_htlcs.is_empty());
+			assert!(update_1.update_fulfill_htlcs.is_empty());
+			assert!(update_1.update_fail_malformed_htlcs.is_empty());
 			let fail_msg = update_1.update_fail_htlcs[0].clone();
-
 			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
 			commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 			// Ensure the attempt fails and a new PendingHTLCsForwardable event is generated for the retry
 			let mut events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 2);
 			match events[0] {
 				Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
 					assert_eq!(payment_hash, ev_payment_hash);
@@ -1693,12 +1605,18 @@ fn do_automatic_retries(test: AutoRetry) {
 				_ => panic!("Unexpected event"),
 			}
 			if $expect_pending_htlcs_forwardable {
-				assert_eq!(events.len(), 2);
 				match events[1] {
 					Event::PendingHTLCsForwardable { .. } => {},
 					_ => panic!("Unexpected event"),
 				}
-			} else { assert_eq!(events.len(), 1) }
+			} else {
+				match events[1] {
+					Event::PaymentFailed { payment_hash: ev_payment_hash, .. } => {
+						assert_eq!(payment_hash, ev_payment_hash);
+					},
+					_ => panic!("Unexpected event"),
+				}
+			}
 		}
 	}
 
@@ -1750,17 +1668,6 @@ fn do_automatic_retries(test: AutoRetry) {
 		nodes[0].node.process_pending_htlc_forwards();
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
-
-		nodes[0].node.abandon_payment(PaymentId(payment_hash.0));
-		let events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
-				assert_eq!(payment_hash, *ev_payment_hash);
-				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
-			},
-			_ => panic!("Unexpected event"),
-		}
 	} else if test == AutoRetry::FailTimeout {
 		#[cfg(not(feature = "no-std"))] {
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
@@ -2402,7 +2309,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// by adding the `PaymentFailed` event.
 	//
 	// Because we now retry payments as a batch, we simply return a single-path route in the
-	// second, batched, request, have that fail, then complete the payment via `abandon_payment`.
+	// second, batched, request, have that fail, ensure the payment was abandoned.
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 4);
 	match events[0] {
@@ -2439,7 +2346,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	commitment_signed_dance!(nodes[0], nodes[1], &bs_fail_update.commitment_signed, false, true);
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	assert_eq!(events.len(), 2);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
 			assert_eq!(payment_hash, ev_payment_hash);
@@ -2447,10 +2354,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	nodes[0].node.abandon_payment(PaymentId(payment_hash.0));
-	events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
+	match events[1] {
 		Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
 			assert_eq!(payment_hash, *ev_payment_hash);
 			assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
