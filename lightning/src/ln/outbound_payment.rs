@@ -495,10 +495,12 @@ impl OutboundPayments {
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
-			for (pmt_id, pmt) in outbounds.iter_mut() {
-				if pmt.is_auto_retryable_now() {
-					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), .. } = pmt {
-						if pending_amt_msat < total_msat {
+			outbounds.retain(|pmt_id, pmt| {
+				let mut retain = true;
+				let auto_retryable = pmt.is_auto_retryable_now();
+				if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), .. } = pmt {
+					if pending_amt_msat < total_msat {
+						if auto_retryable {
 							retry_id_route_params = Some((*pmt_id, RouteParameters {
 								final_value_msat: *total_msat - *pending_amt_msat,
 								final_cltv_expiry_delta:
@@ -507,13 +509,19 @@ impl OutboundPayments {
 										debug_assert!(false, "We always set the final_cltv_expiry_delta when a path fails");
 										LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA.into()
 									},
-								payment_params: params.clone(),
+									payment_params: params.clone(),
 							}));
-							break
+						} else if pmt.mark_abandoned().is_ok() && pmt.remaining_parts() == 0 {
+							pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+								payment_id: *pmt_id,
+								payment_hash: pmt.payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+							});
+							retain = false;
 						}
 					}
 				}
-			}
+				retain
+			});
 			core::mem::drop(outbounds);
 			if let Some((payment_id, route_params)) = retry_id_route_params {
 				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
