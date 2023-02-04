@@ -535,6 +535,24 @@ impl OutboundPayments {
 				}
 			} else { break }
 		}
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.retain(|pmt_id, pmt| {
+			let mut retain = true;
+			let auto_retryable = pmt.is_auto_retryable_now();
+			if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, .. } = pmt {
+				if pending_amt_msat < total_msat {
+					if !auto_retryable && pmt.mark_abandoned().is_ok() && pmt.remaining_parts() == 0 {
+						pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+							payment_id: *pmt_id,
+							payment_hash: pmt.payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+						});
+						retain = false;
+					}
+				}
+			}
+			retain
+		});
 	}
 
 	/// Errors with no attempt at payment if the route parameters have expired, we failed to find a

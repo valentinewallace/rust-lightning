@@ -1682,7 +1682,6 @@ fn do_automatic_retries(test: AutoRetry) {
 			let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(msg_events.len(), 0);
 
-			nodes[0].node.abandon_payment(PaymentId(payment_hash.0));
 			let mut events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
@@ -1717,7 +1716,6 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 
-		nodes[0].node.abandon_payment(PaymentId(payment_hash.0));
 		let mut events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
