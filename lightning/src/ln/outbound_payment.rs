@@ -532,6 +532,19 @@ impl OutboundPayments {
 		}
 	}
 
+	/// Errors with no attempt at payment if the route parameters have expired, we failed to find a
+	/// route to the destination, or we're attempting a retry when retries have been exhausted.
+	///
+	/// Otherwise, we'll attempt a payment over the route we've found and may recursively retry, but
+	/// we'll end up erroring if:
+	/// * the route we found is invalid
+	/// * all channels in the route were unavailable at sending time
+	/// and our retries have been exhausted.
+	///
+	/// Erroring in this method indicates that no HTLCs have been irrevocably committed to.
+	///
+	/// Note that we return `Ok(())` if some payment paths succeeded but some failed (and no retries
+	/// remain) because it is possible that the payment may complete later, so resending is unsafe.
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F, L: Deref>(
 		&self, payment_id: PaymentId,
 		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Option<PaymentPreimage>, Retry)>,
