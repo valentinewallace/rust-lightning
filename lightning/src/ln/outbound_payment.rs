@@ -313,9 +313,31 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 	}
 }
 
-/// If a payment fails to send, it can be in one of several states. This enum is returned as the
-/// Err() type describing which state the payment is in, see the description of individual enum
-/// states for more.
+/// If a payment fails to send with [`ChannelManager::send_payment_with_retry`], it can be in one of
+/// several states. This enum is returned as the Err() type describing which state the payment is
+/// in, see the description of individual enum states for more.
+///
+/// [`ChannelManager::send_payment_with_retry`]: crate::ln::channelmanager::ChannelManager::send_payment_with_retry
+#[derive(Clone, Debug)]
+pub enum RetryableSendFailure {
+	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired.
+	PaymentExpired,
+	/// We were unable to find a route to the destination.
+	RouteNotFound,
+	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
+	/// yet completed (i.e. generated an [`Event::PaymentSent`] or [`Event::PaymentFailed`]).
+	///
+	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
+	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	DuplicatePayment,
+}
+
+/// If a payment fails to send with [`ChannelManager::send_payment`], it can be in one of several
+/// states. This enum is returned as the Err() type describing which state the payment is in, see
+/// the description of individual enum states for more.
+///
+/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 #[derive(Clone, Debug)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
@@ -398,7 +420,7 @@ impl OutboundPayments {
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: F,
-	) -> Result<(), PaymentSendFailure>
+	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
@@ -410,7 +432,6 @@ impl OutboundPayments {
 		self.pay_internal(payment_id, payment_hash, Some((payment_secret, None, retry_strategy)),
 			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
 			best_block_height, logger, pending_events, &send_payment_along_path)
-			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
 	pub(super) fn send_payment_with_route<ES: Deref, NS: Deref, F>(
@@ -436,7 +457,7 @@ impl OutboundPayments {
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: F
-	) -> Result<PaymentHash, PaymentSendFailure>
+	) -> Result<PaymentHash, RetryableSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
@@ -452,7 +473,6 @@ impl OutboundPayments {
 			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
 			best_block_height, logger, pending_events, &send_payment_along_path)
 			.map(|()| payment_hash)
-			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
 	pub(super) fn send_spontaneous_payment_with_route<ES: Deref, NS: Deref, F>(
@@ -555,26 +575,22 @@ impl OutboundPayments {
 		});
 	}
 
-	/// Errors with no attempt at payment if the route parameters have expired, we failed to find a
-	/// route to the destination, or we're attempting a retry when retries have been exhausted.
+	/// Errors immediately with no attempt at payment if the route parameters have expired, we failed
+	/// to find a route to the destination, or on duplicate payment.
 	///
-	/// Otherwise, we'll attempt a payment over the route we've found and may recursively retry, but
-	/// we'll end up erroring if:
-	/// * the route we found is invalid
-	/// * all channels in the route were unavailable at sending time
-	/// and our retries have been exhausted.
-	///
-	/// Erroring in this method indicates that no HTLCs have been irrevocably committed to.
-	///
-	/// Note that we return `Ok(())` if some payment paths succeeded but some failed (and no retries
-	/// remain) because it is possible that the payment may complete later, so resending is unsafe.
+	/// Otherwise, we'll always return Ok and error asynchronously via [`PaymentPathFailed`] and
+	/// [`PaymentFailed`] events. We may abandon the payment and generate failure events if retries
+	/// are exhausted and:
+	/// * the route we found is invalid,
+	/// * all channels in the route were unavailable at sending time, or
+	/// * some paths succeeded but some failed
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		initial_send_info: Option<(&Option<PaymentSecret>, Option<PaymentPreimage>, Retry)>,
 		route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
 		inflight_htlcs: InFlightHtlcs, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
 		logger: &L, pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: &F,
-	) -> Result<(), PaymentSendFailure>
+	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
@@ -585,35 +601,50 @@ impl OutboundPayments {
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
-				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
-					err: format!("Invoice expired for payment id {}", log_bytes!(payment_id.0)),
-				}))
+				if initial_send_info.is_some() {
+					return Err(RetryableSendFailure::PaymentExpired)
+				} else {
+					self.abandon_payment(payment_id, pending_events);
+					return Ok(())
+				}
 			}
 		}
 
-		let route = router.find_route(
+		let route = match router.find_route(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs
-		).map_err(|e| PaymentSendFailure::ParameterError(APIError::APIMisuseError {
-			err: format!("Failed to find a route for payment {}: {:?}", log_bytes!(payment_id.0), e), // TODO: add APIError::RouteNotFound
-		}))?;
+		) {
+			Ok(route) => route,
+			Err(e) => if initial_send_info.is_some() {
+				return Err(RetryableSendFailure::RouteNotFound)
+			} else {
+				log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", log_bytes!(payment_id.0), e);
+				self.abandon_payment(payment_id, pending_events);
+				return Ok(())
+			}
+		};
 
 		let res = if let Some((payment_secret, keysend_preimage, retry_strategy)) = initial_send_info {
-			let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, keysend_preimage, &route, Some(retry_strategy), Some(route_params.payment_params.clone()), entropy_source, best_block_height)?;
+			let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret,
+				payment_id, keysend_preimage, &route, Some(retry_strategy),
+				Some(route_params.payment_params.clone()), entropy_source, best_block_height)
+				.map_err(|_| RetryableSendFailure::DuplicatePayment)?;
 			self.pay_route_internal(&route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
 		} else {
 			self.retry_payment_with_route(&route, payment_id, entropy_source, node_signer, best_block_height, send_payment_along_path)
 		};
 		match res {
-			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
+			Err(PaymentSendFailure::AllFailedResendSafe(errs)) => {
+				push_payment_path_failed_evs(payment_id, payment_hash, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
 				let retry_res = self.pay_internal(payment_id, payment_hash, None, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 				log_info!(logger, "Result retrying payment id {}: {:?}", log_bytes!(payment_id.0), retry_res);
-				if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = &retry_res {
-					if err.starts_with("Retries exhausted ") { return res; }
+				if retry_res.is_err() {
+					self.abandon_payment(payment_id, pending_events);
 				}
-				retry_res
+				Ok(())
 			},
-			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), .. }) => {
+			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, .. }) => {
+				push_payment_path_failed_evs(payment_id, payment_hash, route.paths, results.into_iter(), pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
@@ -627,7 +658,18 @@ impl OutboundPayments {
 				// initial HTLC-Add messages yet.
 				Ok(())
 			},
-			res => res,
+			Err(PaymentSendFailure::PathParameterError(results)) => {
+				push_payment_path_failed_evs(payment_id, payment_hash, route.paths, results.into_iter(), pending_events);
+				self.abandon_payment(payment_id, pending_events);
+				Ok(())
+			},
+			Err(PaymentSendFailure::ParameterError(e)) => {
+				log_error!(logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
+				self.abandon_payment(payment_id, pending_events);
+				Ok(())
+			},
+			Err(PaymentSendFailure::DuplicatePayment) => Err(RetryableSendFailure::DuplicatePayment),
+			Ok(()) => Ok(())
 		}
 	}
 
@@ -1188,6 +1230,32 @@ impl OutboundPayments {
 	}
 }
 
+fn push_payment_path_failed_evs<I: Iterator<Item = Result<(), APIError>>>(
+	payment_id: PaymentId, payment_hash: PaymentHash, paths: Vec<Vec<RouteHop>>, path_results: I,
+	pending_events: &Mutex<Vec<events::Event>>
+) {
+	let mut events = pending_events.lock().unwrap();
+	for (path, path_res) in paths.into_iter().zip(path_results) {
+		if path_res.is_err() {
+			let scid = path[0].short_channel_id;
+			events.push(events::Event::PaymentPathFailed {
+				payment_id: Some(payment_id),
+				payment_hash,
+				payment_failed_permanently: false,
+				network_update: None,
+				all_paths_failed: false,
+				path,
+				short_channel_id: Some(scid),
+				retry: None,
+				#[cfg(test)]
+				error_code: None,
+				#[cfg(test)]
+				error_data: None,
+			});
+		}
+	}
+}
+
 /// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
 /// payment probe.
 pub(super) fn payment_is_probe(payment_hash: &PaymentHash, payment_id: &PaymentId,
@@ -1241,12 +1309,11 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	use crate::ln::PaymentHash;
-	use crate::ln::channelmanager::{PaymentId, PaymentSendFailure};
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters};
 	use crate::sync::Arc;
-	use crate::util::errors::APIError;
 	use crate::util::events::Event;
 	use crate::util::test_utils;
 
@@ -1277,20 +1344,23 @@ mod tests {
 			final_cltv_expiry_delta: 0,
 		};
 		let pending_events = Mutex::new(Vec::new());
-		let err = if on_retry {
+		if on_retry {
+			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), None, PaymentId([0; 32]), None,
+			&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
+			Some(expired_route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
 			outbound_payments.pay_internal(
 				PaymentId([0; 32]), PaymentHash([0; 32]), None, expired_route_params, &&router, vec![], InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
-				&|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap();
+			let events = pending_events.lock().unwrap();
+			assert_eq!(events.len(), 1);
+			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
 		} else {
-			outbound_payments.send_payment(
+			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), expired_route_params,
 				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
-		};
-		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
-			assert!(err.contains("Invoice expired"));
-		} else { panic!("Unexpected error"); }
+				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err();
+			if let RetryableSendFailure::PaymentExpired = err { } else { panic!("Unexpected error"); }
+		}
 	}
 
 	#[test]
@@ -1318,23 +1388,25 @@ mod tests {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
 
 		let pending_events = Mutex::new(Vec::new());
-		let err = if on_retry {
+		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), None, PaymentId([0; 32]), None,
 				&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
 				Some(route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
 			outbound_payments.pay_internal(
 				PaymentId([0; 32]), PaymentHash([0; 32]), None, route_params, &&router, vec![], InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
-				&|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&|_, _, _, _, _, _, _, _, _| Ok(())).unwrap();
+			let events = pending_events.lock().unwrap();
+			assert_eq!(events.len(), 1);
+			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
 		} else {
-			outbound_payments.send_payment(
+			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params,
 				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
-		};
-		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
-			assert!(err.contains("Failed to find a route"));
-		} else { panic!("Unexpected error"); }
+				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err();
+			if let RetryableSendFailure::RouteNotFound = err {
+			} else { panic!("Unexpected error"); }
+		}
 	}
 
 	#[test]
