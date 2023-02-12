@@ -1078,7 +1078,6 @@ impl OutboundPayments {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
 		let mut pending_retry_ev = None;
 		let mut retry = None;
@@ -1127,7 +1126,6 @@ impl OutboundPayments {
 				is_retryable_now = false;
 			}
 			if payment.get().remaining_parts() == 0 {
-				all_paths_failed = true;
 				if payment.get().abandoned() {
 					full_failure_ev = Some(events::Event::PaymentFailed {
 						payment_id: *payment_id,
@@ -1180,7 +1178,6 @@ impl OutboundPayments {
 					payment_hash: payment_hash.clone(),
 					payment_failed_permanently: !payment_retryable,
 					network_update,
-					all_paths_failed,
 					path: path.clone(),
 					short_channel_id,
 					retry,
@@ -1238,7 +1235,6 @@ fn push_payment_path_failed_evs<I: Iterator<Item = Result<(), APIError>>>(
 				payment_hash,
 				payment_failed_permanently: false,
 				network_update: None,
-				all_paths_failed: false,
 				path,
 				short_channel_id: Some(scid),
 				retry: None,
