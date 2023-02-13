@@ -2055,7 +2055,7 @@ fn retry_multi_path_single_failed_payment() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-			network_update: None, short_channel_id: Some(expected_scid), .. } => {
+			short_channel_id: Some(expected_scid), .. } => {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
 		},
@@ -2126,7 +2126,7 @@ fn immediate_retry_on_failure() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-		network_update: None, short_channel_id: Some(expected_scid), .. } => {
+		short_channel_id: Some(expected_scid), .. } => {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
 		},

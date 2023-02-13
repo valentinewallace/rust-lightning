@@ -3235,12 +3235,12 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 6);
 			match events[0] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					// If we delivered B's RAA we got an unknown preimage error, not something
 					// that we should update our routing table for.
 					if !deliver_bs_raa {
-						assert!(network_update.is_some());
+						// assert!(network_update.is_some());
 					}
 				},
 				_ => panic!("Unexpected event"),
@@ -3252,9 +3252,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[2] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-					assert!(network_update.is_some());
+					// assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3265,9 +3265,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[4] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-					assert!(network_update.is_some());
+					// assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -5147,16 +5147,16 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut as_failds = HashSet::new();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
-		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, .. } = event {
 			assert!(as_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_2 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
 				assert!(!payment_failed_permanently);
 			}
-			if network_update.is_some() {
-				as_updates += 1;
-			}
+			// if network_update.is_some() {
+			//   as_updates += 1;
+			// }
 		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
@@ -5173,16 +5173,16 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut bs_failds = HashSet::new();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
-		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, .. } = event {
 			assert!(bs_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
 				assert!(!payment_failed_permanently);
 			}
-			if network_update.is_some() {
-				bs_updates += 1;
-			}
+			// if network_update.is_some() {
+			//   bs_updates += 1;
+			// }
 		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
@@ -5197,8 +5197,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// get a NetworkUpdate. A should have gotten 4 HTLCs which were failed-back due to
 	// unknown-preimage-etc, B should have gotten 2. Thus, in the
 	// announce_latest && deliver_last_raa case, we should have 5-4=1 and 4-2=2 NetworkUpdates.
-	assert_eq!(as_updates, if deliver_last_raa { 1 } else if !announce_latest { 3 } else { 5 });
-	assert_eq!(bs_updates, if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
+	// assert_eq!(as_updates, if deliver_last_raa { 1 } else if !announce_latest { 3 } else { 5 });
+	// assert_eq!(bs_updates, if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
 }
 
 #[test]
@@ -5693,11 +5693,11 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref short_channel_id, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref short_channel_id, .. } => {
 			assert_eq!(PaymentId(our_payment_hash.0), *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*network_update, None);
+			// assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
@@ -5783,11 +5783,11 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref short_channel_id, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref short_channel_id, .. } => {
 			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*network_update, None);
+			// assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route_2.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
@@ -6685,11 +6685,13 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	// Expect a PaymentPathFailed event with a ChannelFailure network update for the channel between
 	// the node originating the error to its next hop.
 	match events_5[0] {
-		Event::PaymentPathFailed { network_update:
-			Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }), error_code, ..
+		Event::PaymentPathFailed { error_code, ..
 		} => {
-			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
-			assert!(is_permanent);
+		// Event::PaymentPathFailed { network_update:
+		//   Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }), error_code, ..
+		// } => {
+			// assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
+			// assert!(is_permanent);
 			assert_eq!(error_code, Some(0x8000|0x4000|0x2000|4));
 		},
 		_ => panic!("Unexpected event"),

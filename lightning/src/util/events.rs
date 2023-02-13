@@ -82,6 +82,31 @@ impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(2, SpontaneousPayment)
 );
 
+/// When the payment failure took place and extra details about it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Failure {
+	/// We failed to initially send the payment and no HTLC was committed to. Contains a relevant
+	/// error message.
+	InitialSend(String),
+	/// A hop on the path failed to forward our payment.
+	///
+	/// The enclosed [`NetworkUpdate`], if present, should be applied to the [`NetworkGraph`] so that
+	/// routing decisions can take into account the update.
+	///
+	/// [`NetworkUpdate`]: crate::routing::gossip::NetworkUpdate
+	/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
+	OnPath {
+		network_update: Option<NetworkUpdate>,
+	},
+}
+
+impl_writeable_tlv_based_enum_upgradable!(Failure,
+	(0, OnPath) => {
+		(0, network_update, ignorable),
+	};
+	(2, InitialSend)
+);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// The reason the channel was closed. See individual variants more details.
 pub enum ClosureReason {
@@ -589,7 +614,7 @@ pub enum Event {
 		fee_paid_msat: Option<u64>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
-	/// provide failure information for each MPP part in the payment.
+	/// provide failure information for each path attempt in the payment, including retries.
 	///
 	/// This event is provided once there are no further pending HTLCs for the payment and the
 	/// payment is no longer retryable, due either to the [`Retry`] provided or
@@ -652,14 +677,11 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, the payment may
 		/// be retried via a different route.
 		payment_failed_permanently: bool,
-		/// Any failure information conveyed via the Onion return packet by a node along the failed
-		/// payment route.
-		///
-		/// Should be applied to the [`NetworkGraph`] so that routing decisions can take into
-		/// account the update.
+		/// Extra error details based on the failure type. May contain an update that needs to be
+		/// applied to the [`NetworkGraph`].
 		///
 		/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
-		network_update: Option<NetworkUpdate>,
+		failure: Failure,
 		/// The payment path that failed.
 		path: Vec<RouteHop>,
 		/// The channel responsible for the failed payment path.
@@ -961,7 +983,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update,
+				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref failure,
 				ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
@@ -973,6 +995,7 @@ impl Writeable for Event {
 				error_code.write(writer)?;
 				#[cfg(test)]
 				error_data.write(writer)?;
+				let network_update: Option<NetworkUpdate> = None;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, network_update, option),
@@ -982,6 +1005,7 @@ impl Writeable for Event {
 					(7, short_channel_id, option),
 					(9, retry, option),
 					(11, payment_id, option),
+					(13, failure, required),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -1193,11 +1217,12 @@ impl MaybeReadable for Event {
 					let error_data = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
-					let mut network_update = None;
+					let mut network_update: Option<NetworkUpdate> = None;
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut retry = None;
 					let mut payment_id = None;
+					let mut failure_opt = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
@@ -1207,12 +1232,14 @@ impl MaybeReadable for Event {
 						(7, short_channel_id, option),
 						(9, retry, option),
 						(11, payment_id, option),
+						(13, failure_opt, ignorable),
 					});
+					let failure = failure_opt.unwrap_or_else(|| Failure::OnPath { network_update });
 					Ok(Some(Event::PaymentPathFailed {
 						payment_id,
 						payment_hash,
 						payment_failed_permanently,
-						network_update,
+						failure,
 						path: path.unwrap(),
 						short_channel_id,
 						retry,

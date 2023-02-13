@@ -1177,7 +1177,7 @@ impl OutboundPayments {
 					payment_id: Some(*payment_id),
 					payment_hash: payment_hash.clone(),
 					payment_failed_permanently: !payment_retryable,
-					network_update,
+					failure: events::Failure::OnPath { network_update },
 					path: path.clone(),
 					short_channel_id,
 					retry,
@@ -1228,13 +1228,13 @@ fn push_payment_path_failed_evs<I: Iterator<Item = Result<(), APIError>>>(
 ) {
 	let mut events = pending_events.lock().unwrap();
 	for (path, path_res) in paths.into_iter().zip(path_results) {
-		if path_res.is_err() {
+		if let Err(e) = path_res {
 			let scid = path[0].short_channel_id;
 			events.push(events::Event::PaymentPathFailed {
 				payment_id: Some(payment_id),
 				payment_hash,
 				payment_failed_permanently: false,
-				network_update: None,
+				failure: events::Failure::InitialSend(format!("{:?}", e)),
 				path,
 				short_channel_id: Some(scid),
 				retry: None,
