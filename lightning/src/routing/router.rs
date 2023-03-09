@@ -13,10 +13,12 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
+use crate::offers::invoice::BlindedPayInfo;
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::onion_message::BlindedPath;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -543,6 +545,24 @@ impl PaymentParameters {
 		Self { route_hints, ..self }
 	}
 
+	/// Includes hints for routing to a payee who is being paid to via `BlindedPath`s for privacy.
+	pub fn with_blinded_route_hints(self, blinded_paths: Vec<(BlindedPath, BlindedPayInfo)>) -> Self {
+		let route_hints = blinded_paths.into_iter().map(|(path, payinfo)| {
+			RouteHint(vec![RouteHintHop {
+				src_node_id: path.introduction_node_id,
+				short_channel_id: 0, // TODO is this too weird?
+				fees: RoutingFees {
+					base_msat: payinfo.fee_base_msat,
+					proportional_millionths: payinfo.fee_proportional_millionths,
+				},
+				cltv_expiry_delta: payinfo.cltv_expiry_delta,
+				htlc_minimum_msat: Some(payinfo.htlc_minimum_msat),
+				htlc_maximum_msat: Some(payinfo.htlc_maximum_msat),
+			}])
+		}).collect();
+		Self { route_hints, ..self }
+	}
+
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
 	///
 	/// (C-not exported) since bindings don't support move semantics
@@ -600,11 +620,17 @@ impl Readable for RouteHint {
 /// A channel descriptor for a hop along a payment path.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct RouteHintHop {
-	/// The node_id of the non-target end of the route
+	/// The node_id of the non-target end of the route. May be the introduction node id of a
+	/// [`BlindedPath`].
+	///
+	/// [`BlindedPath`]: crate::onion_message::BlindedPath
 	pub src_node_id: PublicKey,
-	/// The short_channel_id of this channel
+	/// The short_channel_id of this channel. May be 0 if this route hint corresponds to a
+	/// [`BlindedPath`].
+	///
+	/// [`BlindedPath`]: crate::onion_message::BlindedPath
 	pub short_channel_id: u64,
-	/// The fees which must be paid to use this channel
+	/// The fees which must be paid to use this channel or blinded path.
 	pub fees: RoutingFees,
 	/// The difference in CLTV values between this node and the next node.
 	pub cltv_expiry_delta: u16,
