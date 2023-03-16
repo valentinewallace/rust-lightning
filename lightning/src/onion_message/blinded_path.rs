@@ -13,17 +13,19 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use super::packet::ControlTlvs;
 use super::utils;
+
+use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
+use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, VecWriter, Writeable, Writer};
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, RequiredWrapper, VecWriter, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
-use crate::io::{self, Cursor};
+use crate::io::{self, Cursor, Read};
 use crate::prelude::*;
 
 /// Onion messages can be sent and received to blinded paths, which serve to hide the identity of
@@ -78,6 +80,22 @@ impl BlindedPath {
 		})
 	}
 
+	///
+	pub fn new_payment_path<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+		introduction_node_id: PublicKey, path: &[(PublicKey, EncryptedTlvs)], entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> {
+		if path.len() < 2 { return Err(()) }
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
+		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+
+		Ok(BlindedPath {
+			introduction_node_id,
+			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
+			blinded_hops: blinded_payment_hops(secp_ctx, path, &blinding_secret).map_err(|_| ())?,
+		})
+	}
+
 	// Advance the blinded path by one hop, so make the second hop into the new introduction node.
 	pub(super) fn advance_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>
 		(&mut self, node_signer: &NS, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
@@ -121,11 +139,11 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
 
 	let mut prev_ss_and_blinded_node_id = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
+	utils::construct_keys_callback(secp_ctx, unblinded_path.into_iter().map(|pk| utils::NodeId(*pk)), None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
 		if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
 			if let Some(pk) = unblinded_pk {
 				let payload = ForwardTlvs {
-					next_node_id: pk,
+					next_node_id: pk.0,
 					next_blinding_override: None,
 				};
 				blinded_hops.push(BlindedHop {
@@ -145,6 +163,20 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		});
 	} else { debug_assert!(false) }
 
+	Ok(blinded_hops)
+}
+
+/// Construct blinded hops for the given `unblinded_path`.
+fn blinded_payment_hops<T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: &[(PublicKey, EncryptedTlvs)], session_priv: &SecretKey
+) -> Result<Vec<BlindedHop>, secp256k1::Error> {
+	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
+	utils::construct_keys_callback(secp_ctx, unblinded_path.into_iter(), None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_payload, _| {
+		blinded_hops.push(BlindedHop {
+			blinded_node_id,
+			encrypted_payload: encrypt_payload(unblinded_payload.unwrap(), encrypted_payload_ss),
+		});
+	})?;
 	Ok(blinded_hops)
 }
 
@@ -229,3 +261,103 @@ impl Writeable for ReceiveTlvs {
 		Ok(())
 	}
 }
+
+///
+pub enum EncryptedTlvs {
+	Forward {
+		short_channel_id: u64,
+		payment_relay: PaymentRelay,
+		payment_constraints: PaymentConstraints,
+		features: BlindedHopFeatures,
+	},
+	Receive {
+		path_id: Option<[u8; 32]>,
+		payment_constraints: PaymentConstraints,
+		features: BlindedHopFeatures,
+	},
+}
+
+///
+pub struct PaymentRelay {
+	cltv_expiry_delta: u16,
+	fee_proportional_millionths: u32,
+	fee_base_msat: u32,
+}
+
+///
+pub struct PaymentConstraints {
+	max_cltv_expiry: u32,
+	htlc_minimum_msat: u64,
+}
+
+impl Writeable for EncryptedTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		// TODO: write padding
+		match self {
+			Self::Forward { short_channel_id, payment_relay, payment_constraints, features } => {
+				encode_tlv_stream!(w, {
+					(2, short_channel_id, required),
+					(10, payment_relay, required),
+					(12, payment_constraints, required),
+					(14, features, required),
+				});
+			},
+			Self::Receive { path_id, payment_constraints, features } => {
+				encode_tlv_stream!(w, {
+					(6, path_id, option),
+					(12, payment_constraints, required),
+					(14, features, required),
+				});
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for EncryptedTlvs {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut _padding: Option<crate::onion_message::packet::Padding> = None;
+		let mut scid: Option<u64> = None;
+		let mut path_id: Option<[u8; 32]> = None;
+		let mut next_blinding_override: Option<PublicKey> = None;
+		let mut payment_relay: Option<PaymentRelay> = None;
+		let mut payment_constraints = RequiredWrapper(None);
+		let mut features = RequiredWrapper(None);
+		decode_tlv_stream!(&mut r, {
+			(1, _padding, option),
+			(2, scid, option),
+			(6, path_id, option),
+			(8, next_blinding_override, option),
+			(10, payment_relay, option),
+			(12, payment_constraints, required),
+			(14, features, required),
+		});
+		if let Some(short_channel_id) = scid {
+			if path_id.is_some() { return Err(DecodeError::InvalidValue) }
+			Ok(EncryptedTlvs::Forward {
+				short_channel_id,
+				payment_relay: payment_relay.ok_or_else(|| DecodeError::InvalidValue)?,
+				payment_constraints: _init_tlv_based_struct_field!(payment_constraints, required),
+				features: _init_tlv_based_struct_field!(features, required),
+			})
+		} else {
+			if payment_relay.is_some() { return Err(DecodeError::InvalidValue) }
+			Ok(EncryptedTlvs::Receive {
+				path_id,
+				payment_constraints: _init_tlv_based_struct_field!(payment_constraints, required),
+				features: _init_tlv_based_struct_field!(features, required),
+			})
+		}
+	}
+}
+
+impl_writeable_msg!(PaymentRelay, {
+	cltv_expiry_delta,
+	fee_proportional_millionths,
+	fee_base_msat
+}, {});
+
+impl_writeable_msg!(PaymentConstraints, {
+	max_cltv_expiry,
+	htlc_minimum_msat
+}, {});

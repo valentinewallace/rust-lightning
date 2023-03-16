@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::ln::onion_utils;
-use super::blinded_path::BlindedPath;
+use super::blinded_path::{EncryptedTlvs, BlindedPath};
 use super::messenger::Destination;
 
 use crate::prelude::*;
@@ -24,8 +24,9 @@ use crate::prelude::*;
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
 pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
-	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>)>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Option<Destination>,
+	P: Payload, I: Iterator<Item=P>,
+	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<P>, Option<Vec<u8>>)>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
 	session_priv: &SecretKey, mut callback: FType
 ) -> Result<(), secp256k1::Error> {
 	let mut msg_blinding_point_priv = session_priv.clone();
@@ -34,7 +35,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 	let mut onion_packet_pubkey = msg_blinding_point.clone();
 
 	macro_rules! build_keys {
-		($pk: expr, $blinded: expr, $encrypted_payload: expr) => {{
+		($payload_opt: expr, $pk: expr, $blinded: expr, $encrypted_payload: expr) => {{
 			let encrypted_data_ss = SharedSecret::new(&$pk, &msg_blinding_point_priv);
 
 			let blinded_hop_pk = if $blinded { $pk } else {
@@ -48,15 +49,15 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
 			let rho = onion_utils::gen_rho_from_shared_secret(encrypted_data_ss.as_ref());
-			let unblinded_pk_opt = if $blinded { None } else { Some($pk) };
-			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_pk_opt, $encrypted_payload);
+			let unblinded_payload_opt = if $blinded { None } else { $payload_opt };
+			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_payload_opt, $encrypted_payload);
 			(encrypted_data_ss, onion_packet_ss)
 		}}
 	}
 
 	macro_rules! build_keys_in_loop {
-		($pk: expr, $blinded: expr, $encrypted_payload: expr) => {
-			let (encrypted_data_ss, onion_packet_ss) = build_keys!($pk, $blinded, $encrypted_payload);
+		($payload: expr, $pk: expr, $blinded: expr, $encrypted_payload: expr) => {
+			let (encrypted_data_ss, onion_packet_ss) = build_keys!($payload, $pk, $blinded, $encrypted_payload);
 
 			let msg_blinding_point_blinding_factor = {
 				let mut sha = Sha256::engine();
@@ -79,20 +80,37 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 		};
 	}
 
-	for pk in unblinded_path {
-		build_keys_in_loop!(*pk, false, None);
+	for payload in unblinded_path {
+		build_keys_in_loop!(Some(payload), payload.node_id(), false, None);
 	}
 	if let Some(dest) = destination {
 		match dest {
 			Destination::Node(pk) => {
-				build_keys!(pk, false, None);
+				build_keys!(None, pk, false, None);
 			},
 			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => {
 				for hop in blinded_hops {
-					build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
+					build_keys_in_loop!(None, hop.blinded_node_id, true, Some(hop.encrypted_payload));
 				}
 			},
 		}
 	}
 	Ok(())
+}
+
+pub(super) trait Payload {
+	fn node_id(&self) -> PublicKey;
+}
+
+pub(super) struct NodeId(pub PublicKey);
+impl Payload for NodeId {
+	fn node_id(&self) -> PublicKey {
+		self.0
+	}
+}
+
+impl Payload for (PublicKey, EncryptedTlvs) {
+	fn node_id(&self) -> PublicKey {
+		self.0
+	}
 }

@@ -25,14 +25,16 @@
 //! track the network on the less-secure system.
 
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
-use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
 use crate::onion_message;
+use crate::onion_message::{EncryptedTlvs, PaymentConstraints, PaymentRelay};
 
 use crate::prelude::*;
 use core::fmt;
@@ -40,9 +42,10 @@ use core::fmt::Debug;
 use crate::io::{self, Read};
 use crate::io_extras::read_to_end;
 
+use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
 use crate::util::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1128,6 +1131,8 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 mod fuzzy_internal_msgs {
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
+	use crate::ln::features::BlindedHopFeatures;
+	use crate::onion_message::{PaymentConstraints, PaymentRelay};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1139,22 +1144,55 @@ mod fuzzy_internal_msgs {
 		pub(crate) total_msat: u64,
 	}
 
-	pub(crate) enum OnionHopDataFormat {
-		NonFinalNode {
+	pub enum OutboundPayload {
+		Forward {
 			short_channel_id: u64,
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
 		},
-		FinalNode {
+		Receive {
 			payment_data: Option<FinalOnionHopData>,
 			keysend_preimage: Option<PaymentPreimage>,
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
 		},
+		BlindedForward {
+			encrypted_tlvs: Vec<u8>,
+		},
+		BlindedReceive {
+			amt_to_forward: u64,
+			total_msat: u64,
+			outgoing_cltv_value: u32,
+			encrypted_tlvs: Vec<u8>,
+		}
 	}
 
-	pub struct OnionHopData {
-		pub(crate) format: OnionHopDataFormat,
-		/// The value, in msat, of the payment after this hop's fee is deducted.
-		/// Message serialization may panic if this value is more than 21 million Bitcoin.
-		pub(crate) amt_to_forward: u64,
-		pub(crate) outgoing_cltv_value: u32,
+	pub enum InboundPayload {
+		Forward {
+			short_channel_id: u64,
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+		},
+		Receive {
+			payment_data: Option<FinalOnionHopData>,
+			keysend_preimage: Option<PaymentPreimage>,
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+		},
+		BlindedForward {
+			short_channel_id: u64,
+			payment_relay: PaymentRelay,
+			payment_constraints: PaymentConstraints,
+			features: BlindedHopFeatures,
+		},
+		BlindedReceive {
+			amt_to_forward: u64,
+			total_msat: u64,
+			outgoing_cltv_value: u32,
+			path_id: Option<[u8; 32]>,
+			payment_constraints: PaymentConstraints,
+			features: BlindedHopFeatures,
+		}
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1566,22 +1604,39 @@ impl Readable for FinalOnionHopData {
 	}
 }
 
-impl Writeable for OnionHopData {
+impl Writeable for OutboundPayload {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match self.format {
-			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
+		match self {
+			Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(6, short_channel_id, required)
 				});
 			},
-			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
+			Self::Receive {
+				ref payment_data, ref keysend_preimage, amt_to_forward, outgoing_cltv_value
+			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, payment_data, option),
 					(5482373484, keysend_preimage, option)
+				});
+			},
+			Self::BlindedForward { encrypted_tlvs } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(10, *encrypted_tlvs, vec_type)
+				});
+			},
+			Self::BlindedReceive {
+				amt_to_forward, total_msat, outgoing_cltv_value, encrypted_tlvs,
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(10, *encrypted_tlvs, vec_type),
+					(18, total_msat, required)
 				});
 			},
 		}
@@ -1589,55 +1644,81 @@ impl Writeable for OnionHopData {
 	}
 }
 
-impl Readable for OnionHopData {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut amt = HighZeroBytesDroppedBigSize(0u64);
-		let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
+impl ReadableArgs<SharedSecret> for InboundPayload {
+	fn read<R: Read>(r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
+		let mut amt: Option<HighZeroBytesDroppedBigSize<u64>> = None;
+		let mut cltv_value: Option<HighZeroBytesDroppedBigSize<u32>> = None;
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
+		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		let mut read_adapter: Option<ChaChaPolyReadAdapter<EncryptedTlvs>> = None;
+		let mut total_msat: Option<u64> = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		read_tlv_fields!(r, {
-			(2, amt, required),
-			(4, cltv_value, required),
+			(2, amt, option),
+			(4, cltv_value, option),
 			(6, short_id, option),
 			(8, payment_data, option),
+			(10, read_adapter, (option: LengthReadableArgs, rho)),
+			(18, total_msat, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		});
 
-		let format = if let Some(short_channel_id) = short_id {
-			if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
-			OnionHopDataFormat::NonFinalNode {
-				short_channel_id,
+		if let Some(ChaChaPolyReadAdapter { readable }) = read_adapter {
+			match readable {
+				EncryptedTlvs::Forward {
+					short_channel_id, payment_relay, payment_constraints, features
+				} => {
+					if total_msat.is_some() || amt.is_some() || short_id.is_some() || cltv_value.is_some() {
+						return Err(DecodeError::InvalidValue)
+					}
+					return Ok(Self::BlindedForward {
+						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features,
+					})
+				},
+				EncryptedTlvs::Receive { path_id, payment_constraints, features } => {
+					let amt_to_forward = amt.ok_or_else(|| DecodeError::InvalidValue)?;
+					if amt_to_forward.0 > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+					return Ok(Self::BlindedReceive {
+						amt_to_forward: amt_to_forward.0,
+						total_msat: total_msat.ok_or_else(|| DecodeError::InvalidValue)?,
+						outgoing_cltv_value: cltv_value.ok_or_else(|| DecodeError::InvalidValue)?.0,
+						path_id,
+						payment_constraints,
+						features,
+					})
+				}
 			}
+		}
+
+		let amt_to_forward = amt.ok_or_else(|| DecodeError::InvalidValue)?;
+		if amt_to_forward.0 > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if let Some(short_channel_id) = short_id {
+			if payment_data.is_some() {
+				return Err(DecodeError::InvalidValue)
+			}
+			return Ok(Self::Forward {
+				short_channel_id,
+				amt_to_forward: amt_to_forward.0,
+				outgoing_cltv_value: cltv_value.ok_or_else(|| DecodeError::InvalidValue)?.0,
+			})
 		} else {
 			if let &Some(ref data) = &payment_data {
 				if data.total_msat > MAX_VALUE_MSAT {
 					return Err(DecodeError::InvalidValue);
 				}
 			}
-			OnionHopDataFormat::FinalNode {
+			return Ok(Self::Receive {
 				payment_data,
 				keysend_preimage,
-			}
-		};
-
-		if amt.0 > MAX_VALUE_MSAT {
-			return Err(DecodeError::InvalidValue);
+				amt_to_forward: amt_to_forward.0,
+				outgoing_cltv_value: cltv_value.ok_or_else(|| DecodeError::InvalidValue)?.0,
+			})
 		}
-		Ok(OnionHopData {
-			format,
-			amt_to_forward: amt.0,
-			outgoing_cltv_value: cltv_value.0,
-		})
-	}
-}
-
-// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
-// onion message packets.
-impl ReadableArgs<()> for OnionHopData {
-	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
-		<Self as Readable>::read(r)
 	}
 }
 
@@ -2052,9 +2133,9 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
-	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket};
 	use crate::routing::gossip::NodeId;
-	use crate::util::ser::{Writeable, Readable, Hostname};
+	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
@@ -2065,6 +2146,7 @@ mod tests {
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
+	use bitcoin::secp256k1::ecdh::SharedSecret;
 
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
@@ -2760,72 +2842,79 @@ mod tests {
 
 	#[test]
 	fn encoding_nonfinal_onion_hop_data() {
-		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
-				short_channel_id: 0xdeadbeef1bad1dea,
-			},
+		let mut outbound_msg = msgs::OutboundPayload::Forward {
+			short_channel_id: 0xdeadbeef1bad1dea,
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
-		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = msg.format {
+
+		let secp_ctx = Secp256k1::new();
+		let dummy_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let dummy_enc_tlvs_ss = SharedSecret::new(&PublicKey::from_secret_key(&secp_ctx, &dummy_secret), &dummy_secret);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), dummy_enc_tlvs_ss).unwrap();
+		if let msgs::InboundPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = inbound_msg {
 			assert_eq!(short_channel_id, 0xdeadbeef1bad1dea);
+			assert_eq!(amt_to_forward, 0x0badf00d01020304);
+			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
-		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
-		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
 	}
 
 	#[test]
 	fn encoding_final_onion_hop_data() {
-		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode {
-				payment_data: None,
-				keysend_preimage: None,
-			},
+		let mut outbound_msg = msgs::OutboundPayload::Receive {
+			payment_data: None,
+			keysend_preimage: None,
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
-		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::FinalNode { payment_data: None, .. } = msg.format { } else { panic!(); }
-		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
-		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+
+		let secp_ctx = Secp256k1::new();
+		let dummy_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let dummy_enc_tlvs_ss = SharedSecret::new(&PublicKey::from_secret_key(&secp_ctx, &dummy_secret), &dummy_secret);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), dummy_enc_tlvs_ss).unwrap();
+		if let msgs::InboundPayload::Receive { payment_data: None, amt_to_forward, outgoing_cltv_value, .. } = inbound_msg {
+			assert_eq!(amt_to_forward, 0x0badf00d01020304);
+			assert_eq!(outgoing_cltv_value, 0xffffffff);
+		} else { panic!(); }
 	}
 
 	#[test]
 	fn encoding_final_onion_hop_data_with_secret() {
 		let expected_payment_secret = PaymentSecret([0x42u8; 32]);
-		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode {
-				payment_data: Some(FinalOnionHopData {
-					payment_secret: expected_payment_secret,
-					total_msat: 0x1badca1f
-				}),
-				keysend_preimage: None,
-			},
+		let mut outbound_msg = msgs::OutboundPayload::Receive {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret: expected_payment_secret,
+				total_msat: 0x1badca1f
+			}),
+			keysend_preimage: None,
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
 		assert_eq!(encoded_value, target_value);
-		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::FinalNode {
+
+		let secp_ctx = Secp256k1::new();
+		let dummy_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let dummy_enc_tlvs_ss = SharedSecret::new(&PublicKey::from_secret_key(&secp_ctx, &dummy_secret), &dummy_secret);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), dummy_enc_tlvs_ss).unwrap();
+		if let msgs::InboundPayload::Receive {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
 				total_msat: 0x1badca1f
 			}),
-			keysend_preimage: None,
-		} = msg.format {
+			keysend_preimage: None, amt_to_forward, outgoing_cltv_value,
+		} = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
+			assert_eq!(amt_to_forward, 0x0badf00d01020304);
+			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
-		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
-		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
 	}
 
 	#[test]
@@ -2975,25 +3064,26 @@ mod tests {
 		// payload length to be encoded over multiple bytes rather than a single u8.
 		let big_payload = encode_big_payload().unwrap();
 		let mut rd = Cursor::new(&big_payload[..]);
-		<msgs::OnionHopData as Readable>::read(&mut rd).unwrap();
+		let secp_ctx = Secp256k1::new();
+		let dummy_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let dummy_enc_tlvs_ss = SharedSecret::new(&PublicKey::from_secret_key(&secp_ctx, &dummy_secret), &dummy_secret);
+		<msgs::InboundPayload as ReadableArgs<_>>::read(&mut rd, dummy_enc_tlvs_ss).unwrap();
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
 		use crate::util::ser::HighZeroBytesDroppedBigSize;
-		let payload = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
-				short_channel_id: 0xdeadbeef1bad1dea,
-			},
+		let payload = msgs::OutboundPayload::Forward {
+			short_channel_id: 0xdeadbeef1bad1dea,
 			amt_to_forward: 1000,
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];
-		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
+		if let msgs::OutboundPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = payload {
 			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, vec_type),
-				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
-				(4, HighZeroBytesDroppedBigSize(payload.outgoing_cltv_value), required),
+				(2, HighZeroBytesDroppedBigSize(amt_to_forward), required),
+				(4, HighZeroBytesDroppedBigSize(outgoing_cltv_value), required),
 				(6, short_channel_id, required)
 			});
 		}

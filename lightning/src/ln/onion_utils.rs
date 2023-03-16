@@ -149,36 +149,36 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, payment_secret_option: &Option<PaymentSecret>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, payment_secret_option: &Option<PaymentSecret>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OutboundPayload>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(path.len());
+	let mut res: Vec<msgs::OutboundPayload> = Vec::with_capacity(path.len());
 
-	for (idx, hop) in path.iter().rev().enumerate() {
+	for (idx, hop) in path.hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
-		res.insert(0, msgs::OnionHopData {
-			format: if idx == 0 {
-				msgs::OnionHopDataFormat::FinalNode {
-					payment_data: if let &Some(ref payment_secret) = payment_secret_option {
-						Some(msgs::FinalOnionHopData {
-							payment_secret: payment_secret.clone(),
-							total_msat,
-						})
-					} else { None },
-					keysend_preimage: *keysend_preimage,
-				}
-			} else {
-				msgs::OnionHopDataFormat::NonFinalNode {
-					short_channel_id: last_short_channel_id,
-				}
-			},
-			amt_to_forward: value_msat,
-			outgoing_cltv_value: cltv,
+		res.insert(0, if idx == 0 && path.blinded_tail.is_none() {
+			msgs::OutboundPayload::Receive {
+				payment_data: if let &Some(ref payment_secret) = payment_secret_option {
+					Some(msgs::FinalOnionHopData {
+						payment_secret: payment_secret.clone(),
+						total_msat,
+					})
+				} else { None },
+				keysend_preimage: *keysend_preimage,
+				amt_to_forward: value_msat,
+				outgoing_cltv_value: cltv,
+			}
+		} else {
+			msgs::OutboundPayload::Forward {
+				short_channel_id: last_short_channel_id,
+				amt_to_forward: value_msat,
+				outgoing_cltv_value: cltv,
+			}
 		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
@@ -189,6 +189,21 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 			return Err(APIError::InvalidRoute{err: "Channel CLTV overflowed?".to_owned()});
 		}
 		last_short_channel_id = hop.short_channel_id;
+	}
+	if let Some(blinded_path) = path.blinded_tail {
+		// TODO: insert intro node payload
+		for (idx, hop) in blinded_path.hops.into_iter().enumerate() {
+			if idx != 0 {
+				res.push(msgs::OutboundPayload::BlindedForward { encrypted_tlvs: hop.encrypted_payload });
+			} else {
+				res.push(msgs::OutboundPayload::BlindedReceive {
+					amt_to_forward: cur_value_msat,
+					outgoing_cltv_value: cur_cltv,
+					total_msat,
+					encrypted_tlvs: hop.encrypted_payload,
+				});
+			}
+		}
 	}
 	Ok((res, cur_value_msat, cur_cltv))
 }
@@ -207,7 +222,7 @@ fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	}
 }
 
-pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
+pub(super) fn route_size_insane(payloads: &Vec<msgs::OutboundPayload>) -> bool {
 	let mut len = 0;
 	for payload in payloads.iter() {
 		let mut payload_len = LengthCalculatingWriter(0);
@@ -222,7 +237,7 @@ pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
 }
 
 /// panics if route_size_insane(payloads)
-pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
+pub(super) fn construct_onion_packet(payloads: Vec<msgs::OutboundPayload>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -754,11 +769,11 @@ impl NextPacketBytes for Vec<u8> {
 pub(crate) enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
-	Receive(msgs::OnionHopData),
+	Receive(msgs::InboundPayload),
 	/// This onion payload needs to be forwarded to a next-hop.
 	Forward {
 		/// Onion payload data used in forwarding the payment.
-		next_hop_data: msgs::OnionHopData,
+		next_hop_data: msgs::InboundPayload,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
@@ -979,10 +994,8 @@ mod tests {
 		// with raw hex instead of our in-memory enums, as the payloads contains custom types, and
 		// we have no way of representing that with our enums.
 		let payloads = vec!(
-			RawOnionHopData::new(msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::NonFinalNode {
-					short_channel_id: 1,
-				},
+			RawOnionHopData::new(msgs::OutboundPayload::Forward {
+				short_channel_id: 1,
 				amt_to_forward: 15000,
 				outgoing_cltv_value: 1500,
 			}),
@@ -1004,17 +1017,13 @@ mod tests {
 			RawOnionHopData {
 				data: hex::decode("52020236b00402057806080000000000000002fd02013c0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f").unwrap(),
 			},
-			RawOnionHopData::new(msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::NonFinalNode {
-					short_channel_id: 3,
-				},
+			RawOnionHopData::new(msgs::OutboundPayload::Forward {
+				short_channel_id: 3,
 				amt_to_forward: 12500,
 				outgoing_cltv_value: 1250,
 			}),
-			RawOnionHopData::new(msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::NonFinalNode {
-					short_channel_id: 4,
-				},
+			RawOnionHopData::new(msgs::OutboundPayload::Forward {
+				short_channel_id: 4,
 				amt_to_forward: 10000,
 				outgoing_cltv_value: 1000,
 			}),
@@ -1092,7 +1101,7 @@ mod tests {
 		data: Vec<u8>
 	}
 	impl RawOnionHopData {
-		fn new(orig: msgs::OnionHopData) -> Self {
+		fn new(orig: msgs::OutboundPayload) -> Self {
 			Self { data: orig.encode() }
 		}
 	}
