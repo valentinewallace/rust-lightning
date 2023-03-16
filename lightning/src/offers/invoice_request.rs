@@ -58,6 +58,7 @@ use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use crate::io;
+use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::DecodeError;
@@ -66,7 +67,6 @@ use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
-use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 

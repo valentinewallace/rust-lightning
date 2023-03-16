@@ -27,7 +27,7 @@
 //! use lightning::offers::parse::ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
 //!
-//! # use lightning::onion_message::BlindedPath;
+//! # use lightning::blinded_path::BlindedPath;
 //! # #[cfg(feature = "std")]
 //! # use std::time::SystemTime;
 //! #
@@ -74,11 +74,11 @@ use core::num::NonZeroU64;
 use core::str::FromStr;
 use core::time::Duration;
 use crate::io;
+use crate::blinded_path::BlindedPath;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::invoice_request::InvoiceRequestBuilder;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
-use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -670,10 +670,10 @@ mod tests {
 	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::parse::{ParseError, SemanticError};
-	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 

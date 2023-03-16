@@ -29,7 +29,7 @@
 //!
 //! # use lightning::ln::PaymentHash;
 //! # use lightning::offers::invoice::BlindedPayInfo;
-//! # use lightning::onion_message::BlindedPath;
+//! # use lightning::blinded_path::BlindedPath;
 //! #
 //! # fn create_payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> { unimplemented!() }
 //! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
@@ -113,7 +113,7 @@ use crate::offers::offer::{Amount, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{Refund, RefundContents};
-use crate::onion_message::BlindedPath;
+use crate::blinded_path::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 
 use crate::prelude::*;
@@ -788,6 +788,7 @@ mod tests {
 	use bitcoin::util::schnorr::TweakedPublicKey;
 	use core::convert::{Infallible, TryFrom};
 	use core::time::Duration;
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::ln::PaymentHash;
 	use crate::ln::msgs::DecodeError;
 	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
@@ -797,7 +798,6 @@ mod tests {
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
-	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
 
 	fn payer_keys() -> KeyPair {
