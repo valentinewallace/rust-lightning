@@ -1408,6 +1408,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
@@ -1604,6 +1605,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
@@ -1782,6 +1784,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
@@ -3503,6 +3506,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 			cltv_expiry,
 			onion_routing_packet,
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		};
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_htlc);
 	}
@@ -6450,6 +6454,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet.clone(),
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	for i in 0..50 {
