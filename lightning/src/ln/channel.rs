@@ -3784,6 +3784,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
+					blinding_point: None,
 				});
 			}
 		}
@@ -5221,6 +5222,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			cltv_expiry,
 			onion_routing_packet,
 			skimmed_fee_msat,
+			blinding_point: None,
 		};
 		self.context.next_holder_htlc_id += 1;
 
