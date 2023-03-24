@@ -826,11 +826,11 @@ impl NextPacketBytes for Vec<u8> {
 pub(crate) enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
-	Receive(msgs::OnionHopData),
+	Receive(msgs::InboundPayload),
 	/// This onion payload needs to be forwarded to a next-hop.
 	Forward {
 		/// Onion payload data used in forwarding the payment.
-		next_hop_data: msgs::OnionHopData,
+		next_hop_data: msgs::InboundPayload,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
