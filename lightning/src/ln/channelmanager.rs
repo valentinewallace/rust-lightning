@@ -317,6 +317,16 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
+	pub(super) fn outbound_blinding_point(&self) -> Option<PublicKey> {
+		match self {
+			HTLCSource::OutboundRoute { path, .. } => {
+				if path.hops.len() == 1 {
+					path.blinded_tail.as_ref().map(|t| t.blinding_point)
+				} else { None }
+			}
+			_ => None,
+		}
+	}
 	#[cfg(not(feature = "grind_signatures"))]
 	#[cfg(test)]
 	pub fn dummy() -> Self {

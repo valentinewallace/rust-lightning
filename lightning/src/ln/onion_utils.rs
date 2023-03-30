@@ -207,26 +207,47 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
-		res.insert(0, if idx == 0 {
-			msgs::OutboundPayload::Receive {
-				payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-					Some(msgs::FinalOnionHopData {
-						payment_secret: secret,
-						total_msat,
-					})
-				} else { None },
-				payment_metadata: recipient_onion.payment_metadata.take(),
-				keysend_preimage: *keysend_preimage,
-				amt_msat: value_msat,
-				outgoing_cltv_value: cltv,
+		if idx == 0 {
+			if let Some(BlindedTail { blinding_point, hops, final_value_msat, .. }) = &path.blinded_tail {
+				let mut blinding_point = Some(*blinding_point);
+				for (i, blinded_hop) in hops.iter().enumerate() {
+					if i == hops.len() - 1 {
+						cur_value_msat += final_value_msat;
+						res.push(msgs::OutboundPayload::BlindedReceive {
+							amt_to_forward: value_msat,
+							total_msat,
+							outgoing_cltv_value: cltv,
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					} else {
+						res.push(msgs::OutboundPayload::BlindedForward {
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					}
+				}
+			} else {
+				res.push(msgs::OutboundPayload::Receive {
+					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
+						Some(msgs::FinalOnionHopData {
+							payment_secret: secret,
+							total_msat,
+						})
+					} else { None },
+					payment_metadata: recipient_onion.payment_metadata.take(),
+					keysend_preimage: *keysend_preimage,
+					amt_msat: value_msat,
+					outgoing_cltv_value: cltv,
+				});
 			}
 		} else {
-			msgs::OutboundPayload::Forward {
+			res.insert(0, msgs::OutboundPayload::Forward {
 				short_channel_id: last_short_channel_id,
 				amt_to_forward: value_msat,
 				outgoing_cltv_value: cltv,
-			}
-		});
+			});
+		}
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});

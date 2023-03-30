@@ -3670,7 +3670,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
-					blinding_point: None,
+					blinding_point: htlc.source.outbound_blinding_point(),
 				});
 			}
 		}
@@ -5081,6 +5081,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Ok(None);
 		}
 
+		let blinding_point = source.outbound_blinding_point();
 		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.context.next_holder_htlc_id,
 			amount_msat,
@@ -5099,7 +5100,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			cltv_expiry,
 			onion_routing_packet,
 			skimmed_fee_msat,
-			blinding_point: None,
+			blinding_point,
 		};
 		self.context.next_holder_htlc_id += 1;
 
