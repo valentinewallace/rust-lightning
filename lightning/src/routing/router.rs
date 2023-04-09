@@ -357,14 +357,23 @@ impl Writeable for Route {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
+		let mut blinded_tails = None;
 		for path in self.paths.iter() {
 			(path.hops.len() as u8).write(writer)?;
 			for hop in path.hops.iter() {
 				hop.write(writer)?;
+				if let Some(blinded_tail) = &path.blinded_tail {
+					if blinded_tails.is_none() { blinded_tails = Some(Vec::new()); }
+					blinded_tails.as_mut().map(|tails| tails.push(blinded_tail));
+				}
 			}
+		}
+		if blinded_tails.is_some() && blinded_tails.as_ref().unwrap().len() != self.paths.len() {
+			return Err(io::Error::new(io::ErrorKind::Other, "Missing blinded tail for path (if blinded tails are included, there must be 1 set per path)"))
 		}
 		write_tlv_fields!(writer, {
 			(1, self.payment_params, option),
+			(2, blinded_tails, option),
 		});
 		Ok(())
 	}
@@ -388,10 +397,17 @@ impl Readable for Route {
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
 			paths.push(Path { hops, blinded_tail: None });
 		}
-		let mut payment_params = None;
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
+			(2, blinded_tails, vec_type),
 		});
+		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
+		if blinded_tails.len() != 0 {
+			if blinded_tails.len() != paths.len() { return Err(DecodeError::InvalidValue) }
+			for (mut path, blinded_tail) in paths.iter_mut().zip(blinded_tails.into_iter()) {
+				path.blinded_tail = Some(blinded_tail);
+			}
+		}
 		Ok(Route { paths, payment_params })
 	}
 }
