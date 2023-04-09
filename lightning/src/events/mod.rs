@@ -30,7 +30,7 @@ use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
 use crate::util::string::UntrustedString;
-use crate::routing::router::{Path, RouteHop, RouteParameters};
+use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
 #[cfg(anchors)]
@@ -941,6 +941,7 @@ impl Writeable for Event {
 					(0, payment_id, required),
 					(2, payment_hash, option),
 					(4, path.hops, vec_type),
+					(6, path.blinded_tail, option),
 				})
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
@@ -971,6 +972,7 @@ impl Writeable for Event {
 					(0, payment_id, required),
 					(2, payment_hash, required),
 					(4, path.hops, vec_type),
+					(6, path.blinded_tail, option),
 				})
 			},
 			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
@@ -980,6 +982,7 @@ impl Writeable for Event {
 					(2, payment_hash, required),
 					(4, path.hops, vec_type),
 					(6, short_channel_id, option),
+					(8, path.blinded_tail, option),
 				})
 			},
 			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
@@ -1107,6 +1110,7 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
 					let mut network_update = None;
+					let mut blinded_tail: Option<BlindedTail> = None;
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut payment_id = None;
@@ -1115,6 +1119,7 @@ impl MaybeReadable for Event {
 						(0, payment_hash, required),
 						(1, network_update, upgradable_option),
 						(2, payment_failed_permanently, required),
+						(4, blinded_tail, option),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
 						(11, payment_id, option),
@@ -1126,7 +1131,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: Path { hops: path.unwrap(), blinded_tail: None },
+						path: Path { hops: path.unwrap(), blinded_tail },
 						short_channel_id,
 						#[cfg(test)]
 						error_code,
@@ -1229,18 +1234,16 @@ impl MaybeReadable for Event {
 			},
 			13u8 => {
 				let f = || {
-					let mut payment_id = PaymentId([0; 32]);
-					let mut payment_hash = None;
-					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
-					read_tlv_fields!(reader, {
+					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, option),
 						(4, path, vec_type),
+						(6, blinded_tail, option),
 					});
 					Ok(Some(Event::PaymentPathSuccessful {
-						payment_id,
+						payment_id: payment_id.0.unwrap(),
 						payment_hash,
-						path: Path { hops: path.unwrap(), blinded_tail: None },
+						path: Path { hops: path.unwrap(), blinded_tail },
 					}))
 				};
 				f()
@@ -1290,38 +1293,33 @@ impl MaybeReadable for Event {
 			},
 			21u8 => {
 				let f = || {
-					let mut payment_id = PaymentId([0; 32]);
-					let mut payment_hash = PaymentHash([0; 32]);
-					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
-					read_tlv_fields!(reader, {
+					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
 						(4, path, vec_type),
+						(6, blinded_tail, option),
 					});
 					Ok(Some(Event::ProbeSuccessful {
-						payment_id,
-						payment_hash,
-						path: Path { hops: path.unwrap(), blinded_tail: None },
+						payment_id: payment_id.0.unwrap(),
+						payment_hash: payment_hash.0.unwrap(),
+						path: Path { hops: path.unwrap(), blinded_tail },
 					}))
 				};
 				f()
 			},
 			23u8 => {
 				let f = || {
-					let mut payment_id = PaymentId([0; 32]);
-					let mut payment_hash = PaymentHash([0; 32]);
-					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
-					let mut short_channel_id = None;
-					read_tlv_fields!(reader, {
+					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
 						(4, path, vec_type),
 						(6, short_channel_id, option),
+						(8, blinded_tail, option),
 					});
 					Ok(Some(Event::ProbeFailed {
-						payment_id,
-						payment_hash,
-						path: Path { hops: path.unwrap(), blinded_tail: None },
+						payment_id: payment_id.0.unwrap(),
+						payment_hash: payment_hash.0.unwrap(),
+						path: Path { hops: path.unwrap(), blinded_tail },
 						short_channel_id,
 					}))
 				};
