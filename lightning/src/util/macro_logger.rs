@@ -66,8 +66,9 @@ impl<'a> core::fmt::Display for DebugRoute<'a> {
 		for (idx, p) in self.0.paths.iter().enumerate() {
 			writeln!(f, "path {}:", idx)?;
 			for h in p.hops.iter() {
-				writeln!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+				writeln!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {},", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
 			}
+			writeln!(f, " blinded_tail: {:?}", p.blinded_tail)?;
 		}
 		Ok(())
 	}

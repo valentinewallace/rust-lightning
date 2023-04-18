@@ -1126,7 +1126,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: Path { hops: path.unwrap() },
+						path: Path { hops: path.unwrap(), blinded_tail: None },
 						short_channel_id,
 						#[cfg(test)]
 						error_code,
@@ -1240,7 +1240,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id,
 						payment_hash,
-						path: Path { hops: path.unwrap() },
+						path: Path { hops: path.unwrap(), blinded_tail: None },
 					}))
 				};
 				f()
@@ -1301,7 +1301,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id,
 						payment_hash,
-						path: Path { hops: path.unwrap() },
+						path: Path { hops: path.unwrap(), blinded_tail: None },
 					}))
 				};
 				f()
@@ -1321,7 +1321,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeFailed {
 						payment_id,
 						payment_hash,
-						path: Path { hops: path.unwrap() },
+						path: Path { hops: path.unwrap(), blinded_tail: None },
 						short_channel_id,
 					}))
 				};

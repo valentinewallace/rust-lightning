@@ -1504,7 +1504,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
-			}]}],
+			}], blinded_tail: None }],
 			payment_params: Some(payment_params),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
