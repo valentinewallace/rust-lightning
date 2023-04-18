@@ -462,10 +462,10 @@ pub struct PaymentParameters {
 impl Writeable for PaymentParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let mut clear_hints = &vec![];
-		let mut blinded_hints = None;
+		let mut blinded_hints = &vec![];
 		match &self.route_hints {
 			Hints::Clear(hints) => clear_hints = hints,
-			Hints::Blinded(hints) => blinded_hints = Some(hints),
+			Hints::Blinded(hints) => blinded_hints = hints,
 		}
 		write_tlv_fields!(writer, {
 			(0, self.payee_pubkey, required),
@@ -476,7 +476,7 @@ impl Writeable for PaymentParameters {
 			(5, self.max_channel_saturation_power_of_half, required),
 			(6, self.expiry_time, option),
 			(7, self.previously_failed_channels, vec_type),
-			(8, blinded_hints, option),
+			(8, *blinded_hints, optional_vec),
 			(9, self.final_cltv_expiry_delta, required),
 		});
 		Ok(())
