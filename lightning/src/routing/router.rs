@@ -279,9 +279,8 @@ impl_writeable_tlv_based!(BlindedTail, {
 	(6, final_value_msat, required),
 });
 
-/// A path in a [`Route`] to the payment recipient. Must always be at least length one. While the
-/// maximum length of any given path is variable, keeping the length of any path less than or equal
-/// to 19 should currently ensure it is viable.
+/// A path in a [`Route`] to the payment recipient. Must always be at least length one.
+/// If no [`Path::blinded_tail`] is present, then [`Path::hops`] length may be up to 19.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Path {
 	/// The list of unblinded hops in this [`Path`]. Must be at least length one.
