@@ -16,8 +16,9 @@ pub(crate) mod utils;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::payment::BlindedPaymentTlvs;
-use crate::sign::EntropySource;
+use crate::offers::invoice::BlindedPayInfo;
 use crate::ln::msgs::DecodeError;
+use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
 use crate::io;
@@ -79,20 +80,22 @@ impl BlindedPath {
 	/// Create a blinded path for a payment, to be forwarded along `path`. The last node
 	/// in `path` will be the destination node.
 	///
-	/// Errors if `path` is empty or a node id in `path` is invalid.
+	/// Errors if `path` is empty, a node id in `path` is invalid, or [`BlindedPayInfo`] calculation
+	/// results in an integer overflow.
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		path: &[(PublicKey, BlindedPaymentTlvs)], entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> {
+	) -> Result<(BlindedPayInfo, Self), ()> {
 		if path.len() < 1 { return Err(()) }
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
-		Ok(BlindedPath {
+		let blinded_payinfo = payment::compute_payinfo(path)?;
+		Ok((blinded_payinfo, BlindedPath {
 			introduction_node_id: path[0].0,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: payment::blinded_hops(secp_ctx, path, &blinding_secret).map_err(|_| ())?,
-		})
+		}))
 	}
 }
 
