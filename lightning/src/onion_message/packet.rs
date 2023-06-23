@@ -14,7 +14,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
-use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
@@ -274,13 +273,8 @@ pub(crate) enum ControlTlvs {
 }
 
 impl Readable for ControlTlvs {
-	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		let mut _padding: Option<Padding> = None;
-		let mut _short_channel_id: Option<u64> = None;
-		let mut next_node_id: Option<PublicKey> = None;
-		let mut path_id: Option<[u8; 32]> = None;
-		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut r, {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		_init_and_decode_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
