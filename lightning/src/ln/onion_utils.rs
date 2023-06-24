@@ -410,8 +410,8 @@ where L::Target: Logger {
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
 
-		// The failing hop includes either the inbound channel to the recipient or the outbound
-		// channel from the current hop (i.e., the next hop's inbound channel).
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
 		is_from_final_node = route_hop_idx + 1 == path.hops.len();
 		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
@@ -427,8 +427,8 @@ where L::Target: Logger {
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
 			None => {
-				// Useless packet that we can't use but it passed HMAC, so it
-				// definitely came from the peer in question
+				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
+				// in question
 				let network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
@@ -449,8 +449,7 @@ where L::Target: Logger {
 
 		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
-		// indicate that payment parameter has failed and no need to
-		// update Route object
+		// indicate that payment parameter has failed and no need to update Route object
 		let payment_failed = match error_code & 0xff {
 			15|16|17|18|19|23 => true,
 			_ => false,
@@ -460,14 +459,13 @@ where L::Target: Logger {
 		let mut short_channel_id = None;
 
 		if error_code & BADONION == BADONION {
-			// If the error code has the BADONION bit set, always blame the channel
-			// from the node "originating" the error to its next hop. The
-			// "originator" is ultimately actually claiming that its counterparty
-			// is the one who is failing the HTLC.
-			// If the "originator" here isn't lying we should really mark the
-			// next-hop node as failed entirely, but we can't be confident in that,
-			// as it would allow any node to get us to completely ban one of its
-			// counterparties. Instead, we simply remove the channel in question.
+			// If the error code has the BADONION bit set, always blame the channel from the node
+			// "originating" the error to its next hop. The "originator" is ultimately actually claiming
+			// that its counterparty is the one who is failing the HTLC.
+			// If the "originator" here isn't lying we should really mark the next-hop node as failed
+			// entirely, but we can't be confident in that, as it would allow any node to get us to
+			// completely ban one of its counterparties. Instead, we simply remove the channel in
+			// question.
 			network_update = Some(NetworkUpdate::ChannelFailure {
 				short_channel_id: failing_route_hop.short_channel_id,
 				is_permanent: true,
@@ -493,14 +491,11 @@ where L::Target: Logger {
 					err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + l as usize)
 				})
 				.unwrap_or(&[]);
-			// Historically, the BOLTs were unclear if the message type
-			// bytes should be included here or not. The BOLTs have now
-			// been updated to indicate that they *are* included, but many
-			// nodes still send messages without the type bytes, so we
-			// support both here.
-			// TODO: Switch to hard require the type prefix, as the current
-			// permissiveness introduces the (although small) possibility
-			// that we fail to decode legitimate channel updates that
+			// Historically, the BOLTs were unclear if the message type bytes should be included here or
+			// not. The BOLTs have now been updated to indicate that they *are* included, but many nodes
+			// still send messages without the type bytes, so we support both here.
+			// TODO: Switch to hard require the type prefix, as the current permissiveness introduces the
+			// (although small) possibility that we fail to decode legitimate channel updates that
 			// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
 			if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
 				update_slice = &update_slice[2..];
@@ -509,9 +504,8 @@ where L::Target: Logger {
 			}
 			let update_opt = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice));
 			if update_present && !update_opt.is_ok() {
-				// If the channel_update had a non-zero length (i.e. was
-				// present) but we couldn't read it, treat it as a total
-				// node failure.
+				// If the channel_update had a non-zero length (i.e. was present) but we couldn't read it,
+				// treat it as a total node failure.
 				log_info!(logger, "Failed to read a channel_update of len {} in an onion",
 					update_slice.len());
 			}
@@ -538,15 +532,14 @@ where L::Target: Logger {
 				_ => false, // unknown error code; take channel_update as valid
 			};
 			if is_chan_update_invalid {
-				// This probably indicates the node which forwarded
-				// to the node in question corrupted something.
+				// This probably indicates the node which forwarded to the node in question corrupted
+				// something.
 				network_update = Some(NetworkUpdate::ChannelFailure {
 					short_channel_id: route_hop.short_channel_id,
 					is_permanent: true,
 				});
 			} else if let Ok(chan_update) = update_opt {
-				// Make sure the ChannelUpdate contains the expected
-				// short channel id.
+				// Make sure the ChannelUpdate contains the expected short channel id.
 				if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
 					short_channel_id = Some(failing_route_hop.short_channel_id);
 				} else {
@@ -562,8 +555,8 @@ where L::Target: Logger {
 				});
 			};
 			if network_update.is_none() {
-				// They provided an UPDATE which was obviously bogus, not worth
-				// trying to relay through them anymore.
+				// They provided an UPDATE which was obviously bogus, not worth trying to relay through them
+				// anymore.
 				network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
@@ -573,16 +566,15 @@ where L::Target: Logger {
 				short_channel_id = Some(route_hop.short_channel_id);
 			}
 		} else if payment_failed {
-			// Only blame the hop when a value in the HTLC doesn't match the
-			// corresponding value in the onion.
+			// Only blame the hop when a value in the HTLC doesn't match the corresponding value in the
+			// onion.
 			short_channel_id = match error_code & 0xff {
 				18|19 => Some(route_hop.short_channel_id),
 				_ => None,
 			};
 		} else {
-			// We can't understand their error messages and they failed to
-			// forward...they probably can't understand our forwards so its
-			// really not worth trying any further.
+			// We can't understand their error messages and they failed to forward...they probably can't
+			// understand our forwards so it's really not worth trying any further.
 			network_update = Some(NetworkUpdate::NodeFailure {
 				node_id: route_hop.pubkey,
 				is_permanent: true,
