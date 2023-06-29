@@ -2585,13 +2585,27 @@ where
 		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
 			msgs::InboundPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
 				(short_channel_id, amt_to_forward, outgoing_cltv_value),
-			msgs::InboundPayload::Receive { .. } =>
+			msgs::InboundPayload::BlindedForward { short_channel_id, payment_relay, .. } => {
+				// We checked these values in [`Self::decode_update_add_htlc_onion`].
+				let amt_to_forward = msg.amount_msat - payment_relay.fee_base_msat as u64
+					- (msg.amount_msat * payment_relay.fee_proportional_millionths as u64);
+				let outgoing_cltv_value = msg.cltv_expiry - payment_relay.cltv_expiry_delta as u32;
+				(short_channel_id, amt_to_forward, outgoing_cltv_value)
+			},
+			msgs::InboundPayload::Receive { .. } => {
 				return Err(InboundOnionErr {
 					msg: "Final Node OnionHopData provided for us as an intermediary node",
 					err_code: 0x4000 | 22,
 					err_data: Vec::new(),
-				}),
-			_ => todo!(),
+				})
+			},
+			msgs::InboundPayload::BlindedReceive { .. } => {
+				return Err(InboundOnionErr {
+					msg: "Final Node OnionHopData provided for us as an intermediary node",
+					err_code: 0x8000 | 0x4000 | 24,
+					err_data: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner().to_vec(),
+				})
+			},
 		};
 
 		Ok(PendingHTLCInfo {
@@ -2776,7 +2790,7 @@ where
 				return_err!(err_msg, err_code, &[0; 0]);
 			},
 		};
-		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
+		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_pks_opt) = match next_hop {
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::InboundPayload::Forward {
 					short_channel_id, amt_to_forward, outgoing_cltv_value
@@ -2784,15 +2798,81 @@ where
 			} => {
 				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
+				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some((next_packet_pk, None)))
+			},
+			onion_utils::Hop::Forward {
+				next_hop_data: msgs::InboundPayload::BlindedForward {
+					short_channel_id, ref payment_relay, ref payment_constraints, ..
+				}, ..
+			} => {
+				let amt_to_forward =
+					match msg.amount_msat.checked_mul(payment_relay.fee_proportional_millionths as u64)
+						.and_then(|fee| msg.amount_msat.checked_sub(fee))
+						.and_then(|amt| amt.checked_sub(payment_relay.fee_base_msat as u64))
+					{
+						Some(a) => a,
+						None => {
+							let err_msg = "Over or underflow computing amt_to_forward for blinded forward";
+							if msg.blinding_point.is_some() {
+								return_malformed_err!(err_msg, 0x8000 | 0x4000 | 24);
+							} else {
+								return_err!(err_msg, 0x8000 | 0x4000 | 24, vec![0; 32]);
+							}
+						}
+					};
+				let outgoing_cltv_value =
+					match msg.cltv_expiry.checked_sub(payment_relay.cltv_expiry_delta as u32) {
+						Some(v) => v,
+						None => {
+							let err_msg = "Underflow computing cltv value for blinded forward";
+							if msg.blinding_point.is_some() {
+								return_malformed_err!(err_msg, 0x8000 | 0x4000 | 24);
+							} else {
+								return_err!(err_msg, 0x8000 | 0x4000 | 24, vec![0; 32]);
+							}
+						}
+					};
+				if amt_to_forward < payment_constraints.htlc_minimum_msat ||
+					outgoing_cltv_value > payment_constraints.max_cltv_expiry
+				{
+					let err_msg = "amt_to_forward did not meet htlc_minimum_msat or outgoing_cltv_value exceeded max_cltv_expiry";
+					if msg.blinding_point.is_some() {
+						return_malformed_err!(err_msg, 0x8000 | 0x4000 | 24);
+					} else {
+						return_err!(err_msg, 0x8000 | 0x4000 | 24, vec![0; 32]);
+					}
+				}
+				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
+					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+				let next_blinding_point = match onion_utils::next_hop_pubkey(
+					&self.secp_ctx, msg.onion_routing_packet.public_key.unwrap(), &shared_secret)
+				{
+					Ok(p) => p,
+					Err(_) => {
+						let err_msg = "Failed to compute next hop blinding point";
+						if msg.blinding_point.is_some() {
+							return_malformed_err!(err_msg, 0x8000 | 0x4000 | 24);
+						} else {
+							return_err!(err_msg, 0x8000 | 0x4000 | 24, vec![0; 32]);
+						}
+					},
+				};
+				(short_channel_id, amt_to_forward, outgoing_cltv_value,
+				 Some((next_packet_pk, Some(next_blinding_point))))
 			},
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::Receive { .. }, .. } => {
-				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::Receive { .. }, .. } =>
+				return_err!("Final node onion provided for us as an intermediary node", 0x4000 | 22, &[0; 0]),
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::BlindedReceive { .. }, .. } => {
+				let err_msg = "Blinded final node onion provided for us as an intermediary node";
+				if msg.blinding_point.is_some() {
+					return_malformed_err!(err_msg, 0x8000 | 0x4000 | 24);
+				} else {
+					return_err!(err_msg, 0x8000 | 0x4000 | 24, vec![0; 32]);
+				}
 			},
-			_ => todo!(),
 		};
 
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
@@ -2904,6 +2984,13 @@ where
 			break None;
 		}
 		{
+			if next_pks_opt.map_or(false, |(_, blinding_pt)| blinding_pt.is_some()) {
+				if msg.blinding_point.is_some() {
+					return_malformed_err!(err, 0x8000 | 0x4000 | 24);
+				} else {
+					return_err!(err, 0x8000 | 0x4000 | 24, vec![0; 32]);
+				}
+			}
 			let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
 			if let Some(chan_update) = chan_update {
 				if code == 0x1000 | 11 || code == 0x1000 | 12 {
@@ -2928,7 +3015,7 @@ where
 			}
 			return_err!(err, code, &res.0[..]);
 		}
-		Ok((next_hop, shared_secret, next_packet_pk_opt))
+		Ok((next_hop, shared_secret, next_pks_opt.map(|(pk, _)| pk)))
 	}
 
 	fn construct_pending_htlc_status<'a>(
