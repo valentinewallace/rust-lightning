@@ -7,6 +7,7 @@ use core::convert::TryFrom;
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::utils;
 use crate::io;
+use crate::ln::PaymentSecret;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
@@ -33,9 +34,8 @@ pub enum BlindedPaymentTlvs {
 	},
 	/// This blinded payment data is to be received.
 	Receive {
-		/// Used to identify the blinded path that this payment is sending to. This is useful for
-		/// receivers to check that said blinded path is being used in the right context.
-		path_id: Option<[u8; 32]>,
+		/// Used to authenticate the sender of a payment to the receiver and tie MPP HTLCs together.
+		payment_secret: PaymentSecret,
 		/// Constraints for the receiver of this payment.
 		payment_constraints: PaymentConstraints,
 		/// Supported and required features when receiving a payment containing this object's
@@ -117,9 +117,9 @@ impl Writeable for BlindedPaymentTlvs {
 					(14, features, required),
 				});
 			},
-			Self::Receive { path_id, payment_constraints, features } => {
+			Self::Receive { payment_secret, payment_constraints, features } => {
 				encode_tlv_stream!(w, {
-					(6, path_id, option),
+					(6, payment_secret, required),
 					(12, payment_constraints, required),
 					(14, features, required),
 				});
@@ -134,23 +134,23 @@ impl Readable for BlindedPaymentTlvs {
 		_init_and_decode_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, scid, option),
-			(6, path_id, option),
+			(6, payment_secret, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
 			(14, features, required),
 		});
 		if let Some(short_channel_id) = scid {
-			if path_id.is_some() { return Err(DecodeError::InvalidValue) }
+			if payment_secret.is_some() { return Err(DecodeError::InvalidValue) }
 			Ok(BlindedPaymentTlvs::Forward {
 				short_channel_id,
-				payment_relay: payment_relay.ok_or_else(|| DecodeError::InvalidValue)?,
+				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
 				features: features.0.unwrap(),
 			})
 		} else {
 			if payment_relay.is_some() { return Err(DecodeError::InvalidValue) }
 			Ok(BlindedPaymentTlvs::Receive {
-				path_id,
+				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
 				features: features.0.unwrap(),
 			})
@@ -218,6 +218,7 @@ impl_writeable_msg!(PaymentConstraints, {
 mod tests {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{BlindedPaymentTlvs, PaymentConstraints, PaymentRelay};
+	use crate::ln::PaymentSecret;
 	use crate::ln::features::BlindedHopFeatures;
 
 	#[test]
@@ -249,7 +250,7 @@ mod tests {
 			},
 			features: BlindedHopFeatures::empty(),
 		}), (dummy_pk, BlindedPaymentTlvs::Receive {
-			path_id: None,
+			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
@@ -267,7 +268,7 @@ mod tests {
 	fn compute_payinfo_1_hop() {
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
 		let path = vec![(dummy_pk, BlindedPaymentTlvs::Receive {
-			path_id: None,
+			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,

@@ -22,11 +22,12 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
@@ -2640,6 +2641,12 @@ where
 				payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
 				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata),
+			msgs::InboundPayload::BlindedReceive {
+				amt_msat, total_msat, outgoing_cltv_value, payment_secret, ..
+			} => {
+				let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+				(Some(payment_data), None, amt_msat, outgoing_cltv_value, None)
+			}
 			msgs::InboundPayload::Forward { .. } => {
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
@@ -2647,7 +2654,13 @@ where
 					msg: "Got non final data with an HMAC of 0",
 				})
 			},
-			_ => todo!(),
+			msgs::InboundPayload::BlindedForward { .. } => {
+				return Err(InboundOnionErr {
+					msg: "Got blinded non final data with an HMAC of 0",
+					err_code: 0x8000 | 0x4000 | 24,
+					err_data: vec![0; 32],
+				})
+			},
 		};
 		// final_incorrect_cltv_expiry
 		if outgoing_cltv_value > cltv_expiry {
@@ -2759,8 +2772,15 @@ where
 			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 		}
 
+		let blinded_node_id_tweak = msg.blinding_point.map(|bp| {
+			let blinded_tlvs_ss = self.node_signer.ecdh(
+				Recipient::Node, &bp, None).unwrap().secret_bytes();
+			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+			hmac.input(blinded_tlvs_ss.as_ref());
+			Scalar::from_be_bytes(Hmac::from_engine(hmac).into_inner()).unwrap()
+		});
 		let shared_secret = self.node_signer.ecdh(
-			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), blinded_node_id_tweak.as_ref()
 		).unwrap().secret_bytes();
 
 		if msg.onion_routing_packet.version != 0 {
@@ -2810,7 +2830,8 @@ where
 			},
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::InboundPayload::BlindedForward {
-					short_channel_id, ref payment_relay, ref payment_constraints, ..
+					short_channel_id, ref payment_relay, ref payment_constraints, intro_node_blinding_point,
+					..
 				}, ..
 			} => {
 				let amt_to_forward =
@@ -2852,8 +2873,11 @@ where
 				}
 				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+				let curr_blinding_point = intro_node_blinding_point.or(msg.blinding_point).unwrap();
+				let encrypted_tlvs_ss = self.node_signer.ecdh(
+					Recipient::Node, &curr_blinding_point, None).unwrap().secret_bytes();
 				let next_blinding_point = match onion_utils::next_hop_pubkey(
-					&self.secp_ctx, msg.onion_routing_packet.public_key.unwrap(), &shared_secret)
+					&self.secp_ctx, curr_blinding_point, &encrypted_tlvs_ss)
 				{
 					Ok(p) => p,
 					Err(_) => {
@@ -3200,7 +3224,7 @@ where
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
-					}, onion_packet, None, &self.logger);
+					}, onion_packet, None, None, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -3899,7 +3923,8 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, skimmed_fee_msat, ..
+											routing: PendingHTLCRouting::Forward { onion_packet, blinding_point, .. },
+											skimmed_fee_msat, ..
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -3913,7 +3938,7 @@ where
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
-											onion_packet, skimmed_fee_msat, &self.logger)
+											onion_packet, skimmed_fee_msat, blinding_point, &self.logger)
 										{
 											if let ChannelError::Ignore(msg) = e {
 												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);

@@ -645,7 +645,8 @@ impl PaymentParameters {
 			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
 	}
 
-	fn blinded(blinded_route_hints: Vec<(BlindedPayInfo, BlindedPath)>) -> Self {
+	///
+	pub fn blinded(blinded_route_hints: Vec<(BlindedPayInfo, BlindedPath)>) -> Self {
 		Self {
 			payee: Payee::Blinded { route_hints: blinded_route_hints, features: None },
 			expiry_time: None,

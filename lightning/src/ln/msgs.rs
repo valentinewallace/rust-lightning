@@ -1429,6 +1429,7 @@ mod fuzzy_internal_msgs {
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 	#[derive(Clone)]
+	#[derive(Debug)]
 	pub struct FinalOnionHopData {
 		pub payment_secret: PaymentSecret,
 		/// The total value, in msat, of the payment as received by the ultimate recipient.
@@ -1460,13 +1461,14 @@ mod fuzzy_internal_msgs {
 			amt_msat: u64,
 			total_msat: u64,
 			outgoing_cltv_value: u32,
-			path_id: Option<[u8; 32]>,
+			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
 			features: BlindedHopFeatures,
 			intro_node_blinding_point: Option<PublicKey>,
 		}
 	}
 
+	#[derive(Debug)]
 	pub(crate) enum OutboundPayload {
 		Forward {
 			short_channel_id: u64,
@@ -1485,7 +1487,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
-			amt_to_forward: u64,
+			amt_msat: u64,
 			total_msat: u64,
 			outgoing_cltv_value: u32,
 			encrypted_tlvs: Vec<u8>,
@@ -2028,7 +2030,7 @@ impl Writeable for OutboundPayload {
 				});
 			},
 			Self::BlindedReceive {
-				amt_to_forward: amt_msat, total_msat, outgoing_cltv_value, encrypted_tlvs,
+				amt_msat, total_msat, outgoing_cltv_value, encrypted_tlvs,
 				intro_node_blinding_point,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -2089,13 +2091,13 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundPayload where 
 					})
 				},
 				ChaChaPolyReadAdapter {
-					readable: BlindedPaymentTlvs::Receive { path_id, payment_constraints, features }
+					readable: BlindedPaymentTlvs::Receive { payment_secret, payment_constraints, features }
 				} => {
 					Ok(Self::BlindedReceive {
 						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
 						outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-						path_id,
+						payment_secret,
 						payment_constraints,
 						features,
 						intro_node_blinding_point,

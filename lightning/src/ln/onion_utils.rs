@@ -209,13 +209,16 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 		if idx == 0 {
-			if let Some(BlindedTail { blinding_point, hops, final_value_msat, .. }) = &path.blinded_tail {
+			if let Some(BlindedTail {
+				blinding_point, hops, final_value_msat, excess_final_cltv_expiry_delta, ..
+			}) = &path.blinded_tail {
 				let mut blinding_point = Some(*blinding_point);
 				for (i, blinded_hop) in hops.iter().enumerate() {
 					if i == hops.len() - 1 {
 						cur_value_msat += final_value_msat;
+						cur_cltv += excess_final_cltv_expiry_delta;
 						res.push(msgs::OutboundPayload::BlindedReceive {
-							amt_to_forward: value_msat,
+							amt_msat: *final_value_msat,
 							total_msat,
 							outgoing_cltv_value: cltv,
 							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),

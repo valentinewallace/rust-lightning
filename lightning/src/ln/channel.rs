@@ -224,6 +224,7 @@ struct OutboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: OutboundHTLCState,
 	source: HTLCSource,
+	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 }
 
@@ -238,6 +239,7 @@ enum HTLCUpdateAwaitingACK {
 		onion_routing_packet: msgs::OnionPacket,
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -3030,10 +3032,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				match &htlc_update {
 					&HTLCUpdateAwaitingACK::AddHTLC {
 						amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
-						skimmed_fee_msat, ..
+						skimmed_fee_msat, blinding_point, ..
 					} => {
 						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(),
-							onion_routing_packet.clone(), false, skimmed_fee_msat, logger)
+							onion_routing_packet.clone(), false, skimmed_fee_msat, blinding_point, logger)
 						{
 							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 							Err(e) => {
@@ -3670,7 +3672,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
-					blinding_point: htlc.source.outbound_blinding_point(),
+					blinding_point: htlc.blinding_point,
 				});
 			}
 		}
@@ -4991,11 +4993,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// `Err`s will only be [`ChannelError::Ignore`].
 	pub fn queue_add_htlc<L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
+		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>, logger: &L
 	) -> Result<(), ChannelError> where L::Target: Logger {
 		self
 			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true,
-				skimmed_fee_msat, logger)
+				skimmed_fee_msat, blinding_point, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 			.map_err(|err| {
 				if let ChannelError::Ignore(_) = err { /* fine */ }
@@ -5023,7 +5026,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn send_htlc<L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, logger: &L
+		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, logger: &L
 	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
@@ -5069,6 +5072,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		// Now update local state:
+		let blinding_point = blinding_point.or(source.outbound_blinding_point());
 		if force_holding_cell {
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat,
@@ -5077,11 +5081,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				source,
 				onion_routing_packet,
 				skimmed_fee_msat,
+				blinding_point,
 			});
 			return Ok(None);
 		}
 
-		let blinding_point = source.outbound_blinding_point();
 		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.context.next_holder_htlc_id,
 			amount_msat,
@@ -5089,6 +5093,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			cltv_expiry,
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
+			blinding_point,
 			skimmed_fee_msat,
 		});
 
@@ -5241,10 +5246,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
 	pub fn send_htlc_and_commit<L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
+		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>, logger: &L
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
 		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
-			onion_routing_packet, false, skimmed_fee_msat, logger);
+			onion_routing_packet, false, skimmed_fee_msat, blinding_point, logger);
 		if let Err(e) = &send_res { if let ChannelError::Ignore(_) = e {} else { debug_assert!(false, "Sending cannot trigger channel failure"); } }
 		match send_res? {
 			Some(_) => {
@@ -6563,6 +6569,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 
 		let mut preimages: Vec<&Option<PaymentPreimage>> = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
+		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for (idx, htlc) in self.context.pending_outbound_htlcs.iter().enumerate() {
@@ -6609,15 +6616,25 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			} else if !pending_outbound_skimmed_fees.is_empty() {
 				pending_outbound_skimmed_fees.push(None);
 			}
+			// TODO: DRY this and all ser for blinding points/skimmed fees
+			if htlc.blinding_point.is_some() {
+				if pending_outbound_blinding_points.is_empty() {
+					for _ in 0..idx { pending_outbound_blinding_points.push(None); }
+				}
+				pending_outbound_blinding_points.push(htlc.blinding_point);
+			} else if !pending_outbound_blinding_points.is_empty() {
+				pending_outbound_blinding_points.push(None);
+			}
 		}
 
 		let mut holding_cell_skimmed_fees: Vec<Option<u64>> = Vec::new();
+		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		(self.context.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for (idx, update) in self.context.holding_cell_htlc_updates.iter().enumerate() {
 			match update {
 				&HTLCUpdateAwaitingACK::AddHTLC {
 					ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
-					skimmed_fee_msat,
+					blinding_point, skimmed_fee_msat,
 				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
@@ -6632,6 +6649,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 						}
 						holding_cell_skimmed_fees.push(Some(skimmed_fee));
 					} else if !holding_cell_skimmed_fees.is_empty() { holding_cell_skimmed_fees.push(None); }
+					if blinding_point.is_some() {
+						if holding_cell_blinding_points.is_empty() {
+							for _ in 0..idx { holding_cell_blinding_points.push(None); }
+						}
+						holding_cell_blinding_points.push(blinding_point);
+					} else if !holding_cell_blinding_points.is_empty() {
+						holding_cell_blinding_points.push(None);
+					}
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
 					1u8.write(writer)?;
@@ -6800,6 +6825,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(33, self.context.blocked_monitor_updates, vec_type),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
+			(39, pending_outbound_blinding_points, optional_vec),
+			(41, holding_cell_blinding_points, optional_vec),
 		});
 
 		Ok(())
@@ -6911,6 +6938,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 					_ => return Err(DecodeError::InvalidValue),
 				},
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			});
 		}
 
@@ -6925,6 +6953,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 					source: Readable::read(reader)?,
 					onion_routing_packet: Readable::read(reader)?,
 					skimmed_fee_msat: None,
+					blinding_point: None,
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -7083,6 +7112,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
+		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
+		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -7108,6 +7140,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(33, blocked_monitor_updates, vec_type),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
+			(39, pending_outbound_blinding_points_opt, optional_vec),
+			(41, holding_cell_blinding_points_opt, optional_vec),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7182,6 +7216,24 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				}
 			}
 			// We expect all skimmed fees to be consumed above
+			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
+		}
+		if let Some(blinding_pts) = pending_outbound_blinding_points_opt {
+			let mut iter = blinding_pts.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				htlc.blinding_point = iter.next().ok_or(DecodeError::InvalidValue)?;
+			}
+			// We expect all blinding points to be consumed above
+			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
+		}
+		if let Some(blinding_pts) = holding_cell_blinding_points_opt {
+			let mut iter = blinding_pts.into_iter();
+			for htlc in holding_cell_htlc_updates.iter_mut() {
+				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut blinding_point, .. } = htlc {
+					*blinding_point = iter.next().ok_or(DecodeError::InvalidValue)?;
+				}
+			}
+			// We expect all blinding points to be consumed above
 			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
 		}
 
@@ -7528,6 +7580,7 @@ mod tests {
 				payment_id: PaymentId([42; 32]),
 			},
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
