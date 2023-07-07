@@ -409,17 +409,9 @@ where L::Target: Logger {
 
 	// Handle packed channel/node updates for passing back for the route handler
 	construct_onion_keys_callback(secp_ctx, &path, session_priv,
-		|shared_secret, _, _, route_hop_opt, route_hop_idx|
+		|shared_secret, _, pubkey, route_hop_opt, route_hop_idx|
 	{
 		if res.is_some() { return; }
-
-		let route_hop = match route_hop_opt {
-			Some(hop) => hop,
-			None => return,
-		};
-
-		let amt_to_forward = htlc_msat - route_hop.fee_msat;
-		htlc_msat = amt_to_forward;
 
 		let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
 
@@ -428,11 +420,6 @@ where L::Target: Logger {
 		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
-
-		// The failing hop includes either the inbound channel to the recipient or the outbound channel
-		// from the current hop (i.e., the next hop's inbound channel).
-		is_from_final_node = route_hop_idx + 1 == path.hops.len();
-		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
 		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 			Ok(p) => p,
@@ -445,26 +432,51 @@ where L::Target: Logger {
 		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) { return }
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
-			None => {
+			None if route_hop_opt.is_some() => {
 				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
 				// in question
 				let network_update = Some(NetworkUpdate::NodeFailure {
-					node_id: route_hop.pubkey,
+					node_id: pubkey,
 					is_permanent: true,
 				});
-				let short_channel_id = Some(route_hop.short_channel_id);
+				let short_channel_id = Some(route_hop_opt.as_ref().unwrap().short_channel_id);
 				res = Some((network_update, short_channel_id, !is_from_final_node));
 				return
-			}
+			},
+			None => return, // Useless packet from a blinded path hop
 		};
-		const BADONION: u16 = 0x8000;
-		const PERM: u16 = 0x4000;
-		const NODE: u16 = 0x2000;
-		const UPDATE: u16 = 0x1000;
 
 		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
 		error_code_ret = Some(error_code);
 		error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+
+		let route_hop = match route_hop_opt {
+			Some(hop) => hop,
+			None => {
+				res = Some((None, None, true));
+				return
+			}
+		};
+		let amt_to_forward = htlc_msat - route_hop.fee_msat;
+		htlc_msat = amt_to_forward;
+
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
+		is_from_final_node = route_hop_idx + 1 == path.hops.len() && path.blinded_tail.is_none();
+		let failing_route_hop = if is_from_final_node { route_hop } else {
+			match path.hops.get(route_hop_idx + 1) {
+				Some(hop) => hop,
+				None => {
+					res = Some((None, None, true));
+					return
+				}
+			}
+		};
+
+		const BADONION: u16 = 0x8000;
+		const PERM: u16 = 0x4000;
+		const NODE: u16 = 0x2000;
+		const UPDATE: u16 = 0x1000;
 
 		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
