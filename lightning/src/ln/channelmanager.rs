@@ -2859,11 +2859,14 @@ where
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
+					let sha256_of_onion = if msg.blinding_point.is_some() { [0; 32] } else {
+						Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner()
+					};
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
+						sha256_of_onion,
 						failure_code: $err_code,
 					}));
 				}
@@ -2923,10 +2926,18 @@ where
 		{
 			Ok(res) => res,
 			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-				return_malformed_err!(err_msg, err_code);
+				if msg.blinding_point.is_some() {
+					return_blinded_htlc_err!(err_msg);
+				} else {
+					return_malformed_err!(err_msg, err_code);
+				}
 			},
 			Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-				return_err!(err_msg, err_code, &[0; 0]);
+				if msg.blinding_point.is_some() {
+					return_blinded_htlc_err!(err_msg);
+				} else {
+					return_err!(err_msg, err_code, &[0; 0]);
+				}
 			},
 		};
 		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_pks_opt) = match next_hop {
@@ -2989,7 +3000,9 @@ where
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::Receive { .. }, .. } => {
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
 			},
-			_ => todo!()
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::BlindedReceive { .. }, .. } => {
+				return_blinded_htlc_err!("Blinded final node onion provided for us as an intermediary node");
+			},
 		};
 
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
@@ -3101,6 +3114,9 @@ where
 			break None;
 		}
 		{
+			if next_pks_opt.map_or(false, |(_, blinding_pt)| blinding_pt.is_some()) {
+				return_blinded_htlc_err!(err);
+			}
 			let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
 			if let Some(chan_update) = chan_update {
 				if code == 0x1000 | 11 || code == 0x1000 | 12 {
@@ -3136,10 +3152,22 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					if msg.blinding_point.is_some() {
+						return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							sha256_of_onion: [0; 32],
+							failure_code: INVALID_ONION_BLINDING,
+						}))
+					}
+					let (err_code, err_data) =
+						if next_hop_pks.map_or(false, |(_, blinding_pt)| blinding_pt.is_some()) {
+							(INVALID_ONION_BLINDING, vec![0; 32])
+						} else { ($err_code, $data) };
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						reason: HTLCFailReason::reason(err_code, err_data.to_vec())
 							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
@@ -3158,7 +3186,7 @@ where
 						// delay) once they've send us a commitment_signed!
 						PendingHTLCStatus::Forward(info)
 					},
-					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, err_data)
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
@@ -3166,7 +3194,7 @@ where
 					new_packet_bytes, shared_secret, next_hop_pks)
 				{
 					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, err_data)
 				}
 			}
 		}
@@ -5898,8 +5926,21 @@ where
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					match pending_forward_info {
-						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-							let reason = if (error_code & 0x1000) != 0 {
+						PendingHTLCStatus::Forward(PendingHTLCInfo {
+							ref incoming_shared_secret, ref routing, ..
+						}) => {
+							if msg.blinding_point.is_some() {
+								let fail_malformed = msgs::UpdateFailMalformedHTLC {
+									channel_id: msg.channel_id,
+									htlc_id: msg.htlc_id,
+									sha256_of_onion: [0; 32],
+									failure_code: INVALID_ONION_BLINDING,
+								};
+								return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(fail_malformed))
+							}
+							let reason = if routing.blinded().is_some() {
+								HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
+							} else if (error_code & 0x1000) != 0 {
 								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
 								HTLCFailReason::reason(real_code, error_data)
 							} else {
