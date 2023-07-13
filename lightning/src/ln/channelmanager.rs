@@ -3159,7 +3159,7 @@ where
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
-					}, onion_packet, None, &self.fee_estimator, &self.logger);
+					}, onion_packet, None, None, &self.fee_estimator, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -3892,7 +3892,7 @@ where
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
-											onion_packet, skimmed_fee_msat, &self.fee_estimator,
+											onion_packet, skimmed_fee_msat, None, &self.fee_estimator,
 											&self.logger)
 										{
 											if let ChannelError::Ignore(msg) = e {
