@@ -2755,6 +2755,7 @@ where
 					err_code: 0x4000 | 22,
 					err_data: Vec::new(),
 				}),
+			_ => todo!()
 		};
 
 		Ok(PendingHTLCInfo {
@@ -2781,12 +2782,13 @@ where
 				payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
 				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
-			_ =>
+			msgs::InboundOnionPayload::Forward { .. } =>
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
 					msg: "Got non final data with an HMAC of 0",
 				}),
+			_ => todo!()
 		};
 		// final_incorrect_cltv_expiry
 		if outgoing_cltv_value > cltv_expiry {
@@ -2926,7 +2928,10 @@ where
 			}
 		}
 
-		let next_hop = match onion_utils::decode_next_payment_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash) {
+		let next_hop = match onion_utils::decode_next_payment_hop(shared_secret,
+			&msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash,
+			msg.blinding_point, &self.node_signer)
+		{
 			Ok(res) => res,
 			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 				return_malformed_err!(err_msg, err_code);
@@ -2950,7 +2955,8 @@ where
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } => {
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
-			}
+			},
+			_ => todo!()
 		};
 
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
@@ -3935,7 +3941,11 @@ where
 											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
 											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
-												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+												let next_hop = match
+													onion_utils::decode_next_payment_hop(phantom_shared_secret,
+														&onion_packet.hop_data, onion_packet.hmac, payment_hash, None,
+														&self.node_signer)
+												{
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
