@@ -223,6 +223,7 @@ struct OutboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: OutboundHTLCState,
 	source: HTLCSource,
+	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 }
 
@@ -237,6 +238,7 @@ enum HTLCUpdateAwaitingACK {
 		onion_routing_packet: msgs::OnionPacket,
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -5275,6 +5277,7 @@ impl<SP: Deref> Channel<SP> where
 				source,
 				onion_routing_packet,
 				skimmed_fee_msat,
+				blinding_point: None,
 			});
 			return Ok(None);
 		}
@@ -5286,6 +5289,7 @@ impl<SP: Deref> Channel<SP> where
 			cltv_expiry,
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
+			blinding_point: None,
 			skimmed_fee_msat,
 		});
 
@@ -6796,6 +6800,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let mut preimages: Vec<&Option<PaymentPreimage>> = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
+		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for (idx, htlc) in self.context.pending_outbound_htlcs.iter().enumerate() {
@@ -6842,15 +6847,24 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			} else if !pending_outbound_skimmed_fees.is_empty() {
 				pending_outbound_skimmed_fees.push(None);
 			}
+			if htlc.blinding_point.is_some() {
+				if pending_outbound_blinding_points.is_empty() {
+					for _ in 0..idx { pending_outbound_blinding_points.push(None); }
+				}
+				pending_outbound_blinding_points.push(htlc.blinding_point);
+			} else if !pending_outbound_blinding_points.is_empty() {
+				pending_outbound_blinding_points.push(None);
+			}
 		}
 
 		let mut holding_cell_skimmed_fees: Vec<Option<u64>> = Vec::new();
+		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		(self.context.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for (idx, update) in self.context.holding_cell_htlc_updates.iter().enumerate() {
 			match update {
 				&HTLCUpdateAwaitingACK::AddHTLC {
 					ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
-					skimmed_fee_msat,
+					blinding_point, skimmed_fee_msat,
 				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
@@ -6865,6 +6879,14 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 						}
 						holding_cell_skimmed_fees.push(Some(skimmed_fee));
 					} else if !holding_cell_skimmed_fees.is_empty() { holding_cell_skimmed_fees.push(None); }
+					if blinding_point.is_some() {
+						if holding_cell_blinding_points.is_empty() {
+							for _ in 0..idx { holding_cell_blinding_points.push(None); }
+						}
+						holding_cell_blinding_points.push(blinding_point);
+					} else if !holding_cell_blinding_points.is_empty() {
+						holding_cell_blinding_points.push(None);
+					}
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
 					1u8.write(writer)?;
@@ -7033,6 +7055,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
+			(39, pending_outbound_blinding_points, optional_vec),
+			(41, holding_cell_blinding_points, optional_vec),
 		});
 
 		Ok(())
@@ -7144,6 +7168,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 					_ => return Err(DecodeError::InvalidValue),
 				},
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			});
 		}
 
@@ -7158,6 +7183,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 					source: Readable::read(reader)?,
 					onion_routing_packet: Readable::read(reader)?,
 					skimmed_fee_msat: None,
+					blinding_point: None,
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -7316,6 +7342,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
+		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
+		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -7341,6 +7370,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
+			(39, pending_outbound_blinding_points_opt, optional_vec),
+			(41, holding_cell_blinding_points_opt, optional_vec),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7415,6 +7446,24 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				}
 			}
 			// We expect all skimmed fees to be consumed above
+			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
+		}
+		if let Some(blinding_pts) = pending_outbound_blinding_points_opt {
+			let mut iter = blinding_pts.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				htlc.blinding_point = iter.next().ok_or(DecodeError::InvalidValue)?;
+			}
+			// We expect all blinding points to be consumed above
+			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
+		}
+		if let Some(blinding_pts) = holding_cell_blinding_points_opt {
+			let mut iter = blinding_pts.into_iter();
+			for htlc in holding_cell_htlc_updates.iter_mut() {
+				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut blinding_point, .. } = htlc {
+					*blinding_point = iter.next().ok_or(DecodeError::InvalidValue)?;
+				}
+			}
+			// We expect all blinding points to be consumed above
 			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
 		}
 
@@ -7759,6 +7808,7 @@ mod tests {
 				payment_id: PaymentId([42; 32]),
 			},
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -8316,6 +8366,7 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).into_inner();
 			out
@@ -8329,6 +8380,7 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).into_inner();
 			out
@@ -8740,6 +8792,7 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).into_inner();
 			out
@@ -8753,6 +8806,7 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
+				blinding_point: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).into_inner();
 			out
