@@ -194,6 +194,9 @@ pub(super) enum HTLCForwardInfo {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
 	},
+	FailBlindedHTLC {
+		htlc_id: u64,
+	},
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
@@ -4096,7 +4099,7 @@ where
 											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 										}
 									},
-									HTLCForwardInfo::FailHTLC { .. } => {
+									HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailBlindedHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
@@ -4188,6 +4191,20 @@ where
 											log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
 										} else {
 											panic!("Stated return value requirements in queue_fail_htlc() were not met");
+										}
+										// fail-backs are best-effort, we probably already have one
+										// pending, and if not that's OK, if not, the channel is on
+										// the chain and sending the HTLC-Timeout is their problem.
+										continue;
+									}
+								},
+								HTLCForwardInfo::FailBlindedHTLC { htlc_id } => {
+									log_trace!(self.logger, "Failing blinded non-intro node HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+									if let Err(e) = chan.queue_fail_blinded_htlc( htlc_id, &self.logger) {
+										if let ChannelError::Ignore(msg) = e {
+											log_trace!(self.logger, "Failed to fail blinded non-intro node HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
+										} else {
+											panic!("Stated return value requirements in queue_fail_blinded_htlc() were not met");
 										}
 										// fail-backs are best-effort, we probably already have one
 										// pending, and if not that's OK, if not, the channel is on
@@ -4454,7 +4471,7 @@ where
 									},
 								};
 							},
-							HTLCForwardInfo::FailHTLC { .. } => {
+							HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailBlindedHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
 							}
 						}
@@ -5025,9 +5042,29 @@ where
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint, .. }) => {
-				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", &payment_hash, onion_error);
-				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
+			HTLCSource::PreviousHopData(HTLCPreviousHopData {
+				ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret,
+				ref phantom_shared_secret, ref outpoint, ref blinded, ..
+			}) => {
+				let fail_forward_info = match blinded {
+					Some(true) => {
+						let blinded_onion_error = HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32]);
+						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
+							incoming_packet_shared_secret, phantom_shared_secret);
+						log_trace!(self.logger, "Failing blinded HTLC with payment hash {} backwards from us, original onion error {:?}", payment_hash, onion_error);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
+					},
+					Some(false) => {
+						log_trace!(self.logger, "Failing blinded HTLC with payment hash {} backwards from us with malformed, original onion error {:?}", payment_hash, onion_error);
+						HTLCForwardInfo::FailBlindedHTLC { htlc_id: *htlc_id }
+					},
+					None => {
+						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", payment_hash, onion_error);
+						let err_packet = onion_error.get_encrypted_failure_packet(
+							incoming_packet_shared_secret, phantom_shared_secret);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
+					},
+				};
 
 				let mut push_forward_ev = false;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
@@ -5036,10 +5073,10 @@ where
 				}
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet });
+						entry.get_mut().push(fail_forward_info);
 					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }));
+						entry.insert(vec!(fail_forward_info));
 					}
 				}
 				mem::drop(forward_htlcs);
@@ -8540,6 +8577,9 @@ impl_writeable_tlv_based_enum!(HTLCForwardInfo,
 	(1, FailHTLC) => {
 		(0, htlc_id, required),
 		(2, err_packet, required),
+	},
+	(2, FailBlindedHTLC) => {
+		(0, htlc_id, required),
 	};
 	(0, AddHTLC)
 );

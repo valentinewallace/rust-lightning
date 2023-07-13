@@ -465,11 +465,27 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			Some(hop) => hop,
 			None => {
 				// Got an error from within a blinded route.
-				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+				error_code_ret = Some(INVALID_ONION_BLINDING);
 				error_packet_ret = Some(vec![0; 32]);
-				is_from_final_node = false;
+				res = Some((None, None, true));
 				return
 			},
+		};
+
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
+		is_from_final_node = route_hop_idx + 1 == path.hops.len() &&
+			path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len()) <= 1;
+		let failing_route_hop = if is_from_final_node { route_hop } else {
+			match path.hops.get(route_hop_idx + 1) {
+				Some(hop) => hop,
+				None => {
+					error_code_ret = Some(INVALID_ONION_BLINDING);
+					error_packet_ret = Some(vec![0; 32]);
+					res = Some((None, None, true));
+					return
+				}
+			}
 		};
 
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
@@ -482,11 +498,6 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
-
-		// The failing hop includes either the inbound channel to the recipient or the outbound channel
-		// from the current hop (i.e., the next hop's inbound channel).
-		is_from_final_node = route_hop_idx + 1 == path.hops.len();
-		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
 		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 			Ok(p) => p,

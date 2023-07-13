@@ -30,7 +30,7 @@ use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT, ChannelShutdownState};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use crate::ln::chan_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
@@ -247,6 +247,9 @@ enum HTLCUpdateAwaitingACK {
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
+	},
+	FailBlindedHTLC {
+		htlc_id: u64,
 	},
 }
 
@@ -2082,6 +2085,25 @@ struct CommitmentTxInfoCached {
 	feerate: u32,
 }
 
+trait FailHTLCMessage {
+	fn new(htlc_id: u64, channel_id: ChannelId, reason: msgs::OnionErrorPacket) -> Self;
+}
+impl FailHTLCMessage for msgs::UpdateFailHTLC {
+	fn new(htlc_id: u64, channel_id: ChannelId, reason: msgs::OnionErrorPacket) -> Self {
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason }
+	}
+}
+impl FailHTLCMessage for msgs::UpdateFailMalformedHTLC {
+	fn new(htlc_id: u64, channel_id: ChannelId, _reason: msgs::OnionErrorPacket) -> Self {
+		msgs::UpdateFailMalformedHTLC {
+			htlc_id,
+			channel_id,
+			sha256_of_onion: [0; 32],
+			failure_code: INVALID_ONION_BLINDING,
+		}
+	}
+}
+
 impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::Signer: WriteableEcdsaChannelSigner
@@ -2306,7 +2328,9 @@ impl<SP: Deref> Channel<SP> where
 							return UpdateFulfillFetch::DuplicateClaim {};
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
+						&HTLCUpdateAwaitingACK::FailBlindedHTLC { htlc_id, .. } =>
+					{
 						if htlc_id_arg == htlc_id {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with pending failure against channel {}", &self.context.channel_id());
 							// TODO: We may actually be able to switch to a fulfill here, though its
@@ -2399,7 +2423,15 @@ impl<SP: Deref> Channel<SP> where
 	/// [`ChannelError::Ignore`].
 	pub fn queue_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L)
 	-> Result<(), ChannelError> where L::Target: Logger {
-		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
+		self.fail_htlc::<L, msgs::UpdateFailHTLC>(htlc_id_arg, Some(err_packet), true, logger)
+			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+	}
+
+	/// Used for failing back blinded payments if we are not the intro node. See
+	/// [`Self::queue_fail_htlc`] for more info.
+	pub fn queue_fail_blinded_htlc<L: Deref>(&mut self, htlc_id_arg: u64, logger: &L)
+	-> Result<(), ChannelError> where L::Target: Logger {
+		self.fail_htlc::<L, msgs::UpdateFailMalformedHTLC>(htlc_id_arg, None, true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
@@ -2411,8 +2443,10 @@ impl<SP: Deref> Channel<SP> where
 	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
 	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
 	/// [`ChannelError::Ignore`].
-	fn fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, mut force_holding_cell: bool, logger: &L)
-	-> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
+	fn fail_htlc<L: Deref, M: FailHTLCMessage>(
+		&mut self, htlc_id_arg: u64, err_packet: Option<msgs::OnionErrorPacket>,
+		mut force_holding_cell: bool, logger: &L
+	) -> Result<Option<M>, ChannelError> where L::Target: Logger {
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -2466,7 +2500,9 @@ impl<SP: Deref> Channel<SP> where
 							return Ok(None);
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
+						&HTLCUpdateAwaitingACK::FailBlindedHTLC { htlc_id } =>
+					{
 						if htlc_id_arg == htlc_id {
 							debug_assert!(false, "Tried to fail an HTLC that was already failed");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID".to_owned()));
@@ -2475,25 +2511,34 @@ impl<SP: Deref> Channel<SP> where
 					_ => {}
 				}
 			}
-			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, &self.context.channel_id());
-			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
-				htlc_id: htlc_id_arg,
-				err_packet,
-			});
+			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, self.context.channel_id());
+			if let Some(err_packet) = err_packet {
+				self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
+					htlc_id: htlc_id_arg,
+					err_packet,
+				});
+			} else {
+				self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailBlindedHTLC {
+					htlc_id: htlc_id_arg,
+				});
+			}
 			return Ok(None);
 		}
 
-		log_trace!(logger, "Failing HTLC ID {} back with a update_fail_htlc message in channel {}.", htlc_id_arg, &self.context.channel_id());
+		log_trace!(logger, "Failing HTLC ID {} back with a update_fail_{}htlc message in channel {}.",
+			htlc_id_arg, if err_packet.is_none() { "malformed_" } else { "" }, self.context.channel_id());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
+			if let Some(ref err_packet) = err_packet  {
+				htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
+			} else {
+				htlc.state = InboundHTLCState::LocalRemoved(
+					InboundHTLCRemovalReason::FailMalformed(([0; 32], INVALID_ONION_BLINDING)));
+			}
 		}
 
-		Ok(Some(msgs::UpdateFailHTLC {
-			channel_id: self.context.channel_id(),
-			htlc_id: htlc_id_arg,
-			reason: err_packet
-		}))
+		let err_packet = err_packet.unwrap_or(msgs::OnionErrorPacket { data: Vec::new()});
+		Ok(Some(M::new(htlc_id_arg, self.context.channel_id(), err_packet)))
 	}
 
 	// Message handlers:
@@ -3191,7 +3236,9 @@ impl<SP: Deref> Channel<SP> where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-						match self.fail_htlc(htlc_id, err_packet.clone(), false, logger) {
+						match self.fail_htlc::<L, msgs::UpdateFailHTLC>(
+							htlc_id, Some(err_packet.clone()), false, logger)
+						{
 							Ok(update_fail_msg_option) => {
 								// If an HTLC failure was previously added to the holding cell (via
 								// `queue_fail_htlc`) then generating the fail message itself must
@@ -3199,6 +3246,22 @@ impl<SP: Deref> Channel<SP> where
 								// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
 								// for a full revocation before failing.
 								debug_assert!(update_fail_msg_option.is_some());
+								update_fail_count += 1;
+							},
+							Err(e) => {
+								if let ChannelError::Ignore(_) = e {}
+								else {
+									panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
+								}
+							}
+						}
+					},
+					&HTLCUpdateAwaitingACK::FailBlindedHTLC { htlc_id } => {
+						match self.fail_htlc::<L, msgs::UpdateFailMalformedHTLC>(
+							htlc_id, None, false, logger)
+						{
+							Ok(update_fail_malformed_opt) => {
+								debug_assert!(update_fail_malformed_opt.is_some()); // See above comment
 								update_fail_count += 1;
 							},
 							Err(e) => {
@@ -6898,6 +6961,10 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 					htlc_id.write(writer)?;
 					err_packet.write(writer)?;
 				}
+				&HTLCUpdateAwaitingACK::FailBlindedHTLC { ref htlc_id } => {
+					3u8.write(writer)?;
+					htlc_id.write(writer)?;
+				}
 			}
 		}
 
@@ -7192,6 +7259,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
 					err_packet: Readable::read(reader)?,
+				},
+				3 => HTLCUpdateAwaitingACK::FailBlindedHTLC {
+					htlc_id: Readable::read(reader)?,
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			});
