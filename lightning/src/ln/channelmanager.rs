@@ -22,11 +22,12 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
@@ -49,7 +50,7 @@ use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Pa
 use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -110,6 +111,9 @@ pub(super) enum PendingHTLCRouting {
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		phantom_shared_secret: Option<[u8; 32]>,
+		/// `Some` if this corresponds to a blinded HTLC. Used for failing backwards properly. We use an
+		/// option to maintain compatibility with LDK versions prior to 0.0.117.
+		blinded: Option<()>,
 	},
 	ReceiveKeysend {
 		/// This was added in 0.0.116 and will break deserialization on downgrades.
@@ -117,6 +121,8 @@ pub(super) enum PendingHTLCRouting {
 		payment_preimage: PaymentPreimage,
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+		/// See [`Self::Receive::blinded`] docs.
+		blinded: Option<()>,
 	},
 }
 
@@ -2660,18 +2666,34 @@ where
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
-		let (payment_data, keysend_preimage, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+		let (
+			payment_data, keysend_preimage, onion_amt_msat, outgoing_cltv_value, payment_metadata, blinded
+		) = match hop_data {
 			msgs::InboundPayload::Receive {
 				payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
-				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata),
-			msgs::InboundPayload::Forward { .. } =>
+				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, false),
+			msgs::InboundPayload::BlindedReceive {
+				amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point, ..
+			} => {
+				let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+				(Some(payment_data), None, amt_msat, outgoing_cltv_value, None,
+				intro_node_blinding_point.is_none())
+			}
+			msgs::InboundPayload::Forward { .. } => {
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
 					msg: "Got non final data with an HMAC of 0",
-				}),
-			_ => todo!()
+				})
+			},
+			msgs::InboundPayload::BlindedForward { .. } => {
+				return Err(InboundOnionErr {
+					msg: "Got blinded non final data with an HMAC of 0",
+					err_code: INVALID_ONION_BLINDING,
+					err_data: vec![0; 32], // TODO: this is an extra alloc
+				})
+			},
 		};
 		// final_incorrect_cltv_expiry
 		if outgoing_cltv_value > cltv_expiry {
@@ -2736,6 +2758,7 @@ where
 				payment_preimage,
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
+				blinded: blinded.then(|| ()),
 			}
 		} else if let Some(data) = payment_data {
 			routing = PendingHTLCRouting::Receive {
@@ -2743,6 +2766,7 @@ where
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
 				phantom_shared_secret,
+				blinded: blinded.then(|| ()),
 			}
 		} else {
 			return Err(InboundOnionErr {
@@ -2783,8 +2807,15 @@ where
 			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 		}
 
+		let blinded_node_id_tweak = msg.blinding_point.map(|bp| {
+			let blinded_tlvs_ss = self.node_signer.ecdh(
+				Recipient::Node, &bp, None).unwrap().secret_bytes();
+			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+			hmac.input(blinded_tlvs_ss.as_ref());
+			Scalar::from_be_bytes(Hmac::from_engine(hmac).into_inner()).unwrap()
+		});
 		let shared_secret = self.node_signer.ecdh(
-			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), blinded_node_id_tweak.as_ref()
 		).unwrap().secret_bytes();
 
 		if msg.onion_routing_packet.version != 0 {
@@ -3913,14 +3944,14 @@ where
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
+									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, .. } => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields =
 											RecipientOnionFields { payment_secret: Some(payment_data.payment_secret), payment_metadata };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry, .. } => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata
@@ -7582,12 +7613,14 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(4, blinded, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
+		(4, blinded, option),
 	},
 ;);
 
