@@ -1006,10 +1006,6 @@ impl OutboundPayments {
 				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
 				continue 'path_check;
 			}
-			if path.blinded_tail.is_some() {
-				path_errs.push(Err(APIError::InvalidRoute{err: "Sending to blinded paths isn't supported yet".to_owned()}));
-				continue 'path_check;
-			}
 			let dest_hop_idx = if path.blinded_tail.is_some() && path.blinded_tail.as_ref().unwrap().hops.len() > 1 {
 				usize::max_value() } else { path.hops.len() - 1 };
 			for (idx, hop) in path.hops.iter().enumerate() {
