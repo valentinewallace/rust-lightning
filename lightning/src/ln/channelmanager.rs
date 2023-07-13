@@ -22,11 +22,12 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
@@ -49,7 +50,7 @@ use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Pa
 use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -2782,13 +2783,26 @@ where
 				payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
 				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
-			msgs::InboundOnionPayload::Forward { .. } =>
+			msgs::InboundOnionPayload::BlindedReceive {
+				amt_msat, total_msat, outgoing_cltv_value, payment_secret, ..
+			} => {
+				let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+				(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None)
+			}
+			msgs::InboundOnionPayload::Forward { .. } => {
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
 					msg: "Got non final data with an HMAC of 0",
-				}),
-			_ => todo!()
+				})
+			},
+			msgs::InboundOnionPayload::BlindedForward { .. } => {
+				return Err(InboundOnionErr {
+					msg: "Got blinded non final data with an HMAC of 0",
+					err_code: INVALID_ONION_BLINDING,
+					err_data: vec![0; 32],
+				})
+			},
 		};
 		// final_incorrect_cltv_expiry
 		if outgoing_cltv_value > cltv_expiry {
@@ -2901,8 +2915,15 @@ where
 			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 		}
 
+		let blinded_node_id_tweak = msg.blinding_point.map(|bp| {
+			let blinded_tlvs_ss = self.node_signer.ecdh(
+				Recipient::Node, &bp, None).unwrap().secret_bytes();
+			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+			hmac.input(blinded_tlvs_ss.as_ref());
+			Scalar::from_be_bytes(Hmac::from_engine(hmac).into_inner()).unwrap()
+		});
 		let shared_secret = self.node_signer.ecdh(
-			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), blinded_node_id_tweak.as_ref()
 		).unwrap().secret_bytes();
 
 		if msg.onion_routing_packet.version != 0 {
