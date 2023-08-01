@@ -169,10 +169,10 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut curr_hop_idx = 0;
 	utils::construct_keys_callback(
 		secp_ctx, unblinded_path.iter().map(|(pk, _)| pk), None, session_priv,
-		|blinded_node_id, _, _, encrypted_payload_ss, _, _| {
+		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
 			blinded_hops.push(BlindedHop {
 				blinded_node_id,
-				encrypted_payload: utils::encrypt_payload(&unblinded_path[curr_hop_idx].1, encrypted_payload_ss),
+				encrypted_payload: utils::encrypt_payload(&unblinded_path[curr_hop_idx].1, encrypted_payload_rho),
 			});
 			curr_hop_idx += 1;
 		})?;
