@@ -880,6 +880,7 @@ pub(crate) enum OnionDecodeErr {
 	Relay {
 		err_msg: &'static str,
 		err_code: u16,
+		err_data: Vec<u8>,
 	},
 }
 
@@ -922,16 +923,16 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
-			let error_code = match err {
-				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
+			let (err_code, err_data) = match err {
+				msgs::DecodeError::UnknownVersion => (0x4000 | 1, Vec::new()), // unknown realm byte
 				msgs::DecodeError::UnknownRequiredFeature|
 				msgs::DecodeError::InvalidValue|
-				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
-				_ => 0x2000 | 2, // Should never happen
+				msgs::DecodeError::ShortRead => (0x4000 | 22, Vec::new()), // invalid_onion_payload
+				msgs::DecodeError::InvalidIntroNodePayload => (INVALID_ONION_BLINDING, vec![0; 32]),
+				_ => (0x2000 | 2, Vec::new()), // Should never happen
 			};
 			return Err(OnionDecodeErr::Relay {
-				err_msg: "Unable to decode our hop data",
-				err_code: error_code,
+				err_msg: "Unable to decode our hop data", err_code, err_data,
 			});
 		},
 		Ok(msg) => {
@@ -940,6 +941,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
 					err_code: 0x4000 | 22,
+					err_data: Vec::new(),
 				});
 			}
 			if hmac == [0; 32] {

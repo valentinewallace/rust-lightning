@@ -8,7 +8,7 @@
 // licenses.
 
 use bitcoin::secp256k1::Secp256k1;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::blinded_path::payment::{BlindedPaymentTlvs, PaymentConstraints, PaymentRelay};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -314,4 +314,74 @@ fn fail_blinded_payment() {
 		},
 			_ => panic!("Unexpected event"),
 	}
+}
+
+#[test]
+fn invalid_intro_node_payload() {
+	// Ensure we fail back properly if the intro node's onion payload is bogus.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_upd = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let path = vec![(nodes[1].node.get_our_node_id(), BlindedPaymentTlvs::Forward {
+		short_channel_id: chan_upd.short_channel_id,
+		payment_relay: PaymentRelay {
+			cltv_expiry_delta: chan_upd.cltv_expiry_delta,
+			fee_proportional_millionths: chan_upd.fee_proportional_millionths,
+			fee_base_msat: chan_upd.fee_base_msat,
+		},
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		features: BlindedHopFeatures::empty(),
+	}), (nodes[2].node.get_our_node_id(), BlindedPaymentTlvs::Receive {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		features: BlindedHopFeatures::empty(),
+	})];
+	let mut secp_ctx = Secp256k1::new();
+	let mut blinded_path = BlindedPath::new_for_payment(&path[..], &chanmon_cfgs[2].keys_manager, &secp_ctx).unwrap();
+	blinded_path.1.blinded_hops[0] = BlindedHop {
+		blinded_node_id: blinded_path.1.blinded_hops[0].blinded_node_id,
+		encrypted_payload: vec![0; 32], // Bogus intro node payload
+	};
+
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::blinded(vec![blinded_path]),
+		final_value_msat: amt_msat
+	};
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let (update_add, commitment_signed) = {
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_ev = SendEvent::from_event(events.pop().unwrap());
+		(payment_ev.msgs[0].clone(), payment_ev.commitment_msg.clone())
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &commitment_signed, false, true);
+	let (update_fail, commitment_signed) = {
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::UpdateHTLCs { updates, .. } => {
+				(updates.update_fail_htlcs[0].clone(), updates.commitment_signed.clone())
+			},
+			_ => panic!()
+		}
+	};
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &commitment_signed, false, true);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
 }
