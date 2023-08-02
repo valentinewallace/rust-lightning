@@ -2904,7 +2904,7 @@ where
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						reason: HTLCFailReason::reason($err_code, $data)
 							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
@@ -2915,7 +2915,7 @@ where
 				if msg.blinding_point.is_some() {
 					return_malformed_err!($msg, INVALID_ONION_BLINDING);
 				} else {
-					return_err!($msg, INVALID_ONION_BLINDING, [0; 32]);
+					return_err!($msg, INVALID_ONION_BLINDING, vec![0; 32]);
 				}
 			}
 		}
@@ -2932,11 +2932,11 @@ where
 					return_malformed_err!(err_msg, err_code);
 				}
 			},
-			Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+			Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, err_data }) => {
 				if msg.blinding_point.is_some() {
 					return_blinded_htlc_err!(err_msg);
 				} else {
-					return_err!(err_msg, err_code, &[0; 0]);
+					return_err!(err_msg, err_code, err_data);
 				}
 			},
 		};
@@ -2999,7 +2999,8 @@ where
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::Receive { .. }, .. } => {
-				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
+				return_err!("Final Node OnionHopData provided for us as an intermediary node",
+					0x4000 | 22, Vec::new());
 			},
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundPayload::BlindedReceive { .. }, .. } => {
 				return_blinded_htlc_err!("Blinded final node onion provided for us as an intermediary node");
@@ -3140,7 +3141,7 @@ where
 				// instead.
 				code = 0x2000 | 2;
 			}
-			return_err!(err, code, &res.0[..]);
+			return_err!(err, code, res.0);
 		}
 		Ok((next_hop, shared_secret, next_pks_opt))
 	}
@@ -3998,8 +3999,8 @@ where
 														// of the onion.
 														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, err_data }) => {
+														failed_payment!(err_msg, err_code, err_data, Some(phantom_shared_secret));
 													},
 												};
 												match next_hop {
