@@ -3133,6 +3133,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub pending_htlc_fails: (usize, usize),
 	pub pending_cell_htlc_claims: (usize, usize),
 	pub pending_cell_htlc_fails: (usize, usize),
+	pub pending_cell_htlc_malforms: (usize, usize),
 	pub pending_raa: (bool, bool),
 }
 
@@ -3149,6 +3150,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			pending_htlc_fails: (0, 0),
 			pending_cell_htlc_claims: (0, 0),
 			pending_cell_htlc_fails: (0, 0),
+			pending_cell_htlc_malforms: (0, 0),
 			pending_raa: (false, false),
 		}
 	}
@@ -3159,7 +3161,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	let ReconnectArgs {
 		node_a, node_b, send_channel_ready, pending_htlc_adds, pending_htlc_claims, pending_htlc_fails,
-		pending_cell_htlc_claims, pending_cell_htlc_fails, pending_raa,
+		pending_cell_htlc_claims, pending_cell_htlc_malforms, pending_cell_htlc_fails, pending_raa,
 		pending_responding_commitment_signed, pending_responding_commitment_signed_dup_monitor,
 	} = args;
 	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init {
@@ -3201,7 +3203,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg);
 		resp_1.push(handle_chan_reestablish_msgs!(node_b, node_a));
 	}
-	if pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
+	if pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 ||
+		pending_cell_htlc_malforms.0 != 0
+	{
 		check_added_monitors!(node_b, 1);
 	} else {
 		check_added_monitors!(node_b, 0);
@@ -3212,7 +3216,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_a.node.handle_channel_reestablish(&node_b.node.get_our_node_id(), &msg);
 		resp_2.push(handle_chan_reestablish_msgs!(node_a, node_b));
 	}
-	if pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
+	if pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 ||
+		pending_cell_htlc_malforms.1 != 0
+	{
 		check_added_monitors!(node_a, 1);
 	} else {
 		check_added_monitors!(node_a, 0);
@@ -3220,9 +3226,11 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 
 	// We don't yet support both needing updates, as that would require a different commitment dance:
 	assert!((pending_htlc_adds.0 == 0 && pending_htlc_claims.0 == 0 && pending_htlc_fails.0 == 0 &&
-			 pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0) ||
+			 pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0 &&
+			 pending_cell_htlc_malforms.0 == 0) ||
 			(pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_htlc_fails.1 == 0 &&
-			 pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
+			 pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0 &&
+			 pending_cell_htlc_malforms.1 == 0));
 
 	for chan_msgs in resp_1.drain(..) {
 		if send_channel_ready.0 {
@@ -3247,13 +3255,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 ||
 			pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 ||
-			pending_responding_commitment_signed.0
+			pending_responding_commitment_signed.0 || pending_cell_htlc_malforms.0 != 0
 		{
 			let commitment_update = chan_msgs.2.unwrap();
 			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0);
 			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
 			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.0 + pending_cell_htlc_fails.0);
-			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert_eq!(commitment_update.update_fail_malformed_htlcs.len(), pending_cell_htlc_malforms.0);
 			for update_add in commitment_update.update_add_htlcs {
 				node_a.node.handle_update_add_htlc(&node_b.node.get_our_node_id(), &update_add);
 			}
@@ -3262,6 +3270,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 			for update_fail in commitment_update.update_fail_htlcs {
 				node_a.node.handle_update_fail_htlc(&node_b.node.get_our_node_id(), &update_fail);
+			}
+			for update_malformed in commitment_update.update_fail_malformed_htlcs {
+				node_a.node.handle_update_fail_malformed_htlc(&node_b.node.get_our_node_id(), &update_malformed);
 			}
 
 			if !pending_responding_commitment_signed.0 {
@@ -3305,13 +3316,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 ||
 			pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 ||
-			pending_responding_commitment_signed.1
+			pending_responding_commitment_signed.1 || pending_cell_htlc_malforms.1 != 0
 		{
 			let commitment_update = chan_msgs.2.unwrap();
 			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1);
 			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.1 + pending_cell_htlc_claims.1);
 			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.1 + pending_cell_htlc_fails.1);
-			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert_eq!(commitment_update.update_fail_malformed_htlcs.len(), pending_cell_htlc_malforms.1);
 			for update_add in commitment_update.update_add_htlcs {
 				node_b.node.handle_update_add_htlc(&node_a.node.get_our_node_id(), &update_add);
 			}
@@ -3320,6 +3331,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 			for update_fail in commitment_update.update_fail_htlcs {
 				node_b.node.handle_update_fail_htlc(&node_a.node.get_our_node_id(), &update_fail);
+			}
+			for update_malformed in commitment_update.update_fail_malformed_htlcs {
+				node_b.node.handle_update_fail_malformed_htlc(&node_a.node.get_our_node_id(), &update_malformed);
 			}
 
 			if !pending_responding_commitment_signed.1 {

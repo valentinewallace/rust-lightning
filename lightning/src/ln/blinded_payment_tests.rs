@@ -24,6 +24,8 @@ use crate::ln::outbound_payment::Retry;
 use crate::prelude::*;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::config::UserConfig;
+use crate::util::ser::Writeable;
+use crate::util::test_utils;
 
 #[test]
 fn simple_blinded_payment() {
@@ -663,13 +665,22 @@ fn high_prop_fees() {
 
 #[test]
 fn fail_blinded_payment() {
+	do_fail_blinded_payment(true);
+	do_fail_blinded_payment(false);
+}
+
+fn do_fail_blinded_payment(reload: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let (new_persister, new_chain_monitor);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_3_deserialized;
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
-	let chan_upd = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+	let (signed_chan_upd, _, chan_id_2_3, _) = create_announced_chan_between_nodes_with_value(
+		&nodes, 2, 3, 1_000_000, 500_000_000);
+	let chan_upd = signed_chan_upd.contents;
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
@@ -713,30 +724,54 @@ fn fail_blinded_payment() {
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], amt_msat, payment_hash,
 		payment_secret);
 
+	if reload {
+		nodes[3].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+		nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id());
+	}
+
 	nodes[3].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(),
 		&[HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[3].node.process_pending_htlc_forwards();
 
-	// The last node should fail back with malformed since it's not the intro node.
-	check_added_monitors!(nodes[3], 1);
-	let (update_fail_malformed, commitment_signed) = {
-		let msg_events = nodes[3].node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), 1);
-		match msg_events[0] {
-			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate {
-				ref update_fail_malformed_htlcs, ref commitment_signed, ..
-			}, .. } => {
+	if reload {
+		// We've just placed our malformed HTLC in the holding cell. Make sure we'll reload this holding
+		// cell htlc on restart.
+		let mon = get_monitor!(nodes[3], chan_id_2_3).encode();
+		reload_node!(nodes[3], UserConfig::default(), &nodes[3].node.encode(), &[&mon],
+			new_persister, new_chain_monitor, node_3_deserialized);
+
+		let mut reconnect_args = ReconnectArgs::new(&nodes[2], &nodes[3]);
+		reconnect_args.pending_cell_htlc_malforms.0 = 1;
+		reconnect_nodes(reconnect_args);
+		expect_pending_htlcs_forwardable_conditions(nodes[2].node.get_and_clear_pending_events(),
+			&[HTLCDestination::NextHopChannel {
+				node_id: Some(nodes[3].node.get_our_node_id()),
+				channel_id: chan_id_2_3,
+			}]);
+		nodes[2].node.process_pending_htlc_forwards();
+		check_added_monitors(&nodes[2], 1);
+	} else {
+		// The last node should fail back with malformed since it's not the intro node.
+		check_added_monitors!(nodes[3], 1);
+		let (update_fail_malformed, commitment_signed) = {
+			let msg_events = nodes[3].node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1);
+			match &msg_events[0] {
+				MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate {
+					ref update_fail_malformed_htlcs, ref commitment_signed, ..
+				}, .. } => {
 				assert_eq!(update_fail_malformed_htlcs.len(), 1);
 				(update_fail_malformed_htlcs[0].clone(), commitment_signed.clone())
 			},
 			_ => panic!("Unexpected event"),
-		}
-	};
-	assert_eq!(update_fail_malformed.sha256_of_onion, [0; 32]);
-	assert_eq!(update_fail_malformed.failure_code, INVALID_ONION_BLINDING);
-	nodes[2].node.handle_update_fail_malformed_htlc(&nodes[3].node.get_our_node_id(), &update_fail_malformed);
-	do_commitment_signed_dance(&nodes[2], &nodes[3], &commitment_signed, true, false);
+			}
+		};
+		assert_eq!(update_fail_malformed.sha256_of_onion, [0; 32]);
+		assert_eq!(update_fail_malformed.failure_code, INVALID_ONION_BLINDING);
+		nodes[2].node.handle_update_fail_malformed_htlc(&nodes[3].node.get_our_node_id(), &update_fail_malformed);
+		do_commitment_signed_dance(&nodes[2], &nodes[3], &commitment_signed, true, false);
+	}
 
 	// The intro node fails back with the invalid_onion_blinding error.
 	let (update_fail, commitment_signed) = {
