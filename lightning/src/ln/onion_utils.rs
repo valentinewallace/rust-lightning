@@ -488,86 +488,80 @@ where L::Target: Logger {
 				short_channel_id = Some(failing_route_hop.short_channel_id);
 			}
 		} else if error_code & UPDATE == UPDATE {
-			if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
-				let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
-				if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
-					// Historically, the BOLTs were unclear if the message type
-					// bytes should be included here or not. The BOLTs have now
-					// been updated to indicate that they *are* included, but many
-					// nodes still send messages without the type bytes, so we
-					// support both here.
-					// TODO: Switch to hard require the type prefix, as the current
-					// permissiveness introduces the (although small) possibility
-					// that we fail to decode legitimate channel updates that
-					// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
-					if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
-						update_slice = &update_slice[2..];
-					} else {
-						log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
-					}
-					let update_opt = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice));
-					if update_opt.is_ok() || update_slice.is_empty() {
-						// if channel_update should NOT have caused the failure:
-						// MAY treat the channel_update as invalid.
-						let is_chan_update_invalid = match error_code & 0xff {
-							7 => false,
-							11 => update_opt.is_ok() &&
-								amt_to_forward >
-									update_opt.as_ref().unwrap().contents.htlc_minimum_msat,
-							12 => update_opt.is_ok() && amt_to_forward
-								.checked_mul(update_opt.as_ref().unwrap()
-									.contents.fee_proportional_millionths as u64)
-								.map(|prop_fee| prop_fee / 1_000_000)
-								.and_then(|prop_fee| prop_fee.checked_add(
-									update_opt.as_ref().unwrap().contents.fee_base_msat as u64))
-								.map(|fee_msats| route_hop.fee_msat >= fee_msats)
-								.unwrap_or(false),
-							13 => update_opt.is_ok() &&
-								route_hop.cltv_expiry_delta as u16 >=
-									update_opt.as_ref().unwrap().contents.cltv_expiry_delta,
-							14 => false, // expiry_too_soon; always valid?
-							20 => update_opt.as_ref().unwrap().contents.flags & 2 == 0,
-							_ => false, // unknown error code; take channel_update as valid
-						};
-						if is_chan_update_invalid {
-							// This probably indicates the node which forwarded
-							// to the node in question corrupted something.
+			let chan_update_opt = {
+				let mut update_present = false;
+				let mut update_slice = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4)
+					.map(|s| u16::from_be_bytes(s.try_into().expect("len is 2")))
+					.and_then(|l| {
+						if l == 0 {
 							network_update = Some(NetworkUpdate::ChannelFailure {
 								short_channel_id: route_hop.short_channel_id,
-								is_permanent: true,
+								is_permanent: false,
 							});
-						} else {
-							if let Ok(chan_update) = update_opt {
-								// Make sure the ChannelUpdate contains the expected
-								// short channel id.
-								if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
-									short_channel_id = Some(failing_route_hop.short_channel_id);
-								} else {
-									log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
-								}
-								network_update = Some(NetworkUpdate::ChannelUpdateMessage {
-									msg: chan_update,
-								})
-							} else {
-								network_update = Some(NetworkUpdate::ChannelFailure {
-									short_channel_id: route_hop.short_channel_id,
-									is_permanent: false,
-								});
-							}
-						};
-					} else {
-						// If the channel_update had a non-zero length (i.e. was
-						// present) but we couldn't read it, treat it as a total
-						// node failure.
-						log_info!(logger,
-							"Failed to read a channel_update of len {} in an onion",
+						} else { update_present = true; }
+						err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + l as usize)
+					})
+					.unwrap_or(&[]);
+
+				// Historically, the BOLTs were unclear if the message type bytes should be included here or
+				// not. The BOLTs have now been updated to indicate that they *are* included, but many
+				// nodes still send messages without the type bytes, so we support both here.
+				// TODO: Switch to hard require the type prefix, as the current permissiveness introduces
+				// the (although small) possibility that we fail to decode legitimate channel updates that
+				// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
+				if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
+					update_slice = &update_slice[2..];
+				} else if update_present {
+					log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
+				}
+				if let Ok(upd) = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice)) {
+					Some(upd)
+				} else {
+					if update_present {
+						// If the channel_update had a non-zero length (i.e. was present) but we couldn't read
+						// it, treat it as a total node failure.
+						log_info!(logger, "Failed to read a channel_update of len {} in an onion",
 							update_slice.len());
 					}
+					None
 				}
-			}
-			if network_update.is_none() {
-				// They provided an UPDATE which was obviously bogus, not worth
-				// trying to relay through them anymore.
+			};
+			// if channel_update should NOT have caused the failure:
+			// MAY treat the channel_update as invalid.
+			let is_chan_update_invalid = chan_update_opt.as_ref().map_or(false, |upd| {
+				match error_code & 0xff {
+					7 => false,
+					11 => amt_to_forward > upd.contents.htlc_minimum_msat,
+					12 => amt_to_forward
+						.checked_mul(upd.contents.fee_proportional_millionths as u64)
+						.map(|prop_fee| prop_fee / 1_000_000)
+						.and_then(|prop_fee| prop_fee.checked_add(upd.contents.fee_base_msat as u64))
+						.map(|fee_msats| route_hop.fee_msat >= fee_msats)
+						.unwrap_or(false),
+					13 => route_hop.cltv_expiry_delta as u16 >= upd.contents.cltv_expiry_delta,
+					14 => false, // expiry_too_soon; always valid?
+					20 => upd.contents.flags & 2 == 0,
+					_ => false, // unknown error code; take channel_update as valid
+				}
+			});
+			if is_chan_update_invalid {
+				// This probably indicates the node which forwarded to the node in question corrupted
+				// something.
+				network_update = Some(NetworkUpdate::ChannelFailure {
+					short_channel_id: route_hop.short_channel_id,
+					is_permanent: true,
+				});
+			} else if let Some(upd) = chan_update_opt {
+				// Make sure the ChannelUpdate contains the expected short channel id.
+				if failing_route_hop.short_channel_id == upd.contents.short_channel_id {
+					short_channel_id = Some(failing_route_hop.short_channel_id);
+				} else {
+					log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
+				}
+				network_update = Some(NetworkUpdate::ChannelUpdateMessage { msg: upd })
+			} else if network_update.is_none() {
+				// They provided an UPDATE which was obviously bogus, not worth trying to relay through them
+				// anymore.
 				network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
