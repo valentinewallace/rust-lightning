@@ -494,6 +494,8 @@ where L::Target: Logger {
 					.map(|s| u16::from_be_bytes(s.try_into().expect("len is 2")))
 					.and_then(|l| {
 						if l == 0 {
+							// The node in question intentionally encoded a 0-length channel update. This is
+							// likely due to https://github.com/ElementsProject/lightning/issues/6200.
 							network_update = Some(NetworkUpdate::ChannelFailure {
 								short_channel_id: route_hop.short_channel_id,
 								is_permanent: false,
