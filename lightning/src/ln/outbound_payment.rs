@@ -1234,7 +1234,9 @@ impl OutboundPayments {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
 		}
-		if recipient_onion.payment_secret.is_none() && route.paths.len() > 1 {
+		if recipient_onion.payment_secret.is_none() && route.paths.len() > 1
+			&& !route.paths.iter().any(|p| p.blinded_tail.is_some())
+		{
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
 		let mut total_value = 0;
