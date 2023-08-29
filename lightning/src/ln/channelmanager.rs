@@ -115,6 +115,9 @@ pub(super) enum PendingHTLCRouting {
 		phantom_shared_secret: Option<[u8; 32]>,
 		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// `Some` if this corresponds to a blinded HTLC. Used for failing backwards properly. We use an
+		/// option to maintain compatibility with LDK versions prior to 0.0.117.
+		blinded: Option<()>,
 	},
 	ReceiveKeysend {
 		/// This was added in 0.0.116 and will break deserialization on downgrades.
@@ -124,6 +127,8 @@ pub(super) enum PendingHTLCRouting {
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// See [`Self::Receive::blinded`] docs.
+		blinded: Option<()>,
 	},
 }
 
@@ -182,7 +187,7 @@ pub(super) enum HTLCForwardInfo {
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub(super) struct BlindedForward {
 	inbound_blinding_point: PublicKey,
-	// Another field will be added later for error handling.
+	we_are_intro_node: bool,
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -2784,6 +2789,7 @@ where
 				blinded: intro_node_blinding_pt.or(msg.blinding_point)
 					.map(|bp| BlindedForward {
 						inbound_blinding_point: bp,
+						we_are_intro_node: intro_node_blinding_pt.is_some(),
 					}),
 			},
 			payment_hash: msg.payment_hash,
@@ -2800,16 +2806,21 @@ where
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
-		let (payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+		let (
+			payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value,
+			payment_metadata, blinded
+		) = match hop_data {
 			msgs::InboundOnionPayload::Receive {
 				payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
-				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
+				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value,
+				 payment_metadata, None),
 			msgs::InboundOnionPayload::BlindedReceive {
-				amt_msat, total_msat, outgoing_cltv_value, payment_secret, ..
+				amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point, ..
 			} => {
 				let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
-				(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None)
+				let blinded = if intro_node_blinding_point.is_none() { Some(()) } else { None };
+				(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None, blinded)
 			}
 			msgs::InboundOnionPayload::Forward { .. } => {
 				return Err(InboundOnionErr {
@@ -2889,6 +2900,7 @@ where
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
 				custom_tlvs,
+				blinded,
 			}
 		} else if let Some(data) = payment_data {
 			PendingHTLCRouting::Receive {
@@ -2897,6 +2909,7 @@ where
 				incoming_cltv_expiry: outgoing_cltv_value,
 				phantom_shared_secret,
 				custom_tlvs,
+				blinded,
 			}
 		} else {
 			return Err(InboundOnionErr {
@@ -4179,14 +4192,20 @@ where
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
+									PendingHTLCRouting::Receive {
+										payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret,
+										custom_tlvs, ..
+									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry, custom_tlvs } => {
+									PendingHTLCRouting::ReceiveKeysend {
+										payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry,
+										custom_tlvs, ..
+									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
@@ -8228,6 +8247,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(4, blinded, option),
 		(5, custom_tlvs, optional_vec),
 	},
 	(2, ReceiveKeysend) => {
@@ -8236,11 +8256,13 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
+		(6, blinded, option),
 	},
 ;);
 
 impl_writeable_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
+	(2, we_are_intro_node, required),
 });
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
