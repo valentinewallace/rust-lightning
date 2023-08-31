@@ -2900,11 +2900,14 @@ where
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
+					let sha256_of_onion = if msg.blinding_point.is_some() { [0; 32] } else {
+						Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner()
+					};
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
+						sha256_of_onion,
 						failure_code: $err_code,
 					}));
 				}
@@ -2948,6 +2951,15 @@ where
 				}
 			}
 		}
+		macro_rules! return_blinded_htlc_err {
+			($msg: expr) => {
+				if msg.blinding_point.is_some() {
+					return_malformed_err!($msg, INVALID_ONION_BLINDING);
+				} else {
+					return_err!($msg, INVALID_ONION_BLINDING, [0; 32]);
+				}
+			}
+		}
 
 		let next_hop = match onion_utils::decode_next_payment_hop(shared_secret,
 			&msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash,
@@ -2971,13 +2983,22 @@ where
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
 				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
 			},
+			onion_utils::Hop::Forward {
+				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
+			} => {
+				return_blinded_htlc_err!("Forwarding blinded HTLCs is not supported yet");
+			},
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } => {
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
 			},
-			_ => todo!()
+			onion_utils::Hop::Forward {
+				next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, ..
+			} => {
+				return_blinded_htlc_err!("Blinded final node onion provided for us as an intermediary node");
+			}
 		};
 
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
