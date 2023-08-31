@@ -3026,7 +3026,9 @@ where
 				return_err!(err_msg, err_code, &[0; 0]);
 			},
 		};
-		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
+		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt, is_intro_node)
+			= match next_hop
+		{
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::InboundOnionPayload::Forward {
 					short_channel_id, amt_to_forward, outgoing_cltv_value
@@ -3034,7 +3036,7 @@ where
 			} => {
 				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
+				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk), false)
 			},
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::InboundOnionPayload::BlindedForward {
@@ -3062,7 +3064,8 @@ where
 				}
 				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
+				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk),
+				 msg.blinding_point.is_none())
 			},
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
@@ -3188,6 +3191,9 @@ where
 			break None;
 		}
 		{
+			if is_intro_node || msg.blinding_point.is_some() {
+				return_err!(err, INVALID_ONION_BLINDING, &[0; 0]);
+			}
 			let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
 			if let Some(chan_update) = chan_update {
 				if code == 0x1000 | 11 || code == 0x1000 | 12 {
