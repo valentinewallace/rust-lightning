@@ -2738,7 +2738,7 @@ where
 		&self, msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
 		new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
 		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
-	) -> Result<PendingHTLCInfo, InboundOnionErr> {
+	) -> PendingHTLCInfo {
 		debug_assert!(next_packet_pubkey_opt.is_some());
 		let outgoing_packet = msgs::OnionPacket {
 			version: 0,
@@ -2750,16 +2750,16 @@ where
 		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
 			msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
 				(short_channel_id, amt_to_forward, outgoing_cltv_value),
-			msgs::InboundOnionPayload::Receive { .. } =>
-				return Err(InboundOnionErr {
-					msg: "Final Node OnionHopData provided for us as an intermediary node",
-					err_code: 0x4000 | 22,
-					err_data: Vec::new(),
-				}),
-			_ => todo!()
+			msgs::InboundOnionPayload::Receive { .. } |
+				msgs::InboundOnionPayload::BlindedReceive { .. } |
+				msgs::InboundOnionPayload::BlindedForward { .. } =>
+			{
+				// We checked for this case in [`Self::decode_update_add_htlc_onion`].
+				unreachable!()
+			}
 		};
 
-		Ok(PendingHTLCInfo {
+		PendingHTLCInfo {
 			routing: PendingHTLCRouting::Forward {
 				onion_packet: outgoing_packet,
 				short_channel_id,
@@ -2770,7 +2770,7 @@ where
 			outgoing_amt_msat: amt_to_forward,
 			outgoing_cltv_value,
 			skimmed_fee_msat: None,
-		})
+		}
 	}
 
 	fn construct_recv_pending_htlc_info(
@@ -3173,11 +3173,10 @@ where
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				match self.construct_fwd_pending_htlc_info(msg, next_hop_data, next_hop_hmac,
-					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
-					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
-				}
+				let fwd_info = self.construct_fwd_pending_htlc_info(
+					msg, next_hop_data, next_hop_hmac, new_packet_bytes, shared_secret, next_packet_pubkey_opt
+				);
+				PendingHTLCStatus::Forward(fwd_info)
 			}
 		}
 	}
