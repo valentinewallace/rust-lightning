@@ -3229,10 +3229,18 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					let (err_code, err_data) = if msg.blinding_point.is_some() {
+						return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							sha256_of_onion: [0; 32],
+							failure_code: INVALID_ONION_BLINDING,
+						}))
+					} else { ($err_code, $data) };
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						reason: HTLCFailReason::reason(err_code, err_data.to_vec())
 							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
@@ -6216,8 +6224,21 @@ where
 						// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 						// want to reject the new HTLC and fail it backwards instead of forwarding.
 						match pending_forward_info {
-							PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-								let reason = if (error_code & 0x1000) != 0 {
+							PendingHTLCStatus::Forward(PendingHTLCInfo {
+								ref incoming_shared_secret, ref routing, ..
+							}) => {
+								if msg.blinding_point.is_some() {
+									let fail_malformed = msgs::UpdateFailMalformedHTLC {
+										channel_id: msg.channel_id,
+										htlc_id: msg.htlc_id,
+										sha256_of_onion: [0; 32],
+										failure_code: INVALID_ONION_BLINDING,
+									};
+									return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(fail_malformed))
+								}
+								let reason = if routing.blinded().is_some() {
+									HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
+								} else if (error_code & 0x1000) != 0 {
 									let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
 									HTLCFailReason::reason(real_code, error_data)
 								} else {

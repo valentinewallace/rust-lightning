@@ -805,31 +805,39 @@ fn do_outbound_checks_failure(intro_node_fails: bool) {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let intermediate_nodes = vec![(nodes[1].node.get_our_node_id(), ForwardTlvs {
-		short_channel_id: chan_upd_1_2.short_channel_id,
-		payment_relay: PaymentRelay {
-			cltv_expiry_delta: chan_upd_1_2.cltv_expiry_delta,
-			fee_proportional_millionths: chan_upd_1_2.fee_proportional_millionths,
-			fee_base_msat: chan_upd_1_2.fee_base_msat,
+	let intermediate_nodes = vec![ForwardNode {
+		node_id: nodes[1].node.get_our_node_id(),
+		tlvs: ForwardTlvs {
+			short_channel_id: chan_upd_1_2.short_channel_id,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: chan_upd_1_2.cltv_expiry_delta,
+				fee_proportional_millionths: chan_upd_1_2.fee_proportional_millionths,
+				fee_base_msat: chan_upd_1_2.fee_base_msat,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
+			},
+			features: BlindedHopFeatures::empty(),
 		},
-		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
+		htlc_maximum_msat: chan_upd_1_2.htlc_maximum_msat,
+	}, ForwardNode {
+		node_id: nodes[2].node.get_our_node_id(),
+		tlvs: ForwardTlvs {
+			short_channel_id: chan_upd_2_3.short_channel_id,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: chan_upd_2_3.cltv_expiry_delta,
+				fee_proportional_millionths: chan_upd_2_3.fee_proportional_millionths,
+				fee_base_msat: chan_upd_2_3.fee_base_msat,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: chan_upd_2_3.htlc_minimum_msat,
+			},
+			features: BlindedHopFeatures::empty(),
 		},
-		features: BlindedHopFeatures::empty(),
-	}), (nodes[2].node.get_our_node_id(), ForwardTlvs {
-		short_channel_id: chan_upd_2_3.short_channel_id,
-		payment_relay: PaymentRelay {
-			cltv_expiry_delta: chan_upd_2_3.cltv_expiry_delta,
-			fee_proportional_millionths: chan_upd_2_3.fee_proportional_millionths,
-			fee_base_msat: chan_upd_2_3.fee_base_msat,
-		},
-		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd_2_3.htlc_minimum_msat,
-		},
-		features: BlindedHopFeatures::empty(),
-	})];
+		htlc_maximum_msat: chan_upd_2_3.htlc_maximum_msat,
+	}];
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
