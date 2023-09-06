@@ -2211,7 +2211,37 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	payment_id
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
+pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_path: &'a [&'a Node<'b, 'c, 'd>],
+	pub recv_value: u64,
+	pub payment_hash: PaymentHash,
+	pub payment_secret: Option<PaymentSecret>,
+	pub event: MessageSendEvent,
+	pub payment_claimable_expected: bool,
+	pub clear_recipient_events: bool,
+	pub expected_preimage: Option<PaymentPreimage>,
+}
+
+impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_path: &'a [&'a Node<'b, 'c, 'd>], recv_value: u64,
+		payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, event: MessageSendEvent,
+		expected_preimage: Option<PaymentPreimage>
+	) -> Self {
+		Self {
+			origin_node, expected_path, recv_value, payment_hash, payment_secret, event,
+			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage,
+		}
+	}
+}
+
+pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
+	let PassAlongPathArgs {
+		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
+		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
+		clear_recipient_events, expected_preimage,
+	} = args;
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 	let mut event = None;
@@ -2273,7 +2303,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage)
+	do_pass_along_path(PassAlongPathArgs {
+		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
+		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
+		clear_recipient_events: true, expected_preimage
+	})
 }
 
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {

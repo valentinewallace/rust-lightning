@@ -749,8 +749,20 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	assert_eq!(send_events.len(), 2);
 	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut send_events);
 	let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut send_events);
-	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, true, false, None);
-	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_2_msgs, true, false, None);
+	let expected_path_1 = &[&nodes[1], &nodes[3]];
+	let mut args_1 = PassAlongPathArgs::new(
+		&nodes[0], expected_path_1, 15_000_000, payment_hash, Some(payment_secret), node_1_msgs,
+		None
+	);
+	args_1.clear_recipient_events = false;
+	do_pass_along_path(args_1);
+	let expected_path_2 = &[&nodes[2], &nodes[3]];
+	let mut args_2 = PassAlongPathArgs::new(
+		&nodes[0], expected_path_2, 15_000_000, payment_hash, Some(payment_secret), node_2_msgs,
+		None
+	);
+	args_2.clear_recipient_events = false;
+	do_pass_along_path(args_2);
 
 	// Now that we have an MPP payment pending, get the latest encoded copies of nodes[3]'s
 	// monitors and ChannelManager, for use later, if we don't want to persist both monitors.
