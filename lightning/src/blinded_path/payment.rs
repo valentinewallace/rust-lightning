@@ -193,6 +193,13 @@ pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &Payment
 	u64::try_from(amt_to_forward).ok()
 }
 
+#[cfg(test)]
+pub fn test_compute_payinfo(
+	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, htlc_maximum_msat: u64
+) -> Result<BlindedPayInfo, ()> {
+	compute_payinfo(intermediate_nodes, payee_tlvs, htlc_maximum_msat)
+}
+
 pub(super) fn compute_payinfo(
 	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64
 ) -> Result<BlindedPayInfo, ()> {

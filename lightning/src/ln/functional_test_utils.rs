@@ -1471,7 +1471,7 @@ pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: Clo
 	let mut issues_discard_funding = false;
 	for (idx, event) in events.into_iter().enumerate() {
 		match event {
-			Event::ChannelClosed { ref reason, counterparty_node_id, 
+			Event::ChannelClosed { ref reason, counterparty_node_id,
 				channel_capacity_sats, .. } => {
 				assert_eq!(*reason, expected_reason);
 				assert_eq!(counterparty_node_id.unwrap(), expected_counterparty_node_ids[idx]);
@@ -1495,7 +1495,7 @@ macro_rules! check_closed_event {
 		check_closed_event!($node, $events, $reason, false, $counterparty_node_ids, $channel_capacity);
 	};
 	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, 
+		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason,
 			$is_check_discard_funding, &$counterparty_node_ids, $channel_capacity);
 	}
 }
@@ -2221,6 +2221,8 @@ pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
 	pub payment_claimable_expected: bool,
 	pub clear_recipient_events: bool,
 	pub expected_preimage: Option<PaymentPreimage>,
+	// Allow overpayment up to this amount.
+	pub overpay_limit: u64,
 }
 
 impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
@@ -2232,6 +2234,7 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_path, recv_value, payment_hash, payment_secret, event,
 			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage,
+			overpay_limit: 0
 		}
 	}
 }
@@ -2240,7 +2243,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 	let PassAlongPathArgs {
 		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
 		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
-		clear_recipient_events, expected_preimage,
+		clear_recipient_events, expected_preimage, overpay_limit
 	} = args;
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
@@ -2278,7 +2281,8 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 								assert_eq!(our_payment_secret, onion_fields.as_ref().unwrap().payment_secret);
 							},
 						}
-						assert_eq!(*amount_msat, recv_value);
+						assert!(*amount_msat <= recv_value + overpay_limit);
+						assert!(*amount_msat >= recv_value);
 						assert!(node.node.list_channels().iter().any(|details| details.channel_id == via_channel_id.unwrap()));
 						assert!(node.node.list_channels().iter().any(|details| details.user_channel_id == via_user_channel_id.unwrap()));
 						assert!(claim_deadline.unwrap() > node.best_block_info().1);
@@ -2306,7 +2310,7 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 	do_pass_along_path(PassAlongPathArgs {
 		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
 		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
-		clear_recipient_events: true, expected_preimage
+		clear_recipient_events: true, expected_preimage, overpay_limit: 0
 	})
 }
 
@@ -2347,6 +2351,7 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub expected_extra_fees: Vec<u32>,
 	pub skip_last: bool,
 	pub payment_preimage: PaymentPreimage,
+	pub is_blinded: bool,
 }
 
 impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -2356,7 +2361,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	) -> Self {
 		Self {
 			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
-			skip_last: false, payment_preimage,
+			skip_last: false, payment_preimage, is_blinded: false,
 		}
 	}
 }
@@ -2364,7 +2369,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
 	let ClaimAlongRouteArgs {
 		origin_node, expected_paths, expected_extra_fees, skip_last,
-		payment_preimage: our_payment_preimage
+		payment_preimage: our_payment_preimage, is_blinded
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
@@ -2472,9 +2477,24 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 						(fwd_amt_msat * prop_fee / 1_000_000) + base_fee
 					};
 					if $idx == 1 { fee += expected_extra_fees[i] as u64; }
-					expect_payment_forwarded!(*$node, $next_node, $prev_node, Some(fee as u64), false, false);
-					expected_total_fee_msat += fee as u64;
-					fwd_amt_msat += fee as u64;
+					let events = $node.node.get_and_clear_pending_events();
+					assert_eq!(events.len(), 1);
+					if let Event::PaymentForwarded {
+						fee_earned_msat: Some(fee_earned), prev_channel_id, ..
+					} = events[0] {
+						if is_blinded {
+							// Aggregating fees for blinded paths may result in a rounding error, causing slight
+							// overpayment in fees.
+							assert!(fee_earned == fee || fee_earned == fee + 1);
+						} else {
+							assert!(fee_earned == fee);
+						}
+						assert!($node.node.list_channels().iter()
+							.any(|c| c.counterparty.node_id == $next_node.node.get_our_node_id()
+								&& c.channel_id == prev_channel_id.unwrap()));
+						expected_total_fee_msat += fee_earned as u64;
+						fwd_amt_msat += fee_earned;
+					} else { panic!() }
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();
