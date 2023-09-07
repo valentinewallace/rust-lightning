@@ -1908,9 +1908,10 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let mut expected_paths = Vec::new();
 	for _ in 0..num_mpp_parts { expected_paths_vecs.push(vec!(&nodes[1], &nodes[2])); }
 	for i in 0..num_mpp_parts { expected_paths.push(&expected_paths_vecs[i][..]); }
-	let total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
-		&nodes[0], &expected_paths[..], &vec![skimmed_fee_msat as u32; num_mpp_parts][..], false,
-		payment_preimage);
+	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage);
+	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &expected_paths[..], payment_preimage);
+	args.expected_extra_fees = vec![skimmed_fee_msat as u32; num_mpp_parts];
+	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	expect_payment_sent(&nodes[0], payment_preimage,
 		Some(Some(total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64)), true, true);
@@ -3443,7 +3444,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
 			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
-			let expected_total_fee_msat = pass_claimed_payment_along_route(&nodes[0], &[&[&nodes[1]]], &[0; 1], false, our_payment_preimage);
+			let expected_total_fee_msat = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage));
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {
