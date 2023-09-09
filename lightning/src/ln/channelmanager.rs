@@ -2953,15 +2953,19 @@ where
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
-					let sha256_of_onion = if msg.blinding_point.is_some() { [0; 32] } else {
-						Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner()
-					};
-					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					log_info!(self.logger, "Failed to accept/forward incoming malformed HTLC: {}", $msg);
+					let (sha256_of_onion, failure_code) =
+						if msg.blinding_point.is_some() || $err_code == INVALID_ONION_BLINDING {
+							debug_assert!(msg.blinding_point.is_some()); // only non-intro nodes fail with malformed
+							([0; 32], INVALID_ONION_BLINDING)
+						}  else {
+							(Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(), $err_code)
+						};
 					return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						sha256_of_onion,
-						failure_code: $err_code,
+						failure_code,
 					}));
 				}
 			}
@@ -2995,25 +2999,21 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					if msg.blinding_point.is_some() {
+						return_malformed_err!($msg, INVALID_ONION_BLINDING);
+					}
+					let err_data = if $err_code == INVALID_ONION_BLINDING { vec![0; 32] } else {
+						$data.to_vec()
+					};
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						reason: HTLCFailReason::reason($err_code, err_data)
 							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
 			}
 		}
-		macro_rules! return_blinded_htlc_err {
-			($msg: expr) => {
-				if msg.blinding_point.is_some() {
-					return_malformed_err!($msg, INVALID_ONION_BLINDING);
-				} else {
-					return_err!($msg, INVALID_ONION_BLINDING, [0; 32]);
-				}
-			}
-		}
-
 		let next_hop = match onion_utils::decode_next_payment_hop(shared_secret,
 			&msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash,
 			msg.blinding_point, &self.node_signer)
@@ -3048,19 +3048,21 @@ where
 					msg.amount_msat, payment_relay
 				);
 				let amt_to_forward = if let Some(amt) = amt_to_fwd_opt { amt } else {
-					return_blinded_htlc_err!("Over or underflow computing amt_to_forward for blinded forward");
+					return_err!("Underflow computing amt_to_forward for blinded forward",
+						INVALID_ONION_BLINDING, &[0; 0]);
 				};
 				let outgoing_cltv_value =
 					match msg.cltv_expiry.checked_sub(payment_relay.cltv_expiry_delta as u32) {
 						Some(v) => v,
 						None => {
-							return_blinded_htlc_err!("Underflow computing cltv value for blinded forward");
+							return_err!("Underflow computing cltv value for blinded forward", INVALID_ONION_BLINDING, &[0; 0]);
 						}
 					};
 				if msg.amount_msat < payment_constraints.htlc_minimum_msat ||
 					outgoing_cltv_value > payment_constraints.max_cltv_expiry
 				{
-					return_blinded_htlc_err!("amt_to_forward did not meet htlc_minimum_msat or outgoing_cltv_value exceeded max_cltv_expiry");
+					return_err!("amt_to_forward did not meet htlc_minimum_msat or outgoing_cltv_value exceeded max_cltv_expiry",
+						INVALID_ONION_BLINDING, &[0; 0]);
 				}
 				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
@@ -3076,7 +3078,8 @@ where
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, ..
 			} => {
-				return_blinded_htlc_err!("Blinded final node onion provided for us as an intermediary node");
+				return_err!("Blinded final node onion provided for us as an intermediary node",
+					INVALID_ONION_BLINDING, &[0; 0]);
 			}
 		};
 

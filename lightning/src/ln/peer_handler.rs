@@ -1447,6 +1447,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 												}
 												(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { }),
 												(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { }),
+												(msgs::DecodeError::InvalidIntroNodePayload, _) => {
+													debug_assert!(false); // This error can only be hit when decoding an onion payload
+													return Err(PeerHandleError { })
+												},
 											}
 										}
 									};

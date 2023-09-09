@@ -86,6 +86,9 @@ pub enum DecodeError {
 	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
+	/// We are the intro node to a blinded path and failed to decode our onion payload. Separated out
+	/// from [`Self::InvalidValue`] to ensure we abide by the spec when failing backwards.
+	InvalidIntroNodePayload,
 }
 
 /// An [`init`] message to be sent to or received from a peer.
@@ -1671,6 +1674,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
 			DecodeError::Io(ref e) => fmt::Debug::fmt(e, f),
 			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
+			DecodeError::InvalidIntroNodePayload => f.write_str("Failed to decode blinded payment intro node onion payload"),
 		}
 	}
 }
@@ -2159,8 +2163,6 @@ impl Writeable for OutboundOnionPayload {
 
 impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
-		// TODO if we are the intro node and hit an error here, we won't correctly return the malformed
-		// error atm
 		let (update_add_blinding_point, node_signer) = args;
 		let mut amt = None;
 		let mut cltv_value = None;
@@ -2194,27 +2196,37 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			Ok(true)
 		});
 
+		let err = intro_node_blinding_point.map_or(DecodeError::InvalidValue,
+			|_| { DecodeError::InvalidIntroNodePayload });
 		if update_add_blinding_point.is_some() && intro_node_blinding_point.is_some() {
-			return Err(DecodeError::InvalidValue)
+			// // This should be unreachable because we would've attempted to use the
+			// // update_add_blinding_point to tweak to our onion packet pubkey and subsequently failed the
+			// // HMAC check.
+			// debug_assert!(false);
+			// ^^^ this may be reachable if they did use the msg blinding point but also set the intro
+			// node blinding_point
+			return Err(err)
 		}
-		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(err) }
 
 		if let Some(blinding_point) = update_add_blinding_point.or(intro_node_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
-				return Err(DecodeError::InvalidValue)
+				return Err(err)
 			}
-			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
+			let enc_tlvs = encrypted_tlvs_opt.ok_or_else(|| err.clone())?.0;
 			let enc_tlvs_ss = node_signer.ecdh(Recipient::Node, &blinding_point, None)
-				.map_err(|_| DecodeError::InvalidValue)?;
+				.map_err(|_| err.clone())?;
 			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
-			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
+			let decoded_blinded_tlvs = ChaChaPolyReadAdapter::read(&mut reader, rho).map_err(|e|
+				if intro_node_blinding_point.is_some() { DecodeError::InvalidIntroNodePayload } else { e })?;
+			match decoded_blinded_tlvs {
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
 					short_channel_id, payment_relay, payment_constraints, features
 				})} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
-						return Err(DecodeError::InvalidValue)
+						return Err(err)
 					}
 					Ok(Self::BlindedForward {
 						short_channel_id,
@@ -2227,6 +2239,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
 					payment_secret, payment_constraints
 				})} => {
+					// Per the spec, if we're the intro node and the final node we should error as if we're
+					// not part of a blinded path.
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,

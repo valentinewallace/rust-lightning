@@ -941,6 +941,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 				msgs::DecodeError::UnknownRequiredFeature|
 				msgs::DecodeError::InvalidValue|
 				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
+				msgs::DecodeError::InvalidIntroNodePayload => INVALID_ONION_BLINDING,
 				_ => 0x2000 | 2, // Should never happen
 			};
 			return Err(OnionDecodeErr::Relay {
