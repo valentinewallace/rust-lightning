@@ -285,7 +285,7 @@ where
 	) -> Result<(), SendError> {
 		let OnionMessagePath { intermediate_nodes, mut destination } = path;
 		if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
-			if blinded_hops.len() < 2 {
+			if blinded_hops.is_empty() {
 				return Err(SendError::TooFewBlindedHops);
 			}
 		}
@@ -669,6 +669,8 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 						next_node_id: intro_node_id,
 						next_blinding_override: Some(blinding_pt),
 					})), control_tlvs_ss));
+				} else {
+					prev_control_tlvs_ss = Some(control_tlvs_ss);
 				}
 			}
 			if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {

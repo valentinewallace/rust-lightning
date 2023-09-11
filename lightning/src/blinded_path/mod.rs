@@ -64,7 +64,7 @@ impl BlindedPath {
 	pub fn new_for_message<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
 		(node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
-		if node_pks.len() < 2 { return Err(()) }
+		if node_pks.is_empty() { return Err(()) }
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let introduction_node_id = node_pks[0];
