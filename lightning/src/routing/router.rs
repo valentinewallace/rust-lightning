@@ -2817,7 +2817,7 @@ mod tests {
 			Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
 				assert_eq!(err, "First hop cannot have our_node_pubkey as a destination.");
 		} else { panic!(); }
- 
+
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
