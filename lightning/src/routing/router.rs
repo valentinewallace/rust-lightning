@@ -1749,6 +1749,7 @@ where L::Target: Logger {
 						CandidateRouteHop::FirstHop { .. } => true,
 						CandidateRouteHop::PrivateHop { .. } => true,
 						CandidateRouteHop::Blinded { .. } => true,
+						CandidateRouteHop::OneHopBlinded { .. } => true,
 						_ => false,
 					};
 
