@@ -3074,38 +3074,16 @@ where
 				}
 				chan_update_opt
 			} else {
-				if (msg.cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
-					// We really should set `incorrect_cltv_expiry` here but as we're not
-					// forwarding over a real channel we can't generate a channel_update
-					// for it. Instead we just return a generic temporary_node_failure.
-					break Some((
-							"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
-							0x2000 | 2, None,
-					));
-				}
 				None
 			};
 
 			let cur_height = self.best_block.read().unwrap().height() + 1;
-			// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
-			// but we want to be robust wrt to counterparty packet sanitization (see
-			// HTLC_FAIL_BACK_BUFFER rationale).
-			if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
-				break Some(("CLTV expiry is too close", 0x1000 | 14, chan_update_opt));
-			}
-			if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
-				break Some(("CLTV expiry is too far in the future", 21, None));
-			}
-			// If the HTLC expires ~now, don't bother trying to forward it to our
-			// counterparty. They should fail it anyway, but we don't want to bother with
-			// the round-trips or risk them deciding they definitely want the HTLC and
-			// force-closing to ensure they get it if we're offline.
-			// We previously had a much more aggressive check here which tried to ensure
-			// our counterparty receives an HTLC which has *our* risk threshold met on it,
-			// but there is no need to do that, and since we're a bit conservative with our
-			// risk threshold it just results in failing to forward payments.
-			if (outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
-				break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, chan_update_opt));
+
+			if let Err((err_msg, code, include_chan_update_opt)) = check_incoming_htlc_cltv(
+				cur_height, outgoing_cltv_value, msg.cltv_expiry
+			) {
+				let chan_update_opt = if include_chan_update_opt { chan_update_opt } else { None };
+				break Some((err_msg, code, chan_update_opt));
 			}
 
 			break None;
@@ -7924,6 +7902,42 @@ fn create_recv_pending_htlc_info(
 		outgoing_cltv_value,
 		skimmed_fee_msat: counterparty_skimmed_fee_msat,
 	})
+}
+
+fn check_incoming_htlc_cltv(
+	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32
+) -> Result<(), (&'static str, u16, bool)> {
+	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
+		// We really should set `incorrect_cltv_expiry` here but as we're not
+		// forwarding over a real channel we can't generate a channel_update
+		// for it. Instead we just return a generic temporary_node_failure.
+		return Err((
+				"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
+				0x2000 | 2, false,
+		));
+	}
+	// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
+	// but we want to be robust wrt to counterparty packet sanitization (see
+	// HTLC_FAIL_BACK_BUFFER rationale).
+	if cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
+		return Err(("CLTV expiry is too close", 0x1000 | 14, true));
+	}
+	if cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
+		return Err(("CLTV expiry is too far in the future", 21, false));
+	}
+	// If the HTLC expires ~now, don't bother trying to forward it to our
+	// counterparty. They should fail it anyway, but we don't want to bother with
+	// the round-trips or risk them deciding they definitely want the HTLC and
+	// force-closing to ensure they get it if we're offline.
+	// We previously had a much more aggressive check here which tried to ensure
+	// our counterparty receives an HTLC which has *our* risk threshold met on it,
+	// but there is no need to do that, and since we're a bit conservative with our
+	// risk threshold it just results in failing to forward payments.
+	if (outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
+		return Err(("Outgoing CLTV value is too soon", 0x1000 | 14, true));
+	}
+
+	Ok(())
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, L>
