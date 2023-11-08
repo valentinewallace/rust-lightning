@@ -106,27 +106,39 @@ use crate::ln::script::ShutdownScript;
 // Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
+/// Routing info for an inbound HTLC onion.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) enum PendingHTLCRouting {
+pub enum PendingHTLCRouting {
+	/// A forwarded HTLC.
 	Forward {
+		/// BOLT 4 onion packet.
 		onion_packet: msgs::OnionPacket,
 		/// The SCID from the onion that we should forward to. This could be a real SCID or a fake one
 		/// generated using `get_fake_scid` from the scid_utils::fake_scid module.
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
+	/// An HTLC paid to an invoice we generated.
 	Receive {
+		/// Payment secret and total msat received.
 		payment_data: msgs::FinalOnionHopData,
+		/// See [`RecipientOnionFields::payment_metadata`] for more info.
 		payment_metadata: Option<Vec<u8>>,
-		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+		/// Used to track when we should expire pending HTLCs that go unclaimed.
+		incoming_cltv_expiry: u32,
+		/// Optional shared secret for phantom node.
 		phantom_shared_secret: Option<[u8; 32]>,
 		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
+	/// Incoming keysend (sender provided the preimage in a TLV).
 	ReceiveKeysend {
 		/// This was added in 0.0.116 and will break deserialization on downgrades.
 		payment_data: Option<msgs::FinalOnionHopData>,
+		/// Preimage for this onion payment.
 		payment_preimage: PaymentPreimage,
+		/// Metadata associated with this payment.
 		payment_metadata: Option<Vec<u8>>,
+		/// CLTV expiry of the incoming HTLC.
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
