@@ -2922,38 +2922,13 @@ where
 
 	fn decode_update_add_htlc_onion(
 		&self, msg: &msgs::UpdateAddHTLC
-	) -> Result<(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg> {
-		macro_rules! return_malformed_err {
-			($msg: expr, $err_code: expr) => {
-				{
-					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-					return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
-						failure_code: $err_code,
-					}));
-				}
-			}
-		}
+	) -> Result<
+		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
+	> {
+		let (next_hop, shared_secret, next_packet_details_opt) = decode_incoming_update_add_htlc_onion(
+			msg, &self.node_signer, &self.logger, &self.secp_ctx
+		)?;
 
-		if let Err(_) = msg.onion_routing_packet.public_key {
-			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
-		}
-
-		let shared_secret = self.node_signer.ecdh(
-			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
-		).unwrap().secret_bytes();
-
-		if msg.onion_routing_packet.version != 0 {
-			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
-			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
-			//the hash doesn't really serve any purpose - in the case of hashing all data, the
-			//receiving node would have to brute force to figure out which version was put in the
-			//packet by the node that send us the message, in the case of hashing the hop_data, the
-			//node knows the HMAC matched, so they already know what is there...
-			return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
-		}
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
@@ -2968,37 +2943,12 @@ where
 			}
 		}
 
-		let next_hop = match onion_utils::decode_next_payment_hop(
-			shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
-			msg.payment_hash, &self.node_signer
-		) {
-			Ok(res) => res,
-			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-				return_malformed_err!(err_msg, err_code);
-			},
-			Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-				return_err!(err_msg, err_code, &[0; 0]);
-			},
-		};
-		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
-			onion_utils::Hop::Forward {
-				next_hop_data: msgs::InboundOnionPayload::Forward {
-					short_channel_id, amt_to_forward, outgoing_cltv_value
-				}, ..
-			} => {
-				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
-					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
-			},
-			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
-			// inbound channel's state.
-			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
-				onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
-			{
-				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
-			}
-		};
+		// it is a receive, so no need for outbound checks
+		if next_packet_details_opt.is_none() {
+			return Ok((next_hop, shared_secret, None));
+		}
+		let (next_packet_pk, outgoing_scid, outgoing_amt_msat, outgoing_cltv_value) =
+			next_packet_details_opt.unwrap();
 
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
 		// can't hold the outbound peer state lock at the same time as the inbound peer state lock.
@@ -3113,7 +3063,7 @@ where
 			}
 			return_err!(err, code, &res.0[..]);
 		}
-		Ok((next_hop, shared_secret, next_packet_pk_opt))
+		Ok((next_hop, shared_secret, Some(next_packet_pk)))
 	}
 
 	fn construct_pending_htlc_status<'a>(
@@ -7902,6 +7852,100 @@ fn create_recv_pending_htlc_info(
 		outgoing_cltv_value,
 		skimmed_fee_msat: counterparty_skimmed_fee_msat,
 	})
+}
+
+fn decode_incoming_update_add_htlc_onion<
+	NS: Deref,
+	L: Deref,
+	T: secp256k1::Verification,
+>(
+	msg: &msgs::UpdateAddHTLC, node_signer: &NS, logger: &L, secp_ctx: &Secp256k1<T>,
+) -> Result<(
+	onion_utils::Hop, [u8; 32], Option<(Result<PublicKey, secp256k1::Error>, u64, u64, u32)>
+), HTLCFailureMsg>
+where
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+{
+	macro_rules! return_malformed_err {
+		($msg: expr, $err_code: expr) => {
+			{
+				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+				return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+					channel_id: msg.channel_id,
+					htlc_id: msg.htlc_id,
+					sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
+					failure_code: $err_code,
+				}));
+			}
+		}
+	}
+
+	if let Err(_) = msg.onion_routing_packet.public_key {
+		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
+	}
+
+	let shared_secret = node_signer.ecdh(
+		Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+	).unwrap().secret_bytes();
+
+	if msg.onion_routing_packet.version != 0 {
+		//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
+		//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
+		//the hash doesn't really serve any purpose - in the case of hashing all data, the
+		//receiving node would have to brute force to figure out which version was put in the
+		//packet by the node that send us the message, in the case of hashing the hop_data, the
+		//node knows the HMAC matched, so they already know what is there...
+		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
+	}
+	macro_rules! return_err {
+		($msg: expr, $err_code: expr, $data: expr) => {
+			{
+				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+				return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+					channel_id: msg.channel_id,
+					htlc_id: msg.htlc_id,
+					reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						.get_encrypted_failure_packet(&shared_secret, &None),
+				}));
+			}
+		}
+	}
+
+	let next_hop = match onion_utils::decode_next_payment_hop(
+		shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
+		msg.payment_hash, node_signer
+	) {
+		Ok(res) => res,
+		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+			return_malformed_err!(err_msg, err_code);
+		},
+		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+			return_err!(err_msg, err_code, &[0; 0]);
+		},
+	};
+
+	let next_packet_details = match next_hop {
+		onion_utils::Hop::Forward {
+			next_hop_data: msgs::InboundOnionPayload::Forward {
+				short_channel_id, amt_to_forward, outgoing_cltv_value
+			}, ..
+		} => {
+			let next_packet_pk = onion_utils::next_hop_pubkey(secp_ctx,
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+			(next_packet_pk, short_channel_id, amt_to_forward, outgoing_cltv_value)
+		},
+		// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
+		// inbound channel's state.
+		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
+		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
+		{
+			return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
+		}
+	};
+
+	Ok((next_hop, shared_secret, Some(next_packet_details)))
 }
 
 fn check_incoming_htlc_cltv(
