@@ -145,20 +145,24 @@ pub enum PendingHTLCRouting {
 	},
 }
 
+/// Full details of an incoming HTLC, including routing info.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) struct PendingHTLCInfo {
-	pub(super) routing: PendingHTLCRouting,
-	pub(super) incoming_shared_secret: [u8; 32],
+pub struct PendingHTLCInfo {
+	/// Further routing details based on whether the HTLC is being forwarded or received.
+	pub routing: PendingHTLCRouting,
+	/// Shared secret from the previous hop.
+	pub incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
 	/// Amount received
-	pub(super) incoming_amt_msat: Option<u64>, // Added in 0.0.113
+	pub incoming_amt_msat: Option<u64>, // Added in 0.0.113
 	/// Sender intended amount to forward or receive (actual amount received
 	/// may overshoot this in either case)
-	pub(super) outgoing_amt_msat: u64,
-	pub(super) outgoing_cltv_value: u32,
+	pub outgoing_amt_msat: u64,
+	/// Outgoing CLTV height.
+	pub outgoing_cltv_value: u32,
 	/// The fee being skimmed off the top of this HTLC. If this is a forward, it'll be the fee we are
 	/// skimming. If we're receiving this HTLC, it's the fee that our counterparty skimmed.
-	pub(super) skimmed_fee_msat: Option<u64>,
+	pub skimmed_fee_msat: Option<u64>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
