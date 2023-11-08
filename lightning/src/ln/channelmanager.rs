@@ -7854,6 +7854,65 @@ fn create_recv_pending_htlc_info(
 	})
 }
 
+/// Peel one layer off an incoming onion, returning PendingHTLCInfo (either Forward or Receive).
+/// This does all the relevant context-free checks that LDK requires for payment relay or
+/// acceptance. If the payment is to be received, and the amount matches the expected amount for
+/// a given invoice, this indicates the UpdateAddHTLC, once fully committed in the channel, will
+/// generate an Event::PaymentReceived.
+pub fn peel_payment_onion<
+	NS: Deref,
+	L: Deref,
+	T: secp256k1::Verification,
+>(
+	msg: &msgs::UpdateAddHTLC, node_signer: &NS, logger: &L, secp_ctx: &Secp256k1<T>,
+	cur_height: u32, accept_mpp_keysend: bool,
+) -> Result<PendingHTLCInfo, InboundOnionErr>
+where
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+{
+	let (hop, shared_secret, next_packet_details_opt) =
+		decode_incoming_update_add_htlc_onion(msg, node_signer, logger, secp_ctx
+	).map_err(|_| InboundOnionErr {
+		msg: "Failed to decode update add htlc onion",
+		err_code: 0x4000 | 22,
+		err_data: Vec::new(),
+	})?;
+	Ok(match hop {
+		onion_utils::Hop::Forward{ next_hop_data, next_hop_hmac, new_packet_bytes } => {
+			if next_packet_details_opt.is_none() {
+				// Forward should always include the next hop details
+				return Err(InboundOnionErr {
+					msg: "Failed to decode update add htlc onion",
+					err_code: 0x4000 | 22,
+					err_data: Vec::new(),
+				});
+			};
+			let (next_packet_pubkey, _, _, outgoing_cltv_value) = next_packet_details_opt.unwrap();
+
+			if let Err((err_msg, code, _)) = check_incoming_htlc_cltv(
+				cur_height, outgoing_cltv_value, msg.cltv_expiry
+			) {
+				return Err(InboundOnionErr {
+					msg: err_msg,
+					err_code: code,
+					err_data: Vec::new(),
+				});
+			}
+			create_fwd_pending_htlc_info(
+				msg, next_hop_data, next_hop_hmac, new_packet_bytes, shared_secret,
+				Some(next_packet_pubkey)
+			)?
+		},
+		onion_utils::Hop::Receive(received_data) => {
+			create_recv_pending_htlc_info(
+				received_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
+				None, false, msg.skimmed_fee_msat, cur_height, accept_mpp_keysend,
+			)?
+		}
+	})
+}
+
 fn decode_incoming_update_add_htlc_onion<
 	NS: Deref,
 	L: Deref,
@@ -12127,6 +12186,147 @@ mod tests {
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], funding_tx);
 		}
+	}
+
+	#[test]
+	fn test_peel_payment_onion() {
+		use super::*;
+		let secp_ctx = Secp256k1::new();
+
+		// let alice = make_keys_manager(&[1; 32]);
+		let bob = make_keys_manager(&[2; 32]);
+		let bob_pk = PublicKey::from_secret_key(&secp_ctx, &bob.get_node_secret_key());
+		let charlie = make_keys_manager(&[3; 32]);
+		let charlie_pk = PublicKey::from_secret_key(&secp_ctx, &charlie.get_node_secret_key());
+
+		let (session_priv, total_amt_msat, cur_height, recipient_onion, preimage, payment_hash,
+			prng_seed, hops, recipient_amount, pay_secret) = payment_onion_args(bob_pk, charlie_pk);
+
+		let path = Path {
+			hops: hops,
+			blinded_tail: None,
+		};
+
+		let (amount_msat, cltv_expiry, onion) = create_payment_onion(
+			&secp_ctx, &path, &session_priv, total_amt_msat, recipient_onion, cur_height,
+			payment_hash, Some(preimage), prng_seed
+		).unwrap();
+
+		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
+		let logger = test_utils::TestLogger::with_id("bob".to_string());
+
+		let peeled = peel_payment_onion(&msg, &&bob, &&logger, &secp_ctx, cur_height, true)
+			.map_err(|e| e.msg).unwrap();
+
+		let next_onion = match peeled.routing {
+			PendingHTLCRouting::Forward { onion_packet, short_channel_id: _ } => {
+				onion_packet
+			},
+			_ => panic!("expected a forwarded onion"),
+		};
+
+		let msg2 = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, next_onion);
+		let peeled2 = peel_payment_onion(&msg2, &&charlie, &&logger, &secp_ctx, cur_height, true)
+			.map_err(|e| e.msg).unwrap();
+
+		match peeled2.routing {
+			PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_data, incoming_cltv_expiry, .. } => {
+				assert_eq!(payment_preimage, preimage);
+				assert_eq!(peeled2.outgoing_amt_msat, recipient_amount);
+				assert_eq!(incoming_cltv_expiry, peeled2.outgoing_cltv_value);
+				let msgs::FinalOnionHopData{total_msat, payment_secret} = payment_data.unwrap();
+				assert_eq!(total_msat, total_amt_msat);
+				assert_eq!(payment_secret, pay_secret);
+			},
+			_ => panic!("expected a received keysend"),
+		};
+	}
+
+	fn make_update_add_msg(
+		amount_msat: u64, cltv_expiry: u32, payment_hash: PaymentHash,
+		onion_routing_packet: msgs::OnionPacket
+	) -> msgs::UpdateAddHTLC {
+		msgs::UpdateAddHTLC {
+			channel_id: ChannelId::from_bytes([0; 32]),
+			htlc_id: 0,
+			amount_msat,
+			cltv_expiry,
+			payment_hash,
+			onion_routing_packet,
+			skimmed_fee_msat: None,
+		}
+	}
+
+	use crate::routing::router::{Path, RouteHop};
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+	fn payment_onion_args(hop_pk: PublicKey, recipient_pk: PublicKey) -> (
+		SecretKey, u64, u32, RecipientOnionFields, PaymentPreimage, PaymentHash, [u8; 32],
+		Vec<RouteHop>, u64, PaymentSecret,
+	) {
+		// use core::convert::TryInto;
+
+		let session_priv_bytes = [42; 32];
+		let session_priv = SecretKey::from_slice(&session_priv_bytes).unwrap();
+		let total_amt_msat = 1000;
+		let cur_height = 1000;
+		let pay_secret = PaymentSecret([99; 32]);
+		let recipient_onion = RecipientOnionFields::secret_only(pay_secret);
+		let preimage_bytes = [43; 32];
+		let preimage = PaymentPreimage(preimage_bytes);
+		let rhash_bytes = Sha256::hash(&preimage_bytes).into_inner();
+		// let rhash_bytes: [u8; 32] = rhash.try_into().unwrap();
+		let payment_hash = PaymentHash(rhash_bytes);
+		let prng_seed = [44; 32];
+
+		// make a route alice -> bob -> charlie
+		let hop_fee = 1;
+		let recipient_amount = total_amt_msat - hop_fee;
+		let hops = vec![
+			RouteHop {
+				pubkey: hop_pk,
+				fee_msat: hop_fee,
+				cltv_expiry_delta: 42,
+				short_channel_id: 1,
+				node_features: NodeFeatures::empty(),
+				channel_features: ChannelFeatures::empty(),
+				maybe_announced_channel: false,
+			},
+			RouteHop {
+				pubkey: recipient_pk,
+				fee_msat: recipient_amount,
+				cltv_expiry_delta: 42,
+				short_channel_id: 2,
+				node_features: NodeFeatures::empty(),
+				channel_features: ChannelFeatures::empty(),
+				maybe_announced_channel: false,
+			}
+		];
+
+		(session_priv, total_amt_msat, cur_height, recipient_onion, preimage, payment_hash,
+			prng_seed, hops, recipient_amount, pay_secret)
+	}
+
+	pub fn create_payment_onion<T: bitcoin::secp256k1::Signing>(
+		secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
+		recipient_onion: RecipientOnionFields, best_block_height: u32, payment_hash: PaymentHash,
+		keysend_preimage: Option<PaymentPreimage>, prng_seed: [u8; 32]
+	) -> Result<(u64, u32, msgs::OnionPacket), ()> {
+		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| ())?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = super::onion_utils::build_onion_payloads(
+			&path,
+			total_msat,
+			recipient_onion,
+			best_block_height + 1,
+			&keysend_preimage,
+		).map_err(|_| ())?;
+		let onion_packet = super::onion_utils::construct_onion_packet(
+			onion_payloads, onion_keys, prng_seed, &payment_hash
+		)?;
+		Ok((htlc_msat, htlc_cltv, onion_packet))
+	}
+
+	fn make_keys_manager(seed: &[u8; 32]) -> crate::sign::KeysManager {
+		crate::sign::KeysManager::new(seed, 42, 42)
 	}
 }
 
