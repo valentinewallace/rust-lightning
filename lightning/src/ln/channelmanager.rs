@@ -394,7 +394,8 @@ impl HTLCSource {
 	}
 }
 
-struct InboundOnionErr {
+/// Invalid inbound onion payment
+pub struct InboundOnionErr {
 	err_code: u16,
 	err_data: Vec<u8>,
 	msg: &'static str,
