@@ -2920,44 +2920,6 @@ where
 		}
 	}
 
-	fn construct_fwd_pending_htlc_info(
-		&self, msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
-		new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
-		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
-	) -> Result<PendingHTLCInfo, InboundOnionErr> {
-		debug_assert!(next_packet_pubkey_opt.is_some());
-		let outgoing_packet = msgs::OnionPacket {
-			version: 0,
-			public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
-			hop_data: new_packet_bytes,
-			hmac: hop_hmac,
-		};
-
-		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
-			msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
-				(short_channel_id, amt_to_forward, outgoing_cltv_value),
-			msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
-				return Err(InboundOnionErr {
-					msg: "Final Node OnionHopData provided for us as an intermediary node",
-					err_code: 0x4000 | 22,
-					err_data: Vec::new(),
-				}),
-		};
-
-		Ok(PendingHTLCInfo {
-			routing: PendingHTLCRouting::Forward {
-				onion_packet: outgoing_packet,
-				short_channel_id,
-			},
-			payment_hash: msg.payment_hash,
-			incoming_shared_secret: shared_secret,
-			incoming_amt_msat: Some(msg.amount_msat),
-			outgoing_amt_msat: amt_to_forward,
-			outgoing_cltv_value,
-			skimmed_fee_msat: None,
-		})
-	}
-
 	fn decode_update_add_htlc_onion(
 		&self, msg: &msgs::UpdateAddHTLC
 	) -> Result<(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg> {
@@ -3212,7 +3174,7 @@ where
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				match self.construct_fwd_pending_htlc_info(msg, next_hop_data, next_hop_hmac,
+				match create_fwd_pending_htlc_info(msg, next_hop_data, next_hop_hmac,
 					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
@@ -7811,6 +7773,44 @@ where
 		let mut ev;
 		process_events_body!(self, ev, { handler(ev).await });
 	}
+}
+
+fn create_fwd_pending_htlc_info(
+	msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
+	new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
+	next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+) -> Result<PendingHTLCInfo, InboundOnionErr> {
+	debug_assert!(next_packet_pubkey_opt.is_some());
+	let outgoing_packet = msgs::OnionPacket {
+		version: 0,
+		public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
+		hop_data: new_packet_bytes,
+		hmac: hop_hmac,
+	};
+
+	let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
+		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
+			(short_channel_id, amt_to_forward, outgoing_cltv_value),
+		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
+			return Err(InboundOnionErr {
+				msg: "Final Node OnionHopData provided for us as an intermediary node",
+				err_code: 0x4000 | 22,
+				err_data: Vec::new(),
+			}),
+	};
+
+	Ok(PendingHTLCInfo {
+		routing: PendingHTLCRouting::Forward {
+			onion_packet: outgoing_packet,
+			short_channel_id,
+		},
+		payment_hash: msg.payment_hash,
+		incoming_shared_secret: shared_secret,
+		incoming_amt_msat: Some(msg.amount_msat),
+		outgoing_amt_msat: amt_to_forward,
+		outgoing_cltv_value,
+		skimmed_fee_msat: None,
+	})
 }
 
 fn create_recv_pending_htlc_info(
