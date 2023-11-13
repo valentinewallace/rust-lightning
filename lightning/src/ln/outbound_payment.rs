@@ -19,14 +19,15 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
 #[cfg(all(feature = "std", test))]
 use crate::util::time::tests::SinceEpoch;
-use crate::util::ser::ReadableArgs;
+use crate::util::ser::{BigSize, ReadableArgs, Writeable};
 
+use core::convert::TryFrom;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::time::Duration;
@@ -1783,6 +1784,91 @@ fn probing_cookie_from_id(payment_id: &PaymentId, probing_cookie_secret: [u8; 32
 	preimage[..32].copy_from_slice(&probing_cookie_secret);
 	preimage[32..].copy_from_slice(&payment_id.0);
 	PaymentHash(Sha256::hash(&preimage).to_byte_array())
+}
+
+/// Sets [`PaymentParameters::max_path_length`], or errors if no valid onion is possible without
+/// exceeding the maximum onion hop_data length (1300).
+fn set_max_path_length(
+	payment_params: &mut PaymentParameters, recipient_onion_fields: &RecipientOnionFields
+) -> Result<(), ()> {
+	const PAYLOAD_LEN_HMAC: usize = 3 /* payload len */ + 32 /* HMAC */;
+	const AMT_TO_FWD: usize =  1 /* type */ + 1 /* length */ + 8 /* u64 length */;
+	const OUTGOING_CLTV: usize = 1 /* type */ + 1 /* length */ + 4 /* u32 length */;
+	let intermed_payload_len = PAYLOAD_LEN_HMAC + AMT_TO_FWD + OUTGOING_CLTV
+		+ 1 + 1 + 8; // short_channel_id // TODO inline comments
+	match &payment_params.payee {
+		// TODO: account for keysend
+		Payee::Clear { .. } => {
+			let base_final_payload_len: usize = PAYLOAD_LEN_HMAC + AMT_TO_FWD + OUTGOING_CLTV
+				+ 1 + 1 + 32 + 8; // payment secret and total_msat // TODO inline comments
+			let custom_tlvs_len = recipient_onion_fields.custom_tlvs().iter().fold(0usize, |acc, tlv| {
+				acc.saturating_add(BigSize(tlv.0).serialized_length())
+					.saturating_add(BigSize(tlv.1.len() as u64).serialized_length())
+					.saturating_add(tlv.1.len())
+			});
+			let metadata_len = recipient_onion_fields.payment_metadata.as_ref()
+				.map_or(0, |m| m.len().saturating_add(1 /* type */ + BigSize(m.len() as u64).serialized_length()));
+			let final_payload_len = base_final_payload_len
+				.saturating_add(custom_tlvs_len)
+				.saturating_add(metadata_len);
+			payment_params.max_path_length = 1300usize.checked_sub(final_payload_len)
+				.map(|p| (p / intermed_payload_len) + 1 /* final hop */)
+				.and_then(|p| u8::try_from(p).ok())
+				.ok_or(())?
+		},
+		Payee::Blinded { route_hints, .. } => {
+			let mut max_path_len = u8::max_value();
+			for (_, bp) in route_hints.iter() {
+				if bp.blinded_hops.len() == 1 {
+					let base_payload_len = PAYLOAD_LEN_HMAC + AMT_TO_FWD + OUTGOING_CLTV
+						+ 2 + 33 // intro_node_blinding_point,
+						+ 2 + 8 // total_msat
+						+ 1 /* type */ + BigSize(bp.blinded_hops[0].encrypted_payload.len() as u64).serialized_length();
+					let final_payload_len = base_payload_len
+						.checked_add(bp.blinded_hops[0].encrypted_payload.len())
+						.ok_or(())?;
+					let max_path_len_candidate =  1300usize.checked_sub(final_payload_len)
+						.map(|p| p / intermed_payload_len)
+						.and_then(|p| u8::try_from(p).ok())
+						.ok_or(())? + 1 /* this hop counts towards the total path len */;
+					max_path_len = core::cmp::min(max_path_len, max_path_len_candidate);
+					continue
+				}
+				// TODO: closure for BigSize ser len stuff
+				let intro_node_payload_len = (
+					PAYLOAD_LEN_HMAC + 2 + 33 + 1 +
+					BigSize(bp.blinded_hops[0].encrypted_payload.len() as u64).serialized_length()
+				)
+					.checked_add(bp.blinded_hops[0].encrypted_payload.len())
+					.ok_or(())?;
+				let blinded_non_final_nodes_payloads_len = bp.blinded_hops.iter().skip(1).rev().skip(1)
+					.fold(0usize, |acc, bh| {
+						acc.saturating_add(PAYLOAD_LEN_HMAC + 1)
+							.saturating_add(BigSize(bh.encrypted_payload.len() as u64).serialized_length())
+							.saturating_add(bh.encrypted_payload.len())
+					});
+				// TODO check for 0 blinded hops
+				let base_final_payload_len = PAYLOAD_LEN_HMAC + AMT_TO_FWD + OUTGOING_CLTV
+					+ 2 + 8 // total_msat
+					+ 1 + BigSize(bp.blinded_hops.last().unwrap().encrypted_payload.len() as u64).serialized_length();
+				let final_payload_len = base_final_payload_len
+					.checked_add(bp.blinded_hops.last().unwrap().encrypted_payload.len())
+					.ok_or(())?;
+				let total_blinded_path_len = intro_node_payload_len
+					.checked_add(blinded_non_final_nodes_payloads_len)
+					.and_then(|p| p.checked_add(final_payload_len))
+					.ok_or(())?;
+				let max_path_len_candidate = 1300usize.checked_sub(total_blinded_path_len)
+					.map(|p| p / intermed_payload_len)
+					.and_then(|l| l.checked_add(bp.blinded_hops.len()))
+					.and_then(|l| u8::try_from(l).ok())
+					.ok_or(())?;
+				max_path_len = core::cmp::min(max_path_len, max_path_len_candidate);
+			}
+			payment_params.max_path_length = max_path_len;
+		},
+	}
+	Ok(())
 }
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
