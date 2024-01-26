@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
 use crate::ln::PaymentHash;
-use crate::ln::channelmanager::{ChannelDetails, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
@@ -139,7 +139,8 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			})
 			.map(|forward_node| {
 				BlindedPath::new_for_payment(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, entropy_source, secp_ctx
+					&[forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
+					entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -149,8 +150,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
-						.map(|path| vec![path])
+					BlindedPath::one_hop_for_payment(
+						recipient, tlvs, MIN_FINAL_CLTV_EXPIRY_DELTA, entropy_source, secp_ctx
+					).map(|path| vec![path])
 				} else {
 					Err(())
 				}
