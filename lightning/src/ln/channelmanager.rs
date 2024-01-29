@@ -5668,8 +5668,9 @@ where
 	}
 
 	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage,
-		forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, startup_replay: bool,
-		next_channel_counterparty_node_id: Option<PublicKey>, next_channel_outpoint: OutPoint
+		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
+		startup_replay: bool, next_channel_counterparty_node_id: Option<PublicKey>,
+		next_channel_outpoint: OutPoint
 	) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
@@ -5767,6 +5768,8 @@ where
 									Some(claimed_htlc_value - forwarded_htlc_value)
 								} else { None }
 							} else { None };
+							debug_assert!(skimmed_fee_msat <= total_fee_earned_msat,
+								"skimmed_fee_msat must always be included in total_fee_earned_msat");
 							Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 								event: events::Event::PaymentForwarded {
 									total_fee_earned_msat,
@@ -5774,6 +5777,7 @@ where
 									prev_channel_id: Some(prev_outpoint.to_channel_id()),
 									next_channel_id: Some(next_channel_outpoint.to_channel_id()),
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+									skimmed_fee_msat,
 								},
 								downstream_counterparty_and_funding_outpoint: chan_to_release,
 							})
@@ -6712,7 +6716,7 @@ where
 
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
-		let (htlc_source, forwarded_htlc_value) = {
+		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
@@ -6750,7 +6754,11 @@ where
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
-		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, false, Some(*counterparty_node_id), funding_txo);
+		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(),
+			Some(forwarded_htlc_value), skimmed_fee_msat, false, false, Some(*counterparty_node_id),
+			funding_txo
+		);
+
 		Ok(())
 	}
 
@@ -7246,7 +7254,7 @@ where
 						let logger = WithContext::from(&self.logger, counterparty_node_id, Some(funding_outpoint.to_channel_id()));
 						if let Some(preimage) = htlc_update.payment_preimage {
 							log_trace!(logger, "Claiming HTLC with preimage {} from our monitor", preimage);
-							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, false, counterparty_node_id, funding_outpoint);
+							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), None, true, false, counterparty_node_id, funding_outpoint);
 						} else {
 							log_trace!(logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
@@ -11119,7 +11127,7 @@ where
 			// We use `downstream_closed` in place of `from_onchain` here just as a guess - we
 			// don't remember in the `ChannelMonitor` where we got a preimage from, but if the
 			// channel is closed we just assume that it probably came from an on-chain claim.
-			channel_manager.claim_funds_internal(source, preimage, Some(downstream_value),
+			channel_manager.claim_funds_internal(source, preimage, Some(downstream_value), None,
 				downstream_closed, true, downstream_node_id, downstream_funding);
 		}
 
