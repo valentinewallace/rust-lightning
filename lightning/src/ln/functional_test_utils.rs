@@ -2213,7 +2213,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 
 			// Check that the (knowingly) withheld amount is always less or equal to the expected
 			// overpaid amount.
-			assert!(skimmed_fee_msat <= expected_extra_fee_limit_msat);
+			assert!(skimmed_fee_msat == expected_extra_fee_limit_msat);
 			if !upstream_force_closed {
 				// Is the event prev_channel_id in one of the channels between the two nodes?
 				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == prev_node.node().get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));
@@ -2700,16 +2700,16 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 							channel.context().config().forwarding_fee_base_msat
 						}
 					};
-					let mut expected_extra_fee_limit = None;
+					let mut expected_extra_fee = None;
 					if $idx == 1 {
 						fee += expected_extra_fees[i];
 						fee += expected_min_htlc_overpay[i];
-						expected_extra_fee_limit = Some(expected_extra_fees[i] as u64);
+						expected_extra_fee = if expected_extra_fees[i] > 0 { Some(expected_extra_fees[i] as u64) } else { None };
 					}
 					let mut events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
 					expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
-						Some(fee as u64), expected_extra_fee_limit, false, false);
+						Some(fee as u64), expected_extra_fee, false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
