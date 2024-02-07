@@ -360,33 +360,71 @@ impl Base32Len for Fallback {
 impl ToBase32 for PrivateRoute {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
+		use bitcoin::secp256k1::PublicKey;
+		use lightning::blinded_path::{BlindedHop, BlindedPath};
+		use lightning::offers::invoice::BlindedPayInfo;
+		use lightning::routing::gossip::NodeId;
+		use core::str::FromStr;
+		use lightning::util::ser::Writeable;
+		use lightning::ln::features::BlindedHopFeatures;
 
-		for hop in (self.0).0.iter() {
-			converter.append(&hop.src_node_id.serialize()[..])?;
-			let short_channel_id = try_stretch(
-				encode_int_be_base256(hop.short_channel_id),
-				8
-			).expect("sizeof(u64) == 8");
-			converter.append(&short_channel_id)?;
-
-			let fee_base_msat = try_stretch(
-				encode_int_be_base256(hop.fees.base_msat),
-				4
-			).expect("sizeof(u32) == 4");
-			converter.append(&fee_base_msat)?;
-
-			let fee_proportional_millionths = try_stretch(
-				encode_int_be_base256(hop.fees.proportional_millionths),
-				4
-			).expect("sizeof(u32) == 4");
-			converter.append(&fee_proportional_millionths)?;
-
-			let cltv_expiry_delta = try_stretch(
-				encode_int_be_base256(hop.cltv_expiry_delta),
-				2
-			).expect("sizeof(u16) == 2");
-			converter.append(&cltv_expiry_delta)?;
-		}
+		let payinfo = BlindedPayInfo { fee_base_msat: 2000, fee_proportional_millionths: 0, cltv_expiry_delta: 84,
+			htlc_minimum_msat: 1000, htlc_maximum_msat: 99998000, features: BlindedHopFeatures::empty()
+		};
+		let pubkey: PublicKey = PublicKey::try_from(NodeId::from_str("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()).unwrap();
+		let blinded_path = BlindedPath {
+				introduction_node_id: pubkey,
+					blinding_point: pubkey,
+					blinded_hops: vec![BlindedHop { blinded_node_id: pubkey,
+						encrypted_payload: vec![17, 155, 117, 48, 22, 128, 167, 2, 29, 60, 170, 39, 7, 120, 38, 9,
+						27, 57, 215, 94, 71, 124, 95, 193, 139, 177, 148, 185, 245, 201, 214, 30, 235, 203,
+						235, 229, 7, 86, 6, 20, 10, 228, 56, 194, 216, 158, 209, 89, 236, 145, 89, 55, 41,
+						247, 83, 242] },
+					BlindedHop {
+						blinded_node_id: pubkey,
+							encrypted_payload: vec![8, 228, 21, 124, 57, 255, 24, 68, 159, 107, 13, 32, 107, 102,
+							155, 68, 34, 196, 242, 171, 178, 54, 53, 34, 62, 25, 22, 220, 242, 177, 58, 83, 138,
+							138, 170, 235, 99, 218, 107, 224, 158, 224, 220, 50, 28, 152, 161, 100, 6, 66, 161,
+							53, 1, 81, 110, 170]
+					},
+					BlindedHop {
+						blinded_node_id: pubkey,
+							encrypted_payload: vec![63, 210, 18, 180, 144, 55, 57, 171, 157, 141, 222, 155, 83,
+							46, 96, 1, 94, 91, 221, 140, 117, 242, 204, 57, 15, 194, 104, 111, 143, 231, 21,
+							156, 238, 145, 153, 251, 52, 131, 5, 36, 147, 216, 131, 13, 211, 67, 241, 117,
+							179, 210, 89, 0, 92, 59, 25, 154, 31, 98, 45, 11, 96, 41, 135, 177, 195, 63, 174,
+							45]
+					}
+				]
+		};
+		converter.append(&payinfo.encode()[..])?;
+		converter.append(&blinded_path.encode()[..])?;
+		// for hop in (self.0).0.iter() {
+		//   converter.append(&hop.src_node_id.serialize()[..])?;
+		//   let short_channel_id = try_stretch(
+		//     encode_int_be_base256(hop.short_channel_id),
+		//     8
+		//   ).expect("sizeof(u64) == 8");
+		//   converter.append(&short_channel_id)?;
+    //
+		//   let fee_base_msat = try_stretch(
+		//     encode_int_be_base256(hop.fees.base_msat),
+		//     4
+		//   ).expect("sizeof(u32) == 4");
+		//   converter.append(&fee_base_msat)?;
+    //
+		//   let fee_proportional_millionths = try_stretch(
+		//     encode_int_be_base256(hop.fees.proportional_millionths),
+		//     4
+		//   ).expect("sizeof(u32) == 4");
+		//   converter.append(&fee_proportional_millionths)?;
+    //
+		//   let cltv_expiry_delta = try_stretch(
+		//     encode_int_be_base256(hop.cltv_expiry_delta),
+		//     2
+		//   ).expect("sizeof(u16) == 2");
+		//   converter.append(&cltv_expiry_delta)?;
+		// }
 
 		converter.finalize()?;
 		Ok(())

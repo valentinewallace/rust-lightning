@@ -59,10 +59,13 @@ fn blinded_payment_path(
 		},
 	};
 	let mut secp_ctx = Secp256k1::new();
-	BlindedPath::new_for_payment(
+	let res = BlindedPath::new_for_payment(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
 		channel_upds.last().unwrap().htlc_maximum_msat, keys_manager, &secp_ctx
-	).unwrap()
+	).unwrap();
+	println!("VMW: res: {:?}", res);
+	// panic!();
+	res
 }
 
 pub fn get_blinded_route_parameters(
