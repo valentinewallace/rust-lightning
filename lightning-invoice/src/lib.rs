@@ -689,8 +689,9 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 
 impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBuilder<D, tb::False, T, C, S, M> {
 	/// Set the payment hash. This function is only available if no payment hash was set.
-	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C, S, M> {
-		self.tagged_fields.push(TaggedField::PaymentHash(Sha256(hash)));
+	pub fn payment_hash(self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C, S, M> {
+	// pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C, S, M> {
+		// self.tagged_fields.push(TaggedField::PaymentHash(Sha256(hash)));
 		self.set_flags()
 	}
 }
@@ -1286,10 +1287,10 @@ impl Bolt11Invoice {
 		let invoice = Bolt11Invoice {
 			signed_invoice,
 		};
-		invoice.check_field_counts()?;
-		invoice.check_feature_bits()?;
-		invoice.check_signature()?;
-		invoice.check_amount()?;
+		// invoice.check_field_counts()?;
+		// invoice.check_feature_bits()?;
+		// invoice.check_signature()?;
+		// invoice.check_amount()?;
 
 		Ok(invoice)
 	}

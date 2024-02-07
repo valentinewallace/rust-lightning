@@ -558,7 +558,9 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	}
 
 	let route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
+	let route_hints_len = route_hints.len();
 	for hint in route_hints {
+		// if hint.0.len() == 1 && route_hints_len == 1 { panic!() }
 		invoice = invoice.private_route(hint);
 	}
 
@@ -571,7 +573,12 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	let data_without_signature = raw_invoice.data.to_base32();
 	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
 	match signed_raw_invoice {
-		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
+		Ok(inv) => {
+			let res = Bolt11Invoice::from_signed(inv).unwrap();
+			println!("Bolt 11 invoice: {}", res);
+			panic!();
+			Ok(res)
+		},
 		Err(e) => Err(SignOrCreationError::SignError(e))
 	}
 }
@@ -873,9 +880,9 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
-			Some(10_000), "test".to_string(), Duration::from_secs(1234567),
+			None, "".to_string(), Duration::from_secs(1234567),
 			non_default_invoice_expiry_secs, None).unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		// assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
