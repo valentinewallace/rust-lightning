@@ -7750,8 +7750,11 @@ where
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
 	) -> Result<(), Bolt12SemanticError> {
-		if offer.paths().len() == 1 {
-			if offer.paths()[0].blinded_hops.len() == 3 {
+		// if offer.paths().is_empty() {
+		//   println!("Encoded offer: {}", offer);
+		// }
+		if offer.paths().len() == 2 {
+			if offer.paths()[0].blinded_hops.len() == 2 && offer.paths()[1].blinded_hops.len() == 2 {
 				println!("Encoded offer: {}", offer);
 			}
 		}
