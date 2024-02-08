@@ -36,7 +36,7 @@ impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
-			(4, self.next_node_id, required),
+			(4, u64::max_value(), required),
 			(8, self.next_blinding_override, option)
 		});
 		Ok(())

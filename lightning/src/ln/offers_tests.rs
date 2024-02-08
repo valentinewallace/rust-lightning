@@ -217,8 +217,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
-		.amount_msats(10_000_000)
+		.create_offer_builder("".to_string()).unwrap()
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());

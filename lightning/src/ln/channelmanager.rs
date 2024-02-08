@@ -7750,6 +7750,11 @@ where
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
 	) -> Result<(), Bolt12SemanticError> {
+		if offer.paths().len() == 1 {
+			if offer.paths()[0].blinded_hops.len() == 3 {
+				println!("Encoded offer: {}", offer);
+			}
+		}
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;

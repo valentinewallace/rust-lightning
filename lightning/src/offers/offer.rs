@@ -266,6 +266,9 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
 	pub fn path(mut self, path: BlindedPath) -> Self {
+		let mut path = path.clone();
+		let hop = path.blinded_hops[0].clone();
+		path.blinded_hops.push(hop);
 		self.offer.paths.get_or_insert_with(Vec::new).push(path);
 		self
 	}
