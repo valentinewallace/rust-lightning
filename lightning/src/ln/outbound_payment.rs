@@ -887,7 +887,7 @@ impl OutboundPayments {
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	fn send_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, route_params: RouteParameters,
+		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, mut route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
@@ -908,6 +908,12 @@ impl OutboundPayments {
 			}
 		}
 
+		set_max_path_length(&mut route_params.payment_params, &recipient_onion)
+			.map_err(|()| {
+				log_error!(logger, "Could not find a route without exceeding 1300-byte onion hop_data length \
+					for payment with id {} and hash {}", payment_id, payment_hash);
+				RetryableSendFailure::RouteNotFound
+			})?;
 		let mut route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
@@ -1923,7 +1929,7 @@ mod tests {
 	use core::time::Duration;
 
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::PaymentHash;
+	use crate::ln::{PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
@@ -2457,5 +2463,13 @@ mod tests {
 		);
 		assert!(outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn simple_max_path_length() {
+		let mut payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 42);
+		let recipient_onion_fields = RecipientOnionFields::secret_only(PaymentSecret([42; 32]));
+		super::set_max_path_length(&mut payment_params, &recipient_onion_fields).unwrap();
+		assert_eq!(payment_params.max_path_length, 19);
 	}
 }

@@ -686,8 +686,8 @@ pub struct PaymentParameters {
 	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
 	pub max_path_count: u8,
 
-	/// The maximum number of hops in any returned path.
-	/// Defaults to [`MAX_PATH_LENGTH_ESTIMATE`].
+	/// The maximum number of hops in any returned path, where a hop is defined as a node and an
+	/// inbound channel to that node. Defaults to [`MAX_PATH_LENGTH_ESTIMATE`].
 	pub max_path_length: u8,
 
 	/// Selects the maximum share of a channel's total capacity which will be sent over a channel,
