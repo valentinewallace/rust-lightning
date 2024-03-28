@@ -1065,9 +1065,9 @@ macro_rules! impl_writeable_tlv_based_enum {
 /// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
 /// new variants to be added which are simply ignored by existing clients.
 ///
-/// Note that variants written as tuple variants will not support downgrading no matter the
-/// `$tuple_variant_id` used. Any variants written as a normal variant will support downgrading by
-/// having [`MaybeReadable`] return `None` for odd `$variant_id` variants not understood.
+/// Note that only normal variants (not tuple variants) will support downgrading, thus any new odd
+/// variants MUST be normal (i.e. described using `$variant_id` and `$variant_name` not
+/// `$tuple_variant_id` and `$tuple_variant_name`).
 ///
 /// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
