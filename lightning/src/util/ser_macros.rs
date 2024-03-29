@@ -1146,7 +1146,7 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
 	use crate::ln::msgs::DecodeError;
-	use crate::util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
+	use crate::util::ser::{MaybeReadable, Readable, Writeable, HighZeroBytesDroppedBigSize, VecWriter};
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
@@ -1254,6 +1254,126 @@ mod tests {
 			concat!("0100", "03041bad1dea")
 		).unwrap()[..]) {
 		} else { panic!(); }
+	}
+
+	enum InnerEnum {
+		StructVariantA {
+			field: u32,
+		},
+	}
+
+	impl_writeable_tlv_based_enum_upgradable!(InnerEnum,
+		(0, StructVariantA) => {
+			(0, field, required),
+		},
+	);
+
+	struct OuterStructOptionalEnum {
+		inner_enum: Option<InnerEnum>,
+		other_field: u32,
+	}
+
+	impl Readable for OuterStructOptionalEnum {
+		fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+			let mut inner_enum = None;
+			let mut other_field = 0;
+			read_tlv_fields!(reader, {
+				(0, inner_enum, upgradable_option),
+				(2, other_field, required),
+			});
+			Ok(Self {
+				inner_enum,
+				other_field,
+			})
+		}
+	}
+
+	#[test]
+	fn upgradable_enum_option() {
+		let serialized_bytes = &<Vec<u8>>::from_hex(
+			concat!(
+				"10", // total outer_struct length
+				"00", // outer_struct inner_enum type
+				"08", // outer_struct inner_enum length
+					"01", // *inner_enum StructVariantA unknown variant id*
+					"06", // inner_enum StructVariantA length
+						"00", // inner_enum StructVariantA field type
+						"04", // inner_enum StructVariantA field length
+						"deadbeef", // inner_enum StructVariantA field value
+				"02", // outer_struct other_field type
+				"04", // outer_struct other_field length
+				"1bad1dea" // outer_struct other_field value
+			)
+		).unwrap()[..];
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_struct: OuterStructOptionalEnum = Readable::read(&mut s).unwrap();
+		assert!(outer_struct.inner_enum.is_none());
+		assert_eq!(outer_struct.other_field, 0x1bad1dea);
+	}
+
+	struct OuterOuterStruct {
+		outer_struct: Option<OuterStructRequiredEnum>,
+		other_field: u32,
+	}
+
+	struct OuterStructRequiredEnum {
+		#[allow(unused)]
+		inner_enum: InnerEnum,
+	}
+
+	impl MaybeReadable for OuterStructRequiredEnum {
+		fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+			let mut inner_enum = crate::util::ser::UpgradableRequired(None);
+			read_tlv_fields!(reader, {
+				(0, inner_enum, upgradable_required),
+			});
+			Ok(Some(Self {
+				inner_enum: inner_enum.0.unwrap(),
+			}))
+		}
+	}
+
+	impl Readable for OuterOuterStruct {
+		fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+			let mut outer_struct = None;
+			let mut other_field = 0;
+			read_tlv_fields!(reader, {
+				(0, outer_struct, upgradable_option),
+				(2, other_field, required),
+			});
+			Ok(Self {
+				outer_struct,
+				other_field,
+			})
+		}
+	}
+
+	#[test]
+	fn upgradable_enum_required() {
+		let serialized_bytes = &<Vec<u8>>::from_hex(
+			concat!(
+				"13", // total outer_outer_struct length
+				"00", // outer_outer_struct outer_struct type
+				"0b", // outer_outer_struct outer_struct length
+					"0a", // total outer_struct length
+					"00", // outer_struct inner_enum TLV type
+					"08", // inner_enum length
+						"01", // *inner_enum StructVariantA unknown variant id*
+						"06", // inner_enum StructVariantA length
+							"00", // inner_enum StructVariantA field type
+							"04", // inner_enum StructVariantA field length
+							"deadbeef", // inner_enum StructVariantA field value
+				"02",
+				"04",
+				"1bad1dea",
+			)
+		).unwrap()[..];
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_outer_struct: OuterOuterStruct = Readable::read(&mut s).unwrap();
+		assert!(outer_outer_struct.outer_struct.is_none());
+		assert_eq!(outer_outer_struct.other_field, 0x1bad1dea);
 	}
 
 	// BOLT TLV test cases
