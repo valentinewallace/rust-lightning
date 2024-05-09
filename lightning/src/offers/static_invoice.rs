@@ -15,51 +15,91 @@ use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	construct_payment_paths, filter_fallbacks, is_expired, BlindedPayInfo, FallbackAddress,
-	InvoiceTlvStream, SIGNATURE_TAG,
+	InvoiceTlvStream, InvoiceTlvStreamRef, SIGNATURE_TAG,
 };
-use crate::offers::invoice_macros::invoice_accessors_common;
-use crate::offers::merkle::{self, SignatureTlvStream, TaggedHash};
-use crate::offers::offer::{Amount, OfferContents, OfferTlvStream, Quantity};
+use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+use crate::offers::merkle::{
+	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash,
+};
+use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
-use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{self, KeyPair, PublicKey, Secp256k1};
 use core::time::Duration;
 
 /// Static invoices default to expiring after 24 hours.
 const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(3600 * 24);
 
-/// A `StaticInvoice` is a reusable payment request corresponding to an [`Offer`].
+/// Builds a [`StaticInvoice`] from an [`Offer`].
 ///
-/// A static invoice may be sent in response to an [`InvoiceRequest`] and includes all the
-/// information needed to pay the recipient. However, unlike [`Bolt12Invoice`]s, static invoices do
-/// not provide proof-of-payment. Therefore, [`Bolt12Invoice`]s should be preferred when the
-/// recipient is online to provide one.
+/// See [module-level documentation] for usage.
 ///
-/// [`Offer`]: crate::offers::offer::Offer
-/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-pub struct StaticInvoice {
-	bytes: Vec<u8>,
-	contents: InvoiceContents,
-	signature: Signature,
-	tagged_hash: TaggedHash,
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+pub struct StaticInvoiceBuilder<'a> {
+	offer_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+	keys: KeyPair,
 }
 
-/// The contents of a [`StaticInvoice`] for responding to an [`Offer`].
-///
-/// [`Offer`]: crate::offers::offer::Offer
-struct InvoiceContents {
-	offer: OfferContents,
-	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-	created_at: Duration,
-	relative_expiry: Option<Duration>,
-	fallbacks: Option<Vec<FallbackAddress>>,
-	features: Bolt12InvoiceFeatures,
-	signing_pubkey: PublicKey,
+impl<'a> StaticInvoiceBuilder<'a> {
+	/// Initialize a [`StaticInvoiceBuilder`] from the given [`Offer`].
+	///
+	/// Unless [`StaticInvoiceBuilder::relative_expiry`] is set, the invoice will expire 24 hours
+	/// after `created_at`.
+	pub fn for_offer_using_keys(
+		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
+		keys: KeyPair,
+	) -> Result<Self, Bolt12SemanticError> {
+		let invoice = InvoiceContents::new(offer, payment_paths, created_at, keys.public_key());
+		if invoice.payment_paths.is_empty() {
+			return Err(Bolt12SemanticError::MissingPaths);
+		}
+		if invoice.offer.chains().len() > 1 {
+			return Err(Bolt12SemanticError::UnexpectedChain);
+		}
+		Ok(Self { offer_bytes: &offer.bytes, invoice, keys })
+	}
+
+	/// Builds a signed [`StaticInvoice`] after checking for valid semantics.
+	pub fn build_and_sign<T: secp256k1::Signing>(
+		self, secp_ctx: &Secp256k1<T>,
+	) -> Result<StaticInvoice, Bolt12SemanticError> {
+		#[cfg(feature = "std")]
+		{
+			if self.invoice.is_offer_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))]
+		{
+			if self.invoice.is_offer_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		let Self { offer_bytes, invoice, keys } = self;
+		let unsigned_invoice = UnsignedStaticInvoice::new(&offer_bytes, invoice);
+		let invoice = unsigned_invoice
+			.sign(|message: &UnsignedStaticInvoice| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.tagged_hash.as_digest(), &keys))
+			})
+			.unwrap();
+		Ok(invoice)
+	}
+
+	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, S, mut);
+}
+
+/// A semantically valid [`StaticInvoice`] that hasn't been signed.
+pub struct UnsignedStaticInvoice {
+	bytes: Vec<u8>,
+	contents: InvoiceContents,
+	tagged_hash: TaggedHash,
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
@@ -130,6 +170,99 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+impl UnsignedStaticInvoice {
+	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
+		let mut bytes = Vec::new();
+		WithoutLength(offer_bytes).write(&mut bytes).unwrap();
+		contents.as_invoice_fields_tlv_stream().write(&mut bytes).unwrap();
+
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		Self { contents, tagged_hash, bytes }
+	}
+
+	/// Signs the [`TaggedHash`] of the invoice using the given function.
+	///
+	/// Note: The hash computation may have included unknown, odd TLV records.
+	pub fn sign<F: SignStaticInvoiceFn>(mut self, sign: F) -> Result<StaticInvoice, SignError> {
+		let pubkey = self.contents.signing_pubkey;
+		let signature = merkle::sign_message(sign, &self, pubkey)?;
+
+		// Append the signature TLV record to the bytes.
+		let signature_tlv_stream = SignatureTlvStreamRef { signature: Some(&signature) };
+		signature_tlv_stream.write(&mut self.bytes).unwrap();
+
+		Ok(StaticInvoice {
+			bytes: self.bytes,
+			contents: self.contents,
+			signature,
+			tagged_hash: self.tagged_hash,
+		})
+	}
+
+	invoice_accessors_common!(self, self.contents);
+	invoice_accessors!(self, self.contents);
+}
+
+impl AsRef<TaggedHash> for UnsignedStaticInvoice {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
+}
+
+/// A function for signing an [`UnsignedStaticInvoice`].
+pub trait SignStaticInvoiceFn {
+	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
+	fn sign_invoice(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()>;
+}
+
+impl<F> SignStaticInvoiceFn for F
+where
+	F: Fn(&UnsignedStaticInvoice) -> Result<Signature, ()>,
+{
+	fn sign_invoice(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()> {
+		self(message)
+	}
+}
+
+impl<F> SignFn<UnsignedStaticInvoice> for F
+where
+	F: SignStaticInvoiceFn,
+{
+	fn sign(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()> {
+		self.sign_invoice(message)
+	}
+}
+
+/// A `StaticInvoice` is a reusable payment request corresponding to an [`Offer`].
+///
+/// A static invoice may be sent in response to an [`InvoiceRequest`] and includes all the
+/// information needed to pay the recipient. However, unlike [`Bolt12Invoice`]s, static invoices do
+/// not provide proof-of-payment. Therefore, [`Bolt12Invoice`]s should be preferred when the
+/// recipient is online to provide one.
+///
+/// [`Offer`]: crate::offers::offer::Offer
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+pub struct StaticInvoice {
+	bytes: Vec<u8>,
+	contents: InvoiceContents,
+	signature: Signature,
+	tagged_hash: TaggedHash,
+}
+
+/// The contents of a [`StaticInvoice`] for responding to an [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+struct InvoiceContents {
+	offer: OfferContents,
+	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+	created_at: Duration,
+	relative_expiry: Option<Duration>,
+	fallbacks: Option<Vec<FallbackAddress>>,
+	features: Bolt12InvoiceFeatures,
+	signing_pubkey: PublicKey,
+}
+
 impl StaticInvoice {
 	invoice_accessors_common!(self, self.contents);
 	invoice_accessors!(self, self.contents);
@@ -146,6 +279,53 @@ impl StaticInvoice {
 }
 
 impl InvoiceContents {
+	#[cfg(feature = "std")]
+	fn is_offer_expired(&self) -> bool {
+		self.offer.is_expired()
+	}
+
+	#[cfg(not(feature = "std"))]
+	fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.offer.is_offer_expired_no_std(duration_since_epoch)
+	}
+
+	fn new(
+		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
+		signing_pubkey: PublicKey,
+	) -> Self {
+		Self {
+			offer: offer.contents.clone(),
+			payment_paths,
+			created_at,
+			relative_expiry: None,
+			fallbacks: None,
+			features: Bolt12InvoiceFeatures::empty(),
+			signing_pubkey,
+		}
+	}
+
+	fn as_invoice_fields_tlv_stream(&self) -> InvoiceTlvStreamRef {
+		let features = {
+			if self.features == Bolt12InvoiceFeatures::empty() {
+				None
+			} else {
+				Some(&self.features)
+			}
+		};
+
+		InvoiceTlvStreamRef {
+			paths: Some(Iterable(self.payment_paths.iter().map(|(_, path)| path))),
+			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(payinfo, _)| payinfo))),
+			created_at: Some(self.created_at.as_secs()),
+			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
+			payment_hash: None,
+			amount: None,
+			fallbacks: self.fallbacks.as_ref(),
+			features,
+			node_id: Some(&self.signing_pubkey),
+		}
+	}
+
 	fn chain(&self) -> ChainHash {
 		debug_assert_eq!(self.offer.chains().len(), 1);
 		self.offer.chains().first().cloned().unwrap_or_else(|| self.offer.implied_chain())
