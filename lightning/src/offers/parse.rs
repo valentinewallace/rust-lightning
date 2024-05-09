@@ -191,6 +191,8 @@ pub enum Bolt12SemanticError {
 	MissingCreationTime,
 	/// An invoice payment hash was expected but was missing.
 	MissingPaymentHash,
+	/// A payment hash was provided but was not expected.
+	UnexpectedPaymentHash,
 	/// A signature was expected but was missing.
 	MissingSignature,
 }
