@@ -62,9 +62,10 @@ use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
-use crate::offers::offer::{Offer, OfferBuilder};
+use crate::offers::offer::{Amount, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
+use crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
@@ -1886,6 +1887,8 @@ where
 	#[allow(unused)]
 	router: R,
 
+	static_invoices: Mutex<HashMap<PublicKey, StaticInvoice>>,
+
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) best_block: RwLock<BestBlock>,
@@ -3154,6 +3157,8 @@ where
 			tx_broadcaster,
 			router,
 
+			static_invoices: Mutex::new(HashMap::new()),
+
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
@@ -4277,6 +4282,20 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
+				invoice, payment_id, &self.router, self.list_usable_channels(),
+				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer,
+				best_block_height, &self.logger, &self.pending_events,
+				|args| self.send_payment_along_path(args)
+			)
+	}
+
+	pub(super) fn send_payment_for_static_invoice(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.send_payment_for_static_invoice(
 				invoice, payment_id, &self.router, self.list_usable_channels(),
 				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer,
 				best_block_height, &self.logger, &self.pending_events,
@@ -8651,7 +8670,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, None, None
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -8679,6 +8698,75 @@ where
 	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
+
+	///
+	pub fn create_async_payment_offer_builder(
+		&self, path_to_always_online_counterparty: BlindedPath
+	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let builder = OfferBuilder::deriving_signing_pubkey(
+			node_id, expanded_key, entropy, secp_ctx
+		)
+			.chain_hash(self.chain_hash)
+			.path(path_to_always_online_counterparty);
+
+		Ok(builder.into())
+	}
+
+	///
+	pub fn create_static_invoice(
+		&self, offer: &Offer
+	) -> Result<StaticInvoice, Bolt12SemanticError> {
+		let relative_expiry = STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+		let amount_msats_opt = match offer.amount() {
+			Some(Amount::Bitcoin { amount_msats }) => Some(amount_msats),
+			_ => None,
+		};
+		let (_, payment_secret) = match self.create_inbound_payment(
+			amount_msats_opt, relative_expiry, None
+		) {
+			Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
+			Err(()) => {
+				return Err(Bolt12SemanticError::InvalidAmount)
+			},
+		};
+
+		let payment_context = PaymentContext::unknown();
+
+		const DEFAULT_AMT_MSAT: u64 = 100_000_000;
+		let amount_for_blinded_paths_msat = amount_msats_opt.unwrap_or(DEFAULT_AMT_MSAT);
+		let payment_paths = match self.create_blinded_payment_paths(
+			amount_for_blinded_paths_msat, payment_secret, payment_context
+		) {
+			Ok(payment_paths) => payment_paths,
+			Err(()) => {
+				return Err(Bolt12SemanticError::MissingPaths)
+			},
+		};
+
+		let created_at = Duration::from_secs(
+			self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+		);
+
+		let (offer_id, keys_opt) = offer.verify(&self.inbound_payment_key, &self.secp_ctx)
+			.map_err(|()| Bolt12SemanticError::InvalidMetadata)?; // TODO update error
+		let keys = if let Some(keys) = keys_opt { keys } else {
+			return Err(Bolt12SemanticError::InvalidMetadata)
+		};
+		StaticInvoiceBuilder::for_offer_using_keys(offer, payment_paths, created_at, keys)?
+			.allow_mpp()
+			.build_and_sign(&self.secp_ctx)
+	}
+
+	///
+	pub fn register_static_invoice(&self, invoice: StaticInvoice) {
+		let mut static_invoices = self.static_invoices.lock().unwrap();
+		static_invoices.insert(invoice.signing_pubkey(), invoice);
+	}
 
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
@@ -8765,10 +8853,13 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let expiration = StaleExpiration::TimerTicks(1);
+		let expiration = StaleExpiration::TimerTicks(100);
+		let amount_msat = amount_msats.or(invoice_request.amount_msats())
+			.ok_or(Bolt12SemanticError::MissingAmount)?;
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+				Some(amount_msat), Some(offer.bytes.clone()),
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -9007,7 +9098,7 @@ where
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	fn create_blinded_payment_paths(
+	pub fn create_blinded_payment_paths(
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		let secp_ctx = &self.secp_ctx;
@@ -10364,11 +10455,19 @@ where
 					Ok(amount_msats) => amount_msats,
 					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
 				};
+				let signing_pubkey = invoice_request.signing_pubkey().unwrap();
 				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
 					Ok(invoice_request) => invoice_request,
 					Err(()) => {
-						let error = Bolt12SemanticError::InvalidMetadata;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
+						match self.static_invoices.lock().unwrap().remove(&signing_pubkey) {
+							Some(static_invoice) => {
+								return responder.respond(OffersMessage::StaticInvoice(static_invoice))
+							},
+							None => {
+								let error = Bolt12SemanticError::InvalidMetadata;
+								return responder.respond(OffersMessage::InvoiceError(error.into()));
+							}
+						}
 					},
 				};
 
@@ -10459,6 +10558,30 @@ where
 						}
 					});
 
+				match (responder, response) {
+					(Some(responder), Err(e)) => responder.respond(OffersMessage::InvoiceError(e)),
+					(None, Err(_)) => {
+						log_trace!(
+							self.logger,
+							"A response was generated, but there is no reply_path specified for sending the response."
+						);
+						return ResponseInstruction::NoResponse;
+					}
+					_ => return ResponseInstruction::NoResponse,
+				}
+			},
+			OffersMessage::StaticInvoice(invoice) => {
+				let response =
+					if let Some(payment_id) =
+						self.pending_outbound_payments.awaiting_invoice_for_offer(&invoice.offer_bytes()) {
+							self.send_payment_for_static_invoice(&invoice, payment_id)
+								.map_err(|e| {
+									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+									InvoiceError::from_string(format!("{:?}", e))
+								})
+						} else {
+							Err(InvoiceError::from_string("Unknown static invoice".to_string()))
+						};
 				match (responder, response) {
 					(Some(responder), Err(e)) => responder.respond(OffersMessage::InvoiceError(e)),
 					(None, Err(_)) => {
@@ -12308,6 +12431,8 @@ where
 			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
+
+			static_invoices: Mutex::new(HashMap::new()),
 
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 

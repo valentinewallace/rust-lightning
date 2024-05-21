@@ -20,6 +20,7 @@ use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSourc
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
@@ -51,6 +52,9 @@ pub(crate) enum PendingOutboundPayment {
 		expiration: StaleExpiration,
 		retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>,
+		offer_bytes: Option<Vec<u8>>,
+		amount_msat: Option<u64>,
+		payment_id: Option<PaymentId>,
 	},
 	InvoiceReceived {
 		payment_hash: PaymentHash,
@@ -58,6 +62,7 @@ pub(crate) enum PendingOutboundPayment {
 		// Note this field is currently just replicated from AwaitingInvoice but not actually
 		// used anywhere.
 		max_total_routing_fee_msat: Option<u64>,
+		keysend_preimage: Option<PaymentPreimage>,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -799,6 +804,7 @@ impl OutboundPayments {
 						payment_hash,
 						retry_strategy: *retry_strategy,
 						max_total_routing_fee_msat,
+						keysend_preimage: None,
 					};
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
@@ -808,6 +814,61 @@ impl OutboundPayments {
 
 		let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
 		let amount_msat = invoice.amount_msats();
+		let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+		if let Some(max_fee_msat) = max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+
+		self.find_route_and_send_payment(
+			payment_hash, payment_id, route_params, router, first_hops, &inflight_htlcs,
+			entropy_source, node_signer, best_block_height, logger, pending_events,
+			&send_payment_along_path
+		);
+
+		Ok(())
+	}
+
+	pub(super) fn send_payment_for_static_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
+		let max_total_routing_fee_msat;
+		let amount_msat = match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice {
+					retry_strategy, max_total_routing_fee_msat: max_total_fee, amount_msat, ..
+				} => {
+					let amount_msat = *amount_msat;
+					max_total_routing_fee_msat = *max_total_fee;
+					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
+						payment_hash,
+						retry_strategy: *retry_strategy,
+						max_total_routing_fee_msat,
+						keysend_preimage: Some(preimage),
+					};
+					amount_msat.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => {
+				return Err(Bolt12PaymentError::UnexpectedInvoice)
+			},
+		};
+
+		let pay_params = PaymentParameters::from_static_invoice(&invoice);
 		let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
 		if let Some(max_fee_msat) = max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
@@ -973,13 +1034,13 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		#[cfg(feature = "std")] {
-			if has_expired(&route_params) {
-				log_error!(logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
-				self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);
-				return
-			}
-		}
+		// #[cfg(feature = "std")] {
+		//   if has_expired(&route_params) {
+		//     log_error!(logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
+		//     self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);
+		//     return
+		//   }
+		// }
 
 		let mut route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
@@ -1075,7 +1136,9 @@ impl OutboundPayments {
 							log_error!(logger, "Payment not yet sent");
 							return
 						},
-						PendingOutboundPayment::InvoiceReceived { payment_hash, retry_strategy, .. } => {
+						PendingOutboundPayment::InvoiceReceived {
+							payment_hash, retry_strategy, keysend_preimage, ..
+						} => {
 							let total_amount = route_params.final_value_msat;
 							let recipient_onion = RecipientOnionFields {
 								payment_secret: None,
@@ -1084,12 +1147,13 @@ impl OutboundPayments {
 							};
 							let retry_strategy = Some(*retry_strategy);
 							let payment_params = Some(route_params.payment_params.clone());
+							let keysend_preimage = *keysend_preimage;
 							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
 								*payment_hash, recipient_onion.clone(), None, &route,
 								retry_strategy, payment_params, entropy_source, best_block_height
 							);
 							*payment.into_mut() = retryable_payment;
-							(total_amount, recipient_onion, None, onion_session_privs)
+							(total_amount, recipient_onion, keysend_preimage, onion_session_privs)
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
 							log_error!(logger, "Payment already completed");
@@ -1309,7 +1373,7 @@ impl OutboundPayments {
 
 	pub(super) fn add_new_awaiting_invoice(
 		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
-		max_total_routing_fee_msat: Option<u64>
+		max_total_routing_fee_msat: Option<u64>, amount_msat: Option<u64>, offer_bytes: Option<Vec<u8>>,
 	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
@@ -1319,11 +1383,26 @@ impl OutboundPayments {
 					expiration,
 					retry_strategy,
 					max_total_routing_fee_msat,
+					offer_bytes,
+					amount_msat,
+					payment_id: Some(payment_id),
 				});
 
 				Ok(())
 			},
 		}
+	}
+
+	pub(super) fn awaiting_invoice_for_offer(&self, offer_bytes: &Vec<u8>) -> Option<PaymentId> {
+		let pending_outbounds = self.pending_outbound_payments.lock().unwrap();
+		for outbound in pending_outbounds.values() {
+			if let PendingOutboundPayment::AwaitingInvoice {
+				offer_bytes: Some(stored_offer), payment_id, ..
+			} = outbound {
+				if stored_offer == offer_bytes { return *payment_id }
+			}
+		}
+		None
 	}
 
 	fn pay_route_internal<NS: Deref, F>(
@@ -1838,11 +1917,15 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(5, AwaitingInvoice) => {
 		(0, expiration, required),
+		(1, offer_bytes, option),
 		(2, retry_strategy, required),
+		(3, amount_msat, option),
 		(4, max_total_routing_fee_msat, option),
+		(5, payment_id, option),
 	},
 	(7, InvoiceReceived) => {
 		(0, payment_hash, required),
+		(1, keysend_preimage, option),
 		(2, retry_strategy, required),
 		(4, max_total_routing_fee_msat, option),
 	},
@@ -2077,7 +2160,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None,
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2103,14 +2186,14 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_err()
 		);
 	}
@@ -2126,7 +2209,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2152,14 +2235,14 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_err()
 		);
 	}
@@ -2174,7 +2257,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2207,7 +2290,7 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None, None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2269,7 +2352,7 @@ mod tests {
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
 				payment_id, expiration, Retry::Attempts(0),
-				Some(invoice.amount_msats() / 100 + 50_000)
+				Some(invoice.amount_msats() / 100 + 50_000), None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2366,7 +2449,7 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), Some(1234)
+				payment_id, expiration, Retry::Attempts(0), Some(1234), None, None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());

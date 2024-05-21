@@ -536,7 +536,7 @@ for OfferBuilder<'a, DerivedMetadata, secp256k1::All> {
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
-	pub(super) bytes: Vec<u8>,
+	pub(crate) bytes: Vec<u8>,
 	pub(super) contents: OfferContents,
 	id: OfferId,
 }
@@ -663,6 +663,12 @@ impl Offer {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn expects_quantity(&self) -> bool {
 		self.contents.expects_quantity()
+	}
+
+	pub(crate) fn verify<T: secp256k1::Signing>(
+		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<KeyPair>), ()> {
+		self.contents.verify(&self.bytes, key, secp_ctx)
 	}
 }
 
@@ -907,7 +913,7 @@ impl OfferContents {
 	}
 
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
-	pub(super) fn verify<T: secp256k1::Signing>(
+	pub(crate) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<KeyPair>), ()> {
 		match self.metadata() {

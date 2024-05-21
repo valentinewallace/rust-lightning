@@ -19,9 +19,9 @@ use crate::offers::invoice::{
 };
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::merkle::{
-	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash,
+	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
 };
-use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, Quantity};
+use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, OFFER_TYPES, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::util::ser::{Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -32,7 +32,7 @@ use bitcoin::secp256k1::{self, KeyPair, PublicKey, Secp256k1};
 use core::time::Duration;
 
 /// Static invoices default to expiring after 24 hours.
-const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(3600 * 24);
+pub(crate) const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(3600 * 24);
 
 /// Builds a [`StaticInvoice`] from an [`Offer`].
 ///
@@ -243,6 +243,7 @@ where
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+#[derive(Clone, Debug)]
 pub struct StaticInvoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -253,6 +254,7 @@ pub struct StaticInvoice {
 /// The contents of a [`StaticInvoice`] for responding to an [`Offer`].
 ///
 /// [`Offer`]: crate::offers::offer::Offer
+#[derive(Clone, Debug)]
 struct InvoiceContents {
 	offer: OfferContents,
 	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
@@ -275,6 +277,18 @@ impl StaticInvoice {
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
+	}
+
+	pub(crate) fn offer_bytes(&self) -> Vec<u8> {
+		let tlv_stream = TlvStream::new(&self.bytes);
+		let mut bytes = Vec::new();
+
+		for record in tlv_stream.clone().range(OFFER_TYPES) {
+			for byte in record.record_bytes {
+				byte.write(&mut bytes).unwrap();
+			}
+		}
+		bytes
 	}
 }
 
