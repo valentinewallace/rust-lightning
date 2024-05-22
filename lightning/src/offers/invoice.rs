@@ -135,7 +135,7 @@ use std::time::SystemTime;
 
 pub(crate) const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
-/// Tag for the hash function used when signing a [`Bolt12Invoice`]'s merkle root.
+/// Tag for the hash function used when signing a BOLT 12 invoice's merkle root.
 pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
 
 /// Builds a [`Bolt12Invoice`] from either:
