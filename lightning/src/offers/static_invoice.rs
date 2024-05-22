@@ -92,7 +92,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 		Ok(invoice)
 	}
 
-	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, S, mut);
+	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, S, StaticInvoice, mut);
 }
 
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
@@ -199,7 +199,7 @@ impl UnsignedStaticInvoice {
 		})
 	}
 
-	invoice_accessors_common!(self, self.contents);
+	invoice_accessors_common!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 }
 
@@ -264,7 +264,7 @@ struct InvoiceContents {
 }
 
 impl StaticInvoice {
-	invoice_accessors_common!(self, self.contents);
+	invoice_accessors_common!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`StaticInvoice::signing_pubkey`].
