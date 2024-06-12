@@ -224,8 +224,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// publicly reachable nodes. Taken from [`Offer::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn offer_message_paths(&$self) -> &[BlindedPath] {
-		$contents.offer_message_paths()
+	pub fn request_paths(&$self) -> &[BlindedPath] {
+		$contents.request_paths()
 	}
 
 	/// Paths to the recipient for indicating that a held HTLC is available to claim when they next
@@ -395,7 +395,7 @@ impl InvoiceContents {
 		self.offer.issuer()
 	}
 
-	fn offer_message_paths(&self) -> &[BlindedPath] {
+	fn request_paths(&self) -> &[BlindedPath] {
 		self.offer.paths()
 	}
 
@@ -678,7 +678,7 @@ mod tests {
 		assert_eq!(invoice.description(), None);
 		assert_eq!(invoice.offer_features(), &OfferFeatures::empty());
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.offer_message_paths(), &[blinded_path()]);
+		assert_eq!(invoice.request_paths(), &[blinded_path()]);
 		assert_eq!(invoice.message_paths(), &[blinded_path()]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), Quantity::One);
@@ -1137,8 +1137,8 @@ mod tests {
 	#[test]
 	fn fails_parsing_invoice_with_invalid_offer_fields() {
 		// Error if the offer is missing paths.
-		let missing_offer_paths_invoice = invoice();
-		let mut tlv_stream = missing_offer_paths_invoice.as_tlv_stream();
+		let missing_request_paths_invoice = invoice();
+		let mut tlv_stream = missing_request_paths_invoice.as_tlv_stream();
 		tlv_stream.0.paths = None;
 		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
 			Ok(_) => panic!("expected error"),

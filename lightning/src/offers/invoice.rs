@@ -690,8 +690,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::paths`] or [`Refund::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn message_paths(&$self) -> &[BlindedPath] {
-		$contents.message_paths()
+	pub fn request_paths(&$self) -> &[BlindedPath] {
+		$contents.request_paths()
 	}
 
 	/// The quantity of items supported.
@@ -726,9 +726,9 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request or to send an invoice for a
-	/// refund in case there are no [`message_paths`].
+	/// refund in case there are no [`request_paths`].
 	///
-	/// [`message_paths`]: Self::message_paths
+	/// [`request_paths`]: Self::request_paths
 	pub fn payer_id(&$self) -> PublicKey {
 		$contents.payer_id()
 	}
@@ -891,7 +891,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
+	fn request_paths(&self) -> &[BlindedPath] {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.paths()
@@ -1475,7 +1475,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.description(), Some(PrintableString("")));
 		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(unsigned_invoice.absolute_expiry(), None);
-		assert_eq!(unsigned_invoice.message_paths(), &[]);
+		assert_eq!(unsigned_invoice.request_paths(), &[]);
 		assert_eq!(unsigned_invoice.issuer(), None);
 		assert_eq!(unsigned_invoice.supported_quantity(), Some(Quantity::One));
 		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
@@ -1517,7 +1517,7 @@ mod tests {
 		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.request_paths(), &[]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), Some(Quantity::One));
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
@@ -1614,7 +1614,7 @@ mod tests {
 		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), None);
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.request_paths(), &[]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), None);
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
