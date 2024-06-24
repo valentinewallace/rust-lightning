@@ -198,6 +198,7 @@ impl PaymentPurpose {
 					payment_context: context,
 				}
 			},
+			Some(PaymentContext::AsyncBolt12Offer(_context)) => todo!()
 		}
 	}
 }
