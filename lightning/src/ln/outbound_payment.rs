@@ -1315,19 +1315,23 @@ impl OutboundPayments {
 							debug_assert!(false);
 							return
 						},
-						PendingOutboundPayment::StaticInvoiceReceived {
-							payment_hash, keysend_preimage, retry_strategy, ..
-						} => {
-							let keysend_preimage = Some(*keysend_preimage);
+						PendingOutboundPayment::StaticInvoiceReceived { .. } => {
+							let (payment_hash, keysend_preimage, retry_strategy) =
+								if let PendingOutboundPayment::StaticInvoiceReceived {
+									payment_hash, keysend_preimage, retry_strategy, ..
+								} = payment.remove() {
+									(payment_hash, keysend_preimage, retry_strategy)
+								} else { debug_assert!(false); return };
+							let keysend_preimage = Some(keysend_preimage);
 							let total_amount = route_params.final_value_msat;
 							let recipient_onion = RecipientOnionFields::spontaneous_empty();
-							let retry_strategy = Some(*retry_strategy);
+							let retry_strategy = Some(retry_strategy);
 							let payment_params = Some(route_params.payment_params.clone());
 							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-								*payment_hash, recipient_onion.clone(), keysend_preimage, &route,
-								retry_strategy, payment_params, entropy_source, best_block_height
+								payment_hash, recipient_onion.clone(), keysend_preimage, &route, retry_strategy,
+								payment_params, entropy_source, best_block_height
 							);
-							*payment.into_mut() = retryable_payment;
+							outbounds.insert(payment_id, retryable_payment);
 							(total_amount, recipient_onion, keysend_preimage, onion_session_privs)
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
