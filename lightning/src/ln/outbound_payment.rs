@@ -86,6 +86,7 @@ pub(crate) enum PendingOutboundPayment {
 		payment_secret: Option<PaymentSecret>,
 		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
+		invoice_request: Option<InvoiceRequest>,
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
@@ -892,7 +893,7 @@ impl OutboundPayments {
 
 		let payment_params = Some(route_params.payment_params.clone());
 		let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-			payment_hash, recipient_onion.clone(), None, &route,
+			payment_hash, recipient_onion.clone(), None, None, &route,
 			retry_strategy, payment_params, entropy_source, best_block_height
 		);
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
@@ -1328,8 +1329,9 @@ impl OutboundPayments {
 							let retry_strategy = Some(retry_strategy);
 							let payment_params = Some(route_params.payment_params.clone());
 							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-								payment_hash, recipient_onion.clone(), keysend_preimage, &route, retry_strategy,
-								payment_params, entropy_source, best_block_height
+								payment_hash, recipient_onion.clone(), keysend_preimage,
+								Some(invoice_request.clone()), &route, retry_strategy, payment_params,
+								entropy_source, best_block_height
 							);
 							outbounds.insert(payment_id, retryable_payment);
 							(total_amount, recipient_onion, keysend_preimage, Some(invoice_request),
@@ -1505,7 +1507,7 @@ impl OutboundPayments {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
 				let (payment, onion_session_privs) = self.create_pending_payment(
-					payment_hash, recipient_onion, keysend_preimage, route, retry_strategy,
+					payment_hash, recipient_onion, keysend_preimage, None, route, retry_strategy,
 					payment_params, entropy_source, best_block_height
 				);
 				entry.insert(payment);
@@ -1516,8 +1518,9 @@ impl OutboundPayments {
 
 	fn create_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		keysend_preimage: Option<PaymentPreimage>, route: &Route, retry_strategy: Option<Retry>,
-		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
+		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
+		route: &Route, retry_strategy: Option<Retry>, payment_params: Option<PaymentParameters>,
+		entropy_source: &ES, best_block_height: u32
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>)
 	where
 		ES::Target: EntropySource,
@@ -1538,6 +1541,7 @@ impl OutboundPayments {
 			payment_secret: recipient_onion.payment_secret,
 			payment_metadata: recipient_onion.payment_metadata,
 			keysend_preimage,
+			invoice_request,
 			custom_tlvs: recipient_onion.custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
@@ -2095,6 +2099,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(9, custom_tlvs, optional_vec),
 		(10, starting_block_height, required),
 		(11, remaining_max_total_routing_fee_msat, option),
+		(13, invoice_request, option),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},
