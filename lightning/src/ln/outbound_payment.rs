@@ -974,7 +974,7 @@ impl OutboundPayments {
 
 					if let Err(()) = onion_utils::set_max_path_length(
 						&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage),
-						best_block_height
+						invoice_request.as_ref(), best_block_height
 					) {
 						abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
@@ -1122,7 +1122,7 @@ impl OutboundPayments {
 		}
 
 		onion_utils::set_max_path_length(
-			route_params, recipient_onion, keysend_preimage, best_block_height
+			route_params, recipient_onion, keysend_preimage, None, best_block_height
 		).map_err(|()| RetryableSendFailure::OnionPacketSizeExceeded)?;
 
 		let mut route = router.find_route_with_id(
