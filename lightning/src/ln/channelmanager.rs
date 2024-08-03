@@ -5783,11 +5783,17 @@ where
 														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												}
-												let purpose = events::PaymentPurpose::from_parts(
+												let purpose = match events::PaymentPurpose::from_parts(
 													payment_preimage,
 													payment_data.payment_secret,
 													payment_context,
-												);
+													None,
+												) {
+													Ok(purpose) => purpose,
+													Err(()) => {
+														fail_htlc!(claimable_htlc, payment_hash);
+													}
+												};
 												check_total_value!(purpose);
 											},
 											OnionPayload::Spontaneous(preimage) => {
@@ -5810,11 +5816,17 @@ where
 												&payment_hash, payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
-											let purpose = events::PaymentPurpose::from_parts(
+											let purpose = match events::PaymentPurpose::from_parts(
 												inbound_payment.get().payment_preimage,
 												payment_data.payment_secret,
 												payment_context,
-											);
+												None,
+											) {
+												Ok(purpose) => purpose,
+												Err(()) => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											};
 											let payment_claimable_generated = check_total_value!(purpose);
 											if payment_claimable_generated {
 												inbound_payment.remove_entry();
