@@ -65,7 +65,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutb
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
+use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -217,6 +217,13 @@ pub enum PendingHTLCRouting {
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
+		/// The [`InvoiceRequest`] associated with the [`Offer`] corresponding to this payment.
+		invoice_request: Option<InvoiceRequest>,
+		/// The context of the payment included by the recipient in a blinded path, or `None` if a
+		/// blinded path was not used.
+		///
+		/// Used in part to determine the [`events::PaymentPurpose`].
+		payment_context: Option<PaymentContext>,
 	},
 }
 
@@ -5586,8 +5593,8 @@ where
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
-										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _
+										payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry,
+										custom_tlvs, invoice_request: _, payment_context: _, requires_blinded_error: _
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
@@ -11243,6 +11250,8 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
+		(7, invoice_request, option),
+		(9, payment_context, option),
 	},
 );
 

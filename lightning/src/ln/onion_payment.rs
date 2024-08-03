@@ -135,18 +135,18 @@ pub(super) fn create_recv_pending_htlc_info(
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
-		payment_metadata, payment_context, requires_blinded_error
+		payment_metadata, payment_context, requires_blinded_error, invoice_request
 	) = match hop_data {
 		msgs::InboundOnionPayload::Receive {
 			payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 			cltv_expiry_height, payment_metadata, ..
 		} =>
 			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
-			 cltv_expiry_height, payment_metadata, None, false),
+			 cltv_expiry_height, payment_metadata, None, false, None),
 		msgs::InboundOnionPayload::BlindedReceive {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-			custom_tlvs, invoice_request: _
+			custom_tlvs, invoice_request
 		} => {
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
@@ -161,7 +161,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
 			(Some(payment_data), keysend_preimage, custom_tlvs,
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
-			 intro_node_blinding_point.is_none())
+			 intro_node_blinding_point.is_none(), invoice_request)
 		}
 		msgs::InboundOnionPayload::Forward { .. } => {
 			return Err(InboundHTLCErr {
@@ -241,6 +241,8 @@ pub(super) fn create_recv_pending_htlc_info(
 			incoming_cltv_expiry: onion_cltv_expiry,
 			custom_tlvs,
 			requires_blinded_error,
+			invoice_request,
+			payment_context,
 		}
 	} else if let Some(data) = payment_data {
 		PendingHTLCRouting::Receive {
