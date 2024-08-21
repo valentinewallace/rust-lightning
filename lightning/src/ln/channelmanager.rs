@@ -44,8 +44,6 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithCha
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
-// Since this struct is returned in `list_channels` methods, expose it here in case users want to
-// construct one themselves.
 use crate::ln::inbound_payment;
 use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
