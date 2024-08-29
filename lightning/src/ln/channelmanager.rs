@@ -10856,6 +10856,35 @@ where
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
+		macro_rules! handle_pay_invoice_res {
+			($res: expr, $invoice: expr, $logger: expr) => {{
+				let error = match $res {
+					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+						log_trace!(
+							$logger, "Invoice requires unknown features: {:?}",
+							$invoice.invoice_features()
+						);
+						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!($logger, "Failed paying invoice: {:?}", e);
+						InvoiceError::from_string(format!("{:?}", e))
+					},
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => return None,
+				};
+
+				match responder {
+					Some(responder) => return Some((OffersMessage::InvoiceError(error), responder.respond())),
+					None => {
+						log_trace!($logger, "No reply path to send error: {:?}", error);
+						return None
+					},
+				}
+			}}
+		}
+
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
 				let responder = match responder {
@@ -10977,32 +11006,8 @@ where
 					return None;
 				}
 
-				let error = match self.send_payment_for_verified_bolt12_invoice(
-					&invoice, payment_id,
-				) {
-					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
-						log_trace!(
-							logger, "Invoice requires unknown features: {:?}",
-							invoice.invoice_features()
-						);
-						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
-					},
-					Err(Bolt12PaymentError::SendingFailed(e)) => {
-						log_trace!(logger, "Failed paying invoice: {:?}", e);
-						InvoiceError::from_string(format!("{:?}", e))
-					},
-					Err(Bolt12PaymentError::UnexpectedInvoice)
-						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return None,
-				};
-
-				match responder {
-					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
-					None => {
-						log_trace!(logger, "No reply path to send error: {:?}", error);
-						None
-					},
-				}
+				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
+				handle_pay_invoice_res!(res, invoice, logger);
 			},
 			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => {
@@ -11010,30 +11015,8 @@ where
 					Some(OffersContext::OutboundPayment { payment_id, nonce: _, hmac: _ }) => payment_id,
 					_ => return None
 				};
-				// TODO: DRY this with the above regular invoice error handling
-				let error = match self.initiate_async_payment(&invoice, payment_id) {
-					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
-						log_trace!(
-							self.logger, "Invoice requires unknown features: {:?}",
-							invoice.invoice_features()
-						);
-						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
-					},
-					Err(Bolt12PaymentError::SendingFailed(e)) => {
-						log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-						InvoiceError::from_string(format!("{:?}", e))
-					},
-					Err(Bolt12PaymentError::UnexpectedInvoice)
-						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return None,
-				};
-				match responder {
-					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
-					None => {
-						log_trace!(self.logger, "No reply path to send error: {:?}", error);
-						None
-					},
-				}
+				let res = self.initiate_async_payment(&invoice, payment_id);
+				handle_pay_invoice_res!(res, invoice, self.logger);
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
