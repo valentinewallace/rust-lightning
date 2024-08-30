@@ -99,6 +99,7 @@ enum Method {
 	UserPaymentHash = 1,
 	LdkPaymentHashCustomFinalCltv = 2,
 	UserPaymentHashCustomFinalCltv = 3,
+	AsyncPayment = 4,
 }
 
 impl Method {
@@ -108,6 +109,7 @@ impl Method {
 			bits if bits == Method::UserPaymentHash as u8 => Ok(Method::UserPaymentHash),
 			bits if bits == Method::LdkPaymentHashCustomFinalCltv as u8 => Ok(Method::LdkPaymentHashCustomFinalCltv),
 			bits if bits == Method::UserPaymentHashCustomFinalCltv as u8 => Ok(Method::UserPaymentHashCustomFinalCltv),
+			bits if bits == Method::AsyncPayment as u8 => Ok(Method::AsyncPayment),
 			unknown => Err(unknown),
 		}
 	}
@@ -179,6 +181,27 @@ pub fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 	hmac.input(&metadata_bytes);
 	hmac.input(&payment_hash.0);
+	let hmac_bytes = Hmac::from_engine(hmac).to_byte_array();
+
+	let mut iv_bytes = [0 as u8; IV_LEN];
+	iv_bytes.copy_from_slice(&hmac_bytes[..IV_LEN]);
+
+	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
+}
+
+#[cfg(async_payments)]
+pub(super) fn create_for_static_invoice(
+	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
+	current_time: u64, min_final_cltv_expiry_delta: Option<u16>, offer_id: OfferId
+) -> Result<PaymentSecret, ()> {
+	let metadata_bytes = construct_metadata_bytes(
+		min_value_msat, Method::AsyncPayment, invoice_expiry_delta_secs, current_time,
+		min_final_cltv_expiry_delta
+	)?;
+
+	let mut hmac = HmacEngine::<Sha256>::new(&keys.offers_base_key);
+	hmac.input(&metadata_bytes);
+	hmac.input(&offer_id.0);
 	let hmac_bytes = Hmac::from_engine(hmac).to_byte_array();
 
 	let mut iv_bytes = [0 as u8; IV_LEN];
@@ -317,6 +340,16 @@ pub(super) fn verify<L: Deref>(
 				}
 			}
 		},
+		Ok(Method::AsyncPayment) => {
+			let offer_id = offer_id.ok_or(())?;
+			let mut hmac = HmacEngine::<Sha256>::new(&keys.offers_base_key);
+			hmac.input(&metadata_bytes[..]);
+			hmac.input(&offer_id.0);
+			if !fixed_time_eq(&iv_bytes, &Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0) {
+				log_trace!(logger, "Failing async payment HTLC with sender-generated payment_hash {}: unexpected payment_secret", &payment_hash);
+				return Err(())
+			}
+		},
 		Err(unknown_bits) => {
 			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", &payment_hash, unknown_bits);
 			return Err(());
@@ -361,6 +394,9 @@ pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: Pa
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => Err(APIError::APIMisuseError {
 			err: "Expected payment type to be LdkPaymentHash, instead got UserPaymentHash".to_string()
+		}),
+		Ok(Method::AsyncPayment) => Err(APIError::APIMisuseError {
+			err: "Can't extract payment preimage for payments to static invoices".to_string()
 		}),
 		Err(other) => Err(APIError::APIMisuseError { err: format!("Unknown payment type: {}", other) }),
 	}
