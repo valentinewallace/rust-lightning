@@ -11125,7 +11125,14 @@ where
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		None
+		#[cfg(async_payments)] {
+			return _responder.map(|responder| {
+				let message = ReleaseHeldHtlc { payment_release_secret: _message.payment_release_secret };
+				(message, responder.respond())
+			})
+		}
+		#[cfg(not(async_payments))]
+		return None
 	}
 
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
