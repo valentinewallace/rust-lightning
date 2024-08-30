@@ -5766,7 +5766,7 @@ where
 										match claimable_htlc.onion_payload {
 											OnionPayload::Invoice { .. } => {
 												let payment_data = payment_data.unwrap();
-												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
+												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, None, &self.inbound_payment_key, &self.logger) {
 													Ok(result) => result,
 													Err(()) => {
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
@@ -12662,7 +12662,7 @@ where
 							events::PaymentPurpose::Bolt11InvoicePayment {
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
 									Some(inbound_payment) => inbound_payment.payment_preimage,
-									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
+									None => match inbound_payment::verify(payment_hash, &hop_data, 0, None, &expanded_inbound_key, &args.logger) {
 										Ok((payment_preimage, _)) => payment_preimage,
 										Err(()) => {
 											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
@@ -13521,7 +13521,7 @@ mod tests {
 		// payment verification fails as expected.
 		let mut bad_payment_hash = payment_hash.clone();
 		bad_payment_hash.0[0] += 1;
-		match inbound_payment::verify(bad_payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
+		match inbound_payment::verify(bad_payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, None, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
 			Ok(_) => panic!("Unexpected ok"),
 			Err(()) => {
 				nodes[0].logger.assert_log_contains("lightning::ln::inbound_payment", "Failing HTLC with user-generated payment_hash", 1);
@@ -13529,7 +13529,7 @@ mod tests {
 		}
 
 		// Check that using the original payment hash succeeds.
-		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
+		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, None, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 
 	#[test]

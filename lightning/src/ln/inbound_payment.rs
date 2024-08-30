@@ -20,6 +20,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferId;
 use crate::sign::{KeyMaterial, EntropySource};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
@@ -277,9 +278,10 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 /// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 /// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
-	highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L) -> Result<
-	(Option<PaymentPreimage>, Option<u16>), ()>
+pub(super) fn verify<L: Deref>(
+	payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData, highest_seen_timestamp: u64,
+	offer_id: Option<OfferId>, keys: &ExpandedKey, logger: &L
+) -> Result< (Option<PaymentPreimage>, Option<u16>), ()>
 	where L::Target: Logger
 {
 	let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_data.payment_secret, keys);
