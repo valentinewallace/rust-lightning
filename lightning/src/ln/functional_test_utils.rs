@@ -2658,7 +2658,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 							},
 							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
-								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								if let Some(secret) = our_payment_secret {
+									assert_eq!(secret, *payment_secret);
+								}
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {

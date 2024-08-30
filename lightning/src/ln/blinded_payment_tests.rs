@@ -35,6 +35,15 @@ use crate::util::ser::WithoutLength;
 use crate::util::test_utils;
 use lightning_invoice::RawBolt11Invoice;
 
+#[cfg(async_payments)]
+use {
+	crate::blinded_path::BlindedHop,
+	crate::blinded_path::message::{BlindedMessagePath, OffersContext},
+	crate::ln::msgs::OnionMessageHandler,
+	crate::ln::types::PaymentPreimage,
+	crate::onion_message::offers::{OffersMessage, OffersMessageHandler},
+};
+
 fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
@@ -1590,4 +1599,69 @@ fn route_blinding_spec_test_vector() {
 		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
 		_ => panic!("Unexpected error")
 	}
+}
+
+#[cfg(async_payments)]
+#[test]
+fn async_receive_flow_success() {
+	// Test that an always-online sender can successfully pay an async receiver.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let mut mpp_keysend_config = test_default_channel_config();
+	mpp_keysend_config.accept_mpp_keysend = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), Some(mpp_keysend_config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let dummy_blinded_path_to_always_online_node = BlindedMessagePath::from_raw(
+		nodes[1].node.get_our_node_id(), test_utils::pubkey(42),
+		vec![BlindedHop { blinded_node_id: test_utils::pubkey(42), encrypted_payload: vec![42; 32] }]
+	);
+	let (offer_builder, nonce) = nodes[2].node.create_async_receive_offer_builder(vec![dummy_blinded_path_to_always_online_node]).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let static_invoice = nodes[2].node.create_static_invoice_builder_for_async_receive_offer(&offer, nonce, None).unwrap().build_and_sign(&secp_ctx).unwrap();
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None).unwrap();
+	let _invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead just provide the invoice directly to the payer.
+	let keysend_preimage = PaymentPreimage([42; 32]);
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(keysend_preimage.0);
+	if nodes[0].node.handle_message(
+		OffersMessage::StaticInvoice(static_invoice),
+		Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: None }), None
+	).is_some() { panic!() }
+
+	let held_htlc_available_om_0_1 = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	nodes[1].onion_messenger.handle_onion_message(&nodes[0].node.get_our_node_id(), &held_htlc_available_om_0_1);
+	let held_htlc_available_om_1_2 = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[2].node.get_our_node_id()).unwrap();
+	nodes[2].onion_messenger.handle_onion_message(&nodes[1].node.get_our_node_id(), &held_htlc_available_om_1_2);
+
+	let release_held_htlc_om_2_0 = nodes[2].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(&nodes[2].node.get_our_node_id(), &release_held_htlc_om_2_0);
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = if let MessageSendEvent::UpdateHTLCs {
+		updates: msgs::CommitmentUpdate { ref update_add_htlcs, .. }, ..
+	} = ev {
+		update_add_htlcs[0].payment_hash
+	} else { panic!() };
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_payment_preimage(keysend_preimage);
+	do_pass_along_path(args);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage)
+	);
 }
