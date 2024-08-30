@@ -24,6 +24,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentHash, onion_utils};
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferId;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -372,6 +373,11 @@ pub enum AsyncPaymentsContext {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_id: PaymentId
 	},
+	///
+	InboundPayment {
+		///
+		offer_id: OfferId
+	},
 }
 
 impl_writeable_tlv_based_enum!(MessageContext,
@@ -397,6 +403,9 @@ impl_writeable_tlv_based_enum!(OffersContext,
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
+	},
+	(1, InboundPayment) => {
+		(0, offer_id, required),
 	},
 );
 

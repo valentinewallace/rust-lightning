@@ -11130,7 +11130,10 @@ where
 
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
-			let AsyncPaymentsContext::OutboundPayment { payment_id } = _context;
+			let payment_id = match _context {
+				AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
+				_ => return
+			};
 			if let Err(e) = self.send_payment_for_static_invoice(payment_id, _message.payment_release_secret) {
 				log_trace!(
 					self.logger, "Failed to release held HTLC with payment id {} and release secret {:02x?}: {:?}",
