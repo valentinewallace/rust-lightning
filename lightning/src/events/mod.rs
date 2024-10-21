@@ -593,9 +593,9 @@ impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 	(4, RetriesExhausted) => {},
 	(5, InvoiceRequestRejected) => {},
 	(6, PaymentExpired) => {},
+	(7, BlindedPathCreationFailed) => {},
 	(8, RouteNotFound) => {},
 	(10, UnexpectedError) => {},
-	(12, BlindedPathCreationFailed) => {},
 );
 
 /// An Event which you should probably take some action in response to.
