@@ -949,20 +949,14 @@ impl OutboundPayments {
 		};
 
 		let payment_params = Some(route_params.payment_params.clone());
-		macro_rules! create_pending_payment {
-			($invreq_opt: expr) => {
-				self.create_pending_payment(
-					payment_hash, recipient_onion.clone(), keysend_preimage, $invreq_opt, &route,
-					Some(retry_strategy), payment_params, entropy_source, best_block_height
-				)
-			}
-		}
-
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let onion_session_privs = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
-					let (retryable_payment, onion_session_privs) = create_pending_payment!(None);
+					let (retryable_payment, onion_session_privs) = self.create_pending_payment(
+						payment_hash, recipient_onion.clone(), keysend_preimage, None, &route,
+						Some(retry_strategy), payment_params, entropy_source, best_block_height
+					);
 					*entry.into_mut() = retryable_payment;
 					onion_session_privs
 				},
@@ -970,7 +964,10 @@ impl OutboundPayments {
 					let invreq = if let PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } = entry.remove() {
 						invoice_request
 					} else { unreachable!() };
-					let (retryable_payment, onion_session_privs) = create_pending_payment!(Some(invreq));
+					let (retryable_payment, onion_session_privs) = self.create_pending_payment(
+						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), &route,
+						Some(retry_strategy), payment_params, entropy_source, best_block_height
+					);
 					outbounds.insert(payment_id, retryable_payment);
 					onion_session_privs
 				},
