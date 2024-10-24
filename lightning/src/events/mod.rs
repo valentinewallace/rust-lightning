@@ -567,6 +567,8 @@ pub enum PaymentFailureReason {
 	/// candidate routes beyond those.
 	///
 	/// Also used for [`BlindedPathCreationFailed`] when downgrading to versions prior to 0.0.124.
+	///
+	/// [`BlindedPathCreationFailed`]: Self::BlindedPathCreationFailed
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
