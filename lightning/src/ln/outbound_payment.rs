@@ -2268,9 +2268,8 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hex::FromHex;
 	use bitcoin::network::Network;
-	use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	use core::time::Duration;
 
@@ -2278,16 +2277,19 @@ mod tests {
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
-	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
+	use crate::offers::invoice_request::InvoiceRequest;
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::test_utils::*;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
+	use crate::sign::KeyMaterial;
 	use crate::sync::{Arc, Mutex, RwLock};
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
@@ -2833,26 +2835,18 @@ mod tests {
 	}
 
 	fn dummy_invoice_request() -> InvoiceRequest {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
-		let recipient_pubkey = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
-			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
-		};
-		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
-			Keypair::from_secret_key(&secp_ctx, &secret_key)
-		};
-		OfferBuilder::new(recipient_pubkey)
-			.description("test".into())
+		let payment_id = PaymentId([1; 32]);
+
+		OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
-			.build()
+			.build().unwrap()
+			.request_invoice_deriving_signing_pubkey(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
-			.build()
-			.unwrap()
-			.sign(|message: &UnsignedInvoiceRequest|
-				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.build_and_sign()
 			.unwrap()
 	}
 
