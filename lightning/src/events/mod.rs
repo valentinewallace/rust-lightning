@@ -565,6 +565,8 @@ pub enum PaymentFailureReason {
 	/// Note that this generally indicates that we've exhausted the available set of possible
 	/// routes - we tried the payment over a few routes but were not able to find any further
 	/// candidate routes beyond those.
+	///
+	/// Also used for [`BlindedPathCreationFailed`] when downgrading to versions prior to 0.0.124.
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
