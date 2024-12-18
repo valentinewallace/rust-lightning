@@ -240,13 +240,14 @@ fn build_trampoline_onion_payloads<'a>(
 		excess_final_cltv_expiry_delta: blinded_tail.excess_final_cltv_expiry_delta,
 	};
 
-	let (value_msat, cltv) = build_trampoline_onion_payloads_callback(
+	let (value_msat, cltv) = build_onion_payloads_callback(
 		path.trampoline_hops.iter(),
-		blinded_tail_with_hop_iter,
+		Some(blinded_tail_with_hop_iter),
 		total_msat,
 		recipient_onion,
 		starting_htlc_offset,
 		keysend_preimage,
+		None,
 		|action, payload| match action {
 			PayloadCallbackAction::PushBack => res.push(payload),
 			PayloadCallbackAction::PushFront => res.insert(0, payload),
@@ -377,6 +378,119 @@ pub(super) fn build_onion_payloads<'a>(
 	Ok((res, value_msat, cltv))
 }
 
+trait PathHop {
+	type HopId;
+	fn fee_msat(&self) -> u64;
+	fn cltv_expiry_delta(&self) -> u32;
+	fn hop_id(&self) -> Self::HopId;
+}
+impl<'a> PathHop for &'a RouteHop {
+	type HopId = u64; // scid
+	fn fee_msat(&self) -> u64 { self.fee_msat }
+	fn cltv_expiry_delta(&self) -> u32 { self.cltv_expiry_delta }
+	fn hop_id(&self) -> Self::HopId { self.short_channel_id }
+}
+impl<'a> PathHop for &'a TrampolineHop {
+	type HopId = PublicKey;
+	fn fee_msat(&self) -> u64 { self.fee_msat }
+	fn cltv_expiry_delta(&self) -> u32 { self.cltv_expiry_delta }
+	fn hop_id(&self) -> Self::HopId { self.pubkey }
+}
+trait OnionPayload<'a, 'b> {
+	type PathHopForId: PathHop + 'b;
+	fn new_forward(
+		hop_id: <<Self as OnionPayload<'a, 'b>>::PathHopForId as PathHop>::HopId, amt_to_forward: u64,
+		outgoing_cltv_value: u32) -> Self;
+	fn new_receive(
+		recipient_onion: &'a RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
+		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32
+	) -> Self;
+	fn new_blinded_forward(
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>
+	) -> Self;
+	fn new_blinded_receive(
+		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
+		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
+		custom_tlvs: &'a Vec<(u64, Vec<u8>)>
+	) -> Self;
+}
+impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
+	type PathHopForId = &'b RouteHop;
+	fn new_forward(short_channel_id: u64, amt_to_forward: u64, outgoing_cltv_value: u32) -> Self {
+		Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value }
+	}
+	fn new_receive(
+		recipient_onion: &'a RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
+		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32
+	) -> Self {
+		Self::Receive {
+			payment_data: recipient_onion.payment_secret.map(|payment_secret| {
+				msgs::FinalOnionHopData { payment_secret, total_msat }
+			}),
+			payment_metadata: recipient_onion.payment_metadata.as_ref(),
+			keysend_preimage,
+			custom_tlvs: &recipient_onion.custom_tlvs,
+			sender_intended_htlc_amt_msat,
+			cltv_expiry_height,
+		}
+	}
+	fn new_blinded_forward(
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>
+	) -> Self {
+		Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point }
+	}
+	fn new_blinded_receive(
+		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
+		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
+		custom_tlvs: &'a Vec<(u64, Vec<u8>)>
+	) -> Self {
+		Self::BlindedReceive {
+			sender_intended_htlc_amt_msat,
+			total_msat,
+			cltv_expiry_height,
+			encrypted_tlvs,
+			intro_node_blinding_point,
+			keysend_preimage,
+			invoice_request,
+			custom_tlvs,
+		}
+	}
+}
+impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
+	type PathHopForId = &'b TrampolineHop;
+	fn new_forward(outgoing_node_id: PublicKey, amt_to_forward: u64, outgoing_cltv_value: u32) -> Self {
+		Self::Forward { outgoing_node_id, amt_to_forward, outgoing_cltv_value }
+	}
+	fn new_receive(
+		_recipient_onion: &'a RecipientOnionFields, _keysend_preimage: Option<PaymentPreimage>,
+		_sender_intended_htlc_amt_msat: u64, _total_msat: u64, _cltv_expiry_height: u32
+	) -> Self {
+		todo!()
+	}
+	fn new_blinded_forward(
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>
+	) -> Self {
+		Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point }
+	}
+	fn new_blinded_receive(
+		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
+		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
+		keysend_preimage: Option<PaymentPreimage>, _invoice_request: Option<&'a InvoiceRequest>,
+		custom_tlvs: &'a Vec<(u64, Vec<u8>)>
+	) -> Self {
+		Self::BlindedReceive {
+			sender_intended_htlc_amt_msat,
+			total_msat,
+			cltv_expiry_height,
+			encrypted_tlvs,
+			intro_node_blinding_point,
+			keysend_preimage,
+			custom_tlvs,
+		}
+	}
+}
 struct BlindedTailHopIter<'a, I: Iterator<Item = &'a BlindedHop>> {
 	hops: I,
 	blinding_point: PublicKey,
@@ -387,28 +501,29 @@ enum PayloadCallbackAction {
 	PushBack,
 	PushFront,
 }
-fn build_onion_payloads_callback<'a, H, B, F>(
+fn build_onion_payloads_callback<'a, 'b, H, B, F, OP>(
 	hops: H, mut blinded_tail: Option<BlindedTailHopIter<'a, B>>, total_msat: u64,
 	recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
 	mut callback: F,
 ) -> Result<(u64, u32), APIError>
 where
-	H: DoubleEndedIterator<Item = &'a RouteHop>,
+	H: DoubleEndedIterator<Item = OP::PathHopForId>,
 	B: ExactSizeIterator<Item = &'a BlindedHop>,
-	F: FnMut(PayloadCallbackAction, msgs::OutboundOnionPayload<'a>),
+	F: FnMut(PayloadCallbackAction, OP),
+	OP: OnionPayload<'a, 'b>,
 {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
-	let mut last_short_channel_id = 0;
+	let mut last_hop_id = None;
 
 	for (idx, hop) in hops.rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
-		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
+		let value_msat = if cur_value_msat == 0 { hop.fee_msat() } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset {
-			hop.cltv_expiry_delta + starting_htlc_offset
+			hop.cltv_expiry_delta() + starting_htlc_offset
 		} else {
 			cur_cltv
 		};
@@ -428,59 +543,38 @@ where
 						cur_value_msat += final_value_msat;
 						callback(
 							PayloadCallbackAction::PushBack,
-							msgs::OutboundOnionPayload::BlindedReceive {
-								sender_intended_htlc_amt_msat: final_value_msat,
-								total_msat,
-								cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
-								encrypted_tlvs: &blinded_hop.encrypted_payload,
-								intro_node_blinding_point: blinding_point.take(),
-								keysend_preimage: *keysend_preimage,
-								invoice_request,
-								custom_tlvs: &recipient_onion.custom_tlvs,
-							},
+							OP::new_blinded_receive(
+								final_value_msat, total_msat, cur_cltv + excess_final_cltv_expiry_delta,
+								&blinded_hop.encrypted_payload, blinding_point.take(), *keysend_preimage,
+								invoice_request, &recipient_onion.custom_tlvs
+							)
 						);
 					} else {
 						callback(
 							PayloadCallbackAction::PushBack,
-							msgs::OutboundOnionPayload::BlindedForward {
-								encrypted_tlvs: &blinded_hop.encrypted_payload,
-								intro_node_blinding_point: blinding_point.take(),
-							},
+							OP::new_blinded_forward(&blinded_hop.encrypted_payload, blinding_point.take())
 						);
 					}
 				}
 			} else {
 				callback(
 					PayloadCallbackAction::PushBack,
-					msgs::OutboundOnionPayload::Receive {
-						payment_data: recipient_onion.payment_secret.map(|payment_secret| {
-							msgs::FinalOnionHopData { payment_secret, total_msat }
-						}),
-						payment_metadata: recipient_onion.payment_metadata.as_ref(),
-						keysend_preimage: *keysend_preimage,
-						custom_tlvs: &recipient_onion.custom_tlvs,
-						sender_intended_htlc_amt_msat: value_msat,
-						cltv_expiry_height: cltv,
-					},
+					OP::new_receive(&recipient_onion, *keysend_preimage, value_msat, total_msat, cltv)
 				);
 			}
 		} else {
-			let payload = msgs::OutboundOnionPayload::Forward {
-				short_channel_id: last_short_channel_id,
-				amt_to_forward: value_msat,
-				outgoing_cltv_value: cltv,
-			};
+			let payload = OP::new_forward(last_hop_id.unwrap(), value_msat, cltv);
 			callback(PayloadCallbackAction::PushFront, payload);
 		}
-		cur_value_msat += hop.fee_msat;
+		cur_value_msat += hop.fee_msat();
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
 		}
-		cur_cltv += hop.cltv_expiry_delta as u32;
+		cur_cltv += hop.cltv_expiry_delta() as u32;
 		if cur_cltv >= 500000000 {
 			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
 		}
-		last_short_channel_id = hop.short_channel_id;
+		last_hop_id = Some(hop.hop_id());
 	}
 	Ok((cur_value_msat, cur_cltv))
 }
@@ -538,7 +632,7 @@ pub(crate) fn set_max_path_length(
 		best_block_height,
 		&keysend_preimage,
 		invoice_request,
-		|_, payload| {
+		|_, payload: msgs::OutboundOnionPayload| {
 			num_reserved_bytes = num_reserved_bytes
 				.saturating_add(payload.serialized_length())
 				.saturating_add(PAYLOAD_HMAC_LEN);
