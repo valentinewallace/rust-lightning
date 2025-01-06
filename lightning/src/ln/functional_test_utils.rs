@@ -2491,6 +2491,7 @@ pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
+	pub(crate) retry_expected: bool,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -2500,6 +2501,7 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_blamed_scid: None,
 			expected_blamed_chan_closed: None,
 			expected_mpp_parts_remain: false,
+			retry_expected: false,
 		}
 	}
 	pub fn mpp_parts_remain(mut self) -> Self {
@@ -2516,6 +2518,10 @@ impl<'a> PaymentFailedConditions<'a> {
 	}
 	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
 		self.expected_htlc_error_data = Some((code, data));
+		self
+	}
+	pub fn retry_expected(mut self) -> Self {
+		self.retry_expected = true;
 		self
 	}
 }
@@ -2583,7 +2589,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 		},
 		_ => panic!("Unexpected event"),
 	};
-	if !conditions.expected_mpp_parts_remain {
+	if !conditions.expected_mpp_parts_remain && !conditions.retry_expected {
 		match &payment_failed_events[1] {
 			Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
 				assert_eq!(*payment_hash, Some(expected_payment_hash), "unexpected second payment_hash");
@@ -2594,6 +2600,11 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 					PaymentFailureReason::RetriesExhausted
 				});
 			}
+			_ => panic!("Unexpected second event"),
+		}
+	} else if conditions.retry_expected {
+		match &payment_failed_events[1] {
+			Event::PendingHTLCsForwardable { .. } => {},
 			_ => panic!("Unexpected second event"),
 		}
 	}
@@ -2744,8 +2755,12 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
-								assert_eq!(expected_preimage, *payment_preimage);
-								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								if let Some(preimage) = expected_preimage {
+									assert_eq!(preimage, payment_preimage.unwrap());
+								}
+								if let Some(secret) = our_payment_secret {
+									assert_eq!(secret, *payment_secret);
+								}
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {

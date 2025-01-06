@@ -107,13 +107,17 @@ pub fn get_blinded_route_parameters(
 
 pub fn fail_blinded_htlc_backwards(
 	payment_hash: PaymentHash, intro_node_idx: usize, nodes: &[&Node],
+	retry_expected: bool
 ) {
 	for i in (0..nodes.len()).rev() {
 		match i {
 			0 => {
 				let mut payment_failed_conditions = PaymentFailedConditions::new()
 					.expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]);
-					expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+				if retry_expected {
+					payment_failed_conditions = payment_failed_conditions.retry_expected();
+				}
+				expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
 			},
 			i if i <= intro_node_idx => {
 				let unblinded_node_updates = get_htlc_update_msgs!(nodes[i], nodes[i-1].node.get_our_node_id());
@@ -392,7 +396,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates_0_1.commitment_signed, true, true);
 
 	if intro_fails {
-		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
 		return
 	}
 
@@ -575,7 +579,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	if intro_fails {
 		cause_error!(nodes[0], nodes[1], nodes[2], chan_id_1_2, chan_upd_1_2.short_channel_id);
 		check_added_monitors!(nodes[1], 1);
-		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
 		return
 	}
 
@@ -666,7 +670,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
 		nodes[1].node.process_pending_htlc_forwards();
 		check_added_monitors!(&nodes[1], 1);
-		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
 		return
 	}
 
@@ -772,7 +776,7 @@ fn three_hop_blinded_path_fail() {
 	);
 	nodes[3].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[3], 1);
-	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2], &nodes[3]]);
+	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2], &nodes[3]], false);
 }
 
 #[derive(PartialEq)]
@@ -1215,7 +1219,6 @@ fn conditionally_round_fwd_amt() {
 	let expected_fee = pass_claimed_payment_along_route(args);
 	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true);
 }
-
 
 #[test]
 fn custom_tlvs_to_blinded_path() {
