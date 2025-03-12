@@ -466,8 +466,39 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HTLCDestination {
+	DustLimitReached { holder_commitment: bool },
+	FeeSpikeBuffer,
+	ShutdownSent,
+	PrivateChannelForward,
+	RealSCIDForward,
+	ChannelNotReady,
+	FeeInsufficient,
+	IncorrectCLTVDelta,
+	ChannelDisabled,
+	HTLCBelowMinimum,
+	InvalidKeysendPreimage,
+	MissingPaymentSecret,
+	IncorrectHTLCAmount,
+	CLTVExpiryTooClose,
+	CLTVExpiryTooFar,
+	OutgoingCLTVTooClose,
+	NodeIDForward,
+	DownstreamHopFailed { node_id: Option<PublicKey>, channel_id: ChannelId },
+	NextHopChannelClosed { node_id: Option<PublicKey>, channel_id: ChannelId },
+	FailedPhantomPayment { payment_hash: PaymentHash },
+	AmountExceedsChannelValue {
+		amount_msat: u64,
+		channel_value_msat: u64,
+	},
+	InvalidPaymentAmount {
+		amount_msat: u64,
+		next_outbound_min_msat: u64,
+		next_outbound_max_msat: u64,
+	},
+	BlindedConstraintsViolated,
+	IncorrectFinalCltvExpiry,
 	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
 	/// there is insufficient capacity in our outbound channel.
 	NextHopChannel {
@@ -507,22 +538,22 @@ pub enum HTLCDestination {
 	},
 }
 
-impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
-	(0, NextHopChannel) => {
-		(0, node_id, required),
-		(2, channel_id, required),
-	},
-	(1, InvalidForward) => {
-		(0, requested_forward_scid, required),
-	},
-	(2, UnknownNextHop) => {
-		(0, requested_forward_scid, required),
-	},
-	(3, InvalidOnion) => {},
-	(4, FailedPayment) => {
-		(0, payment_hash, required),
-	},
-);
+// impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
+//   (0, NextHopChannel) => {
+//     (0, node_id, required),
+//     (2, channel_id, required),
+//   },
+//   (1, InvalidForward) => {
+//     (0, requested_forward_scid, required),
+//   },
+//   (2, UnknownNextHop) => {
+//     (0, requested_forward_scid, required),
+//   },
+//   (3, InvalidOnion) => {},
+//   (4, FailedPayment) => {
+//     (0, payment_hash, required),
+//   },
+// );
 
 /// Will be used in [`Event::HTLCIntercepted`] to identify the next hop in the HTLC's path.
 /// Currently only used in serialization for the sake of maintaining compatibility. More variants
