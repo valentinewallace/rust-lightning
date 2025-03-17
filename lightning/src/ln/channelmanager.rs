@@ -10317,7 +10317,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 /// Sending multiple requests increases the chances of successful delivery in case some
 /// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
 /// even if multiple invoices are received.
-const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
+pub const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
