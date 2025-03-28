@@ -4479,3 +4479,37 @@ fn pay_route_without_params() {
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
 	);
 }
+
+#[test]
+fn xxx() {
+	let mut cfg = test_default_channel_config();
+	cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let mut high_fee_cfg = cfg.clone();
+	high_fee_cfg.channel_config.forwarding_fee_base_msat = 1_050_000;
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(cfg.clone()), Some(high_fee_cfg.clone()), Some(cfg.clone())]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 200_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 300_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 600_000, 0);
+
+	let amt_msat = 350_000_000;
+	let invoice_params = crate::ln::channelmanager::Bolt11InvoiceParameters {
+		amount_msats: Some(amt_msat),
+		..Default::default()
+	};
+	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
+
+	let (payment_hash, recipient_onion_fields, mut route_params) =
+		crate::ln::bolt11_payment::payment_parameters_from_invoice(&invoice).unwrap();
+	route_params.max_total_routing_fee_msat = Some(u64::MAX);
+
+	nodes[0].node.send_payment(
+		payment_hash, recipient_onion_fields, PaymentId([42; 32]), route_params, Retry::Attempts(0)
+	).unwrap();
+	assert!(nodes[0].node.list_recent_payments().len() == 1);
+	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
