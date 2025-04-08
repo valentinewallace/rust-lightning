@@ -2008,6 +2008,10 @@ where
 					},
 				};
 
+				if next_node_id == self.node_signer.get_node_id(Recipient::Node).unwrap() {
+					self.handle_onion_message(peer_node_id, &onion_message);
+				}
+
 				let mut message_recipients = self.message_recipients.lock().unwrap();
 				if outbound_buffer_full(&next_node_id, &message_recipients) {
 					log_trace!(

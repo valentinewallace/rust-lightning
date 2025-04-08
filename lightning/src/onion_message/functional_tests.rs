@@ -419,6 +419,23 @@ fn one_blinded_hop() {
 }
 
 #[test]
+fn xxx() {
+	let nodes = create_nodes(2);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let context = MessageContext::Custom(Vec::new());
+	let entropy = &*nodes[1].entropy_source;
+	let blinded_path =
+		BlindedMessagePath::new_with_dummy_hops(&[], nodes[1].node_id, context, 5, entropy, &secp_ctx).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+}
+
+#[test]
 fn two_unblinded_two_blinded() {
 	let nodes = create_nodes(5);
 	let test_msg = TestCustomMessage::Pong;
