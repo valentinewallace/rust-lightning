@@ -5,7 +5,7 @@
 #![allow(unused_macros)]
 
 use lightning::chain::Filter;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, NodeSigner};
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
@@ -420,7 +420,7 @@ pub(crate) fn create_liquidity_node(
 		Default::default(),
 	));
 	let msg_router =
-		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
+		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager), keys_manager.get_inbound_payment_key()));
 	let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 	let kv_store =
 		Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));

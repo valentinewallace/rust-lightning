@@ -25,7 +25,7 @@ use crate::events::bump_transaction::{Utxo, WalletSource};
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager;
+use crate::ln::{channelmanager, inbound_payment};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
 use crate::ln::script::ShutdownScript;
@@ -321,9 +321,9 @@ pub struct TestMessageRouter<'a> {
 
 impl<'a> TestMessageRouter<'a> {
 	pub fn new(
-		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
+		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface, expanded_key: inbound_payment::ExpandedKey,
 	) -> Self {
-		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
+		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source, expanded_key) }
 	}
 }
 
@@ -1448,7 +1448,7 @@ impl TestNodeSigner {
 
 impl NodeSigner for TestNodeSigner {
 	fn get_inbound_payment_key(&self) -> ExpandedKey {
-		unreachable!()
+		ExpandedKey::new([42; 32])
 	}
 
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
