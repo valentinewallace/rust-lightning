@@ -4930,6 +4930,15 @@ where
 	}
 
 	#[cfg(async_payments)]
+	fn check_refresh_async_receive_offers(&self) {
+		self.async_receive_offer_cache.check_refresh_cache(
+			&self.default_configuration.paths_to_static_invoice_server[..],
+			|ctx| self.create_blinded_paths(ctx), &self.inbound_payment_key, &*self.entropy_source,
+			self.duration_since_epoch(), &self.logger, &self.pending_async_payments_messages
+		);
+	}
+
+	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
@@ -6868,6 +6877,9 @@ where
 			self.pending_outbound_payments.remove_stale_payments(
 				duration_since_epoch, &self.pending_events
 			);
+
+			#[cfg(async_payments)]
+			self.check_refresh_async_receive_offers();
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
 			// channel that need freeing, it's better to do that here and block a background task
@@ -11405,6 +11417,9 @@ where
 			return NotifyOption::SkipPersistHandleEvents;
 			//TODO: Also re-broadcast announcement_signatures
 		});
+
+		#[cfg(async_payments)]
+		self.check_refresh_async_receive_offers();
 		res
 	}
 
@@ -12844,7 +12859,7 @@ where
 	}
 }
 
-fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
+pub(super) fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 	message: T, message_paths: &[BlindedMessagePath], reply_paths: Vec<BlindedMessagePath>,
 	queue: &mut Vec<(T, MessageSendInstructions)>
 ) {
