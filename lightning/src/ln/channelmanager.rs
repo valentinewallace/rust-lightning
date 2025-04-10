@@ -92,8 +92,8 @@ use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, Rea
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
-	crate::offers::offer::Amount,
-	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
+	crate::ln::async_receive_offer_cache,
+	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
 };
 
 #[cfg(feature = "dnssec")]
@@ -10384,25 +10384,10 @@ where
 	pub fn create_async_receive_offer_builder(
 		&self, message_paths_to_always_online_node: Vec<BlindedMessagePath>
 	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
-		if message_paths_to_always_online_node.is_empty() {
-			return Err(Bolt12SemanticError::MissingPaths)
-		}
-
-		let node_id = self.get_our_node_id();
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let mut builder = OfferBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx
-		).chain_hash(self.chain_hash);
-
-		for path in message_paths_to_always_online_node {
-			builder = builder.path(path);
-		}
-
-		Ok((builder.into(), nonce))
+		async_receive_offer_cache::create_async_receive_offer_builder(
+			message_paths_to_always_online_node, self.get_our_node_id(), self.chain_hash,
+			&self.inbound_payment_key, &*self.entropy_source, &self.secp_ctx
+		)
 	}
 
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
@@ -10412,47 +10397,12 @@ where
 	pub fn create_static_invoice_builder<'a>(
 		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
-
-		let payment_context = PaymentContext::AsyncBolt12Offer(
-			AsyncBolt12OfferContext { offer_nonce }
-		);
-		let amount_msat = offer.amount().and_then(|amount| {
-			match amount {
-				Amount::Bitcoin { amount_msats } => Some(amount_msats),
-				Amount::Currency { .. } => None
-			}
-		});
-
-		let relative_expiry = relative_expiry.unwrap_or(STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY);
-		let relative_expiry_secs: u32 = relative_expiry.as_secs().try_into().unwrap_or(u32::MAX);
-
-		let created_at = self.duration_since_epoch();
-		let payment_secret = inbound_payment::create_for_spontaneous_payment(
-			&self.inbound_payment_key, amount_msat, relative_expiry_secs, created_at.as_secs(), None
-		).map_err(|()| Bolt12SemanticError::InvalidAmount)?;
-
-		let payment_paths = self.create_blinded_payment_paths(
-			amount_msat, payment_secret, payment_context, relative_expiry_secs
-		).map_err(|()| Bolt12SemanticError::MissingPaths)?;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
-		let path_absolute_expiry = Duration::from_secs(
-			inbound_payment::calculate_absolute_expiry(created_at.as_secs(), relative_expiry_secs)
-		);
-		let context = MessageContext::AsyncPayments(
-			AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry }
-		);
-		let async_receive_message_paths = self.create_blinded_paths(context)
-			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
-
-		StaticInvoiceBuilder::for_offer_using_derived_keys(
-			offer, payment_paths, async_receive_message_paths, created_at, expanded_key,
-			offer_nonce, secp_ctx
-		).map(|inv| inv.allow_mpp().relative_expiry(relative_expiry_secs))
+		async_receive_offer_cache::create_static_invoice_builder(
+			offer, offer_nonce, relative_expiry,
+			|amt, secret, ctx, exp| self.create_blinded_payment_paths(amt, secret, ctx, exp),
+			|ctx| self.create_blinded_paths(ctx),
+			&self.inbound_payment_key, &*self.entropy_source, &self.secp_ctx, self.duration_since_epoch()
+		)
 	}
 
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and

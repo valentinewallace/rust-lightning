@@ -20,13 +20,21 @@ use core::time::Duration;
 #[cfg(async_payments)]
 use {
 	crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, MessageContext},
+	crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, PaymentContext},
 	crate::ln::channelmanager::enqueue_onion_message_with_reply_paths,
 	crate::ln::inbound_payment,
+	crate::offers::offer::{Amount, DerivedMetadata, OfferBuilder},
+	crate::offers::parse::Bolt12SemanticError,
 	crate::offers::signer,
+	crate::offers::static_invoice::{StaticInvoiceBuilder, DEFAULT_RELATIVE_EXPIRY},
 	crate::onion_message::async_payments::{AsyncPaymentsMessage, OfferPathsRequest},
 	crate::onion_message::messenger::MessageSendInstructions,
 	crate::sign::EntropySource,
 	crate::util::logger::Logger,
+	bitcoin::constants::ChainHash,
+	bitcoin::secp256k1,
+	bitcoin::secp256k1::{PublicKey, Secp256k1},
+	bolt11_invoice::PaymentSecret,
 	core::ops::Deref,
 	core::sync::atomic::Ordering,
 };
@@ -157,6 +165,97 @@ impl AsyncReceiveOfferCache {
 
 		num_unexpiring_offers < Self::NUM_CACHED_OFFERS_TARGET
 	}
+}
+
+#[cfg(async_payments)]
+pub(super) fn create_async_receive_offer_builder<'a, ES: Deref>(
+	message_paths_to_always_online_node: Vec<BlindedMessagePath>, our_node_id: PublicKey,
+	chain_hash: ChainHash, expanded_key: &'a inbound_payment::ExpandedKey, entropy: ES,
+	secp_ctx: &'a Secp256k1<secp256k1::All>,
+) -> Result<(OfferBuilder<'a, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
+where
+	ES::Target: EntropySource,
+{
+	if message_paths_to_always_online_node.is_empty() {
+		return Err(Bolt12SemanticError::MissingPaths);
+	}
+
+	let nonce = Nonce::from_entropy_source(entropy);
+	let mut builder =
+		OfferBuilder::deriving_signing_pubkey(our_node_id, expanded_key, nonce, secp_ctx)
+			.chain_hash(chain_hash);
+
+	for path in message_paths_to_always_online_node {
+		builder = builder.path(path);
+	}
+
+	Ok((builder.into(), nonce))
+}
+
+#[cfg(async_payments)]
+pub(super) fn create_static_invoice_builder<'a, 'b, CBPP, CBMP, ES: Deref>(
+	offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
+	create_blinded_payment_paths: CBPP, create_blinded_message_paths: CBMP,
+	expanded_key: &'b inbound_payment::ExpandedKey, entropy: ES,
+	secp_ctx: &'b Secp256k1<secp256k1::All>, duration_since_epoch: Duration,
+) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError>
+where
+	CBPP:
+		Fn(Option<u64>, PaymentSecret, PaymentContext, u32) -> Result<Vec<BlindedPaymentPath>, ()>,
+	CBMP: Fn(MessageContext) -> Result<Vec<BlindedMessagePath>, ()>,
+	ES::Target: EntropySource,
+{
+	let payment_context = PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext { offer_nonce });
+	let amount_msat = offer.amount().and_then(|amount| match amount {
+		Amount::Bitcoin { amount_msats } => Some(amount_msats),
+		Amount::Currency { .. } => None,
+	});
+
+	let relative_expiry = relative_expiry.unwrap_or(DEFAULT_RELATIVE_EXPIRY);
+	let relative_expiry_secs: u32 = relative_expiry.as_secs().try_into().unwrap_or(u32::MAX);
+
+	let created_at = duration_since_epoch;
+	let payment_secret = inbound_payment::create_for_spontaneous_payment(
+		expanded_key,
+		amount_msat,
+		relative_expiry_secs,
+		created_at.as_secs(),
+		None,
+	)
+	.map_err(|()| Bolt12SemanticError::InvalidAmount)?;
+
+	let payment_paths = create_blinded_payment_paths(
+		amount_msat,
+		payment_secret,
+		payment_context,
+		relative_expiry_secs,
+	)
+	.map_err(|()| Bolt12SemanticError::MissingPaths)?;
+
+	let nonce = Nonce::from_entropy_source(entropy);
+	let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
+	let path_absolute_expiry = Duration::from_secs(inbound_payment::calculate_absolute_expiry(
+		created_at.as_secs(),
+		relative_expiry_secs,
+	));
+	let context = MessageContext::AsyncPayments(AsyncPaymentsContext::InboundPayment {
+		nonce,
+		hmac,
+		path_absolute_expiry,
+	});
+	let async_receive_message_paths =
+		create_blinded_message_paths(context).map_err(|()| Bolt12SemanticError::MissingPaths)?;
+
+	StaticInvoiceBuilder::for_offer_using_derived_keys(
+		offer,
+		payment_paths,
+		async_receive_message_paths,
+		created_at,
+		expanded_key,
+		offer_nonce,
+		secp_ctx,
+	)
+	.map(|inv| inv.allow_mpp().relative_expiry(relative_expiry_secs))
 }
 
 impl Writeable for AsyncReceiveOfferCache {
