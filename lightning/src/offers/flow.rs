@@ -37,6 +37,7 @@ use crate::ln::channelmanager::{
 	{PaymentId, CLTV_FAR_FAR_AWAY, MAX_SHORT_LIVED_RELATIVE_EXPIRY},
 };
 use crate::ln::inbound_payment;
+use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
 	UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
@@ -111,6 +112,10 @@ where
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
+	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	/// Blinded paths used to request offer paths from the static invoice server, if we are an async
+	/// recipient.
+	paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
@@ -149,9 +154,24 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+			paths_to_static_invoice_server: Vec::new(),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		}
+	}
+
+	/// If we are an async recipient, on startup we'll interactively build offers and static invoices
+	/// with an always-online node that will serve static invoices on our behalf. Once the offer is
+	/// built and the static invoice is confirmed as persisted by the server, the underlying
+	/// [`AsyncReceiveOfferCache`] should be persisted so we remember the offers we've built.
+	pub(crate) fn with_async_payments_offers_cache(
+		mut self, async_receive_offer_cache: AsyncReceiveOfferCache,
+		paths_to_static_invoice_server: &[BlindedMessagePath],
+	) -> Self {
+		self.async_receive_offer_cache = Mutex::new(async_receive_offer_cache);
+		self.paths_to_static_invoice_server = paths_to_static_invoice_server.to_vec();
+		self
 	}
 
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
