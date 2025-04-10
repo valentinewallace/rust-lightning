@@ -12673,7 +12673,23 @@ where
 	fn handle_offer_paths(
 		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
 	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
-		None
+		#[cfg(async_payments)] {
+			let responder = match _responder {
+				Some(responder) => responder,
+				None => return None
+			};
+			return self.async_receive_offer_cache.handle_offer_paths(
+				_message, _context, responder,
+				|ctx| self.create_blinded_paths(ctx),
+				|amt, secret, ctx, exp| self.create_blinded_payment_paths(amt, secret, ctx, exp),
+				&self.inbound_payment_key, self.duration_since_epoch(),
+				self.get_our_node_id(), self.chain_hash, &*self.entropy_source, &self.secp_ctx,
+				&self.logger,
+			);
+		}
+
+		#[cfg(not(async_payments))]
+		return None
 	}
 
 	fn handle_serve_static_invoice(

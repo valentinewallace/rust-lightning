@@ -27,8 +27,10 @@ use {
 	crate::offers::parse::Bolt12SemanticError,
 	crate::offers::signer,
 	crate::offers::static_invoice::{StaticInvoiceBuilder, DEFAULT_RELATIVE_EXPIRY},
-	crate::onion_message::async_payments::{AsyncPaymentsMessage, OfferPathsRequest},
-	crate::onion_message::messenger::MessageSendInstructions,
+	crate::onion_message::async_payments::{
+		AsyncPaymentsMessage, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
+	},
+	crate::onion_message::messenger::{MessageSendInstructions, ResponseInstruction},
 	crate::sign::EntropySource,
 	crate::util::logger::Logger,
 	bitcoin::constants::ChainHash,
@@ -165,6 +167,171 @@ impl AsyncReceiveOfferCache {
 
 		num_unexpiring_offers < Self::NUM_CACHED_OFFERS_TARGET
 	}
+
+	pub(super) fn handle_offer_paths<ES: Deref, L: Deref, CBP, CBPP>(
+		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
+		create_blinded_paths: CBP, create_blinded_payment_paths: CBPP,
+		expanded_key: &inbound_payment::ExpandedKey, duration_since_epoch: Duration,
+		our_node_id: PublicKey, chain_hash: ChainHash, entropy: ES,
+		secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
+	) -> Option<(ServeStaticInvoice, ResponseInstruction)>
+	where
+		ES::Target: EntropySource,
+		L::Target: Logger,
+		CBP: Fn(MessageContext) -> Result<Vec<BlindedMessagePath>, ()>,
+		CBPP: Fn(
+			Option<u64>,
+			PaymentSecret,
+			PaymentContext,
+			u32,
+		) -> Result<Vec<BlindedPaymentPath>, ()>,
+	{
+		match context {
+			AsyncPaymentsContext::OfferPaths { nonce, hmac, path_absolute_expiry } => {
+				if let Err(()) = signer::verify_offer_paths_context(nonce, hmac, expanded_key) {
+					return None;
+				}
+				if duration_since_epoch > path_absolute_expiry {
+					return None;
+				}
+			},
+			_ => return None,
+		}
+
+		if !self.check_expire_offers(duration_since_epoch) {
+			return None;
+		}
+
+		// Require at least two hours before we'll need to start the process of creating a new offer.
+		const MIN_OFFER_PATHS_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60)
+			.saturating_add(AsyncReceiveOfferCache::OFFER_RELATIVE_EXPIRY_BUFFER);
+		let min_offer_paths_absolute_expiry =
+			duration_since_epoch.saturating_add(MIN_OFFER_PATHS_RELATIVE_EXPIRY);
+		let offer_paths_absolute_expiry =
+			message.paths_absolute_expiry.unwrap_or(Duration::from_secs(u64::MAX));
+		if offer_paths_absolute_expiry < min_offer_paths_absolute_expiry {
+			log_error!(
+				logger,
+				"Received offer paths with too-soon absolute Unix epoch expiry: {}",
+				offer_paths_absolute_expiry.as_secs()
+			);
+			return None;
+		}
+
+		let (offer, offer_nonce) = {
+			let (offer_builder, offer_nonce) =
+				match create_async_receive_offer_builder(
+					message.paths,
+					our_node_id,
+					chain_hash,
+					expanded_key,
+					&*entropy,
+					secp_ctx,
+				) {
+					Ok((builder, nonce)) => (builder, nonce),
+					Err(e) => {
+						log_error!(logger, "Failed to create offer builder when replying to OfferPaths message: {:?}", e);
+						return None;
+					},
+				};
+			match offer_builder.absolute_expiry(offer_paths_absolute_expiry).build() {
+				Ok(offer) => (offer, offer_nonce),
+				Err(e) => {
+					log_error!(
+						logger,
+						"Failed to build offer when replying to OfferPaths message: {:?}",
+						e
+					);
+					return None;
+				},
+			}
+		};
+
+		let (serve_invoice_message, reply_path_context) = match create_serve_static_invoice_message(
+			offer.clone(),
+			offer_nonce,
+			responder.clone(),
+			create_blinded_payment_paths,
+			create_blinded_paths,
+			expanded_key,
+			entropy,
+			secp_ctx,
+			duration_since_epoch,
+			logger,
+		) {
+			Ok((msg, context)) => (msg, context),
+			Err(()) => return None,
+		};
+
+		let context = MessageContext::AsyncPayments(reply_path_context);
+		Some((serve_invoice_message, responder.respond_with_reply_path(context)))
+	}
+}
+
+#[cfg(async_payments)]
+fn create_serve_static_invoice_message<'a, 'b, CBPP, CBMP, ES: Deref, L: Deref>(
+	offer: Offer, offer_nonce: Nonce, update_static_invoice_path: Responder,
+	create_blinded_payment_paths: CBPP, create_blinded_message_paths: CBMP,
+	expanded_key: &'b inbound_payment::ExpandedKey, entropy: ES,
+	secp_ctx: &'b Secp256k1<secp256k1::All>, duration_since_epoch: Duration, logger: &L,
+) -> Result<(ServeStaticInvoice, AsyncPaymentsContext), ()>
+where
+	CBPP:
+		Fn(Option<u64>, PaymentSecret, PaymentContext, u32) -> Result<Vec<BlindedPaymentPath>, ()>,
+	CBMP: Fn(MessageContext) -> Result<Vec<BlindedMessagePath>, ()>,
+	ES::Target: EntropySource,
+	L::Target: Logger,
+{
+	let offer_relative_expiry = offer
+		.absolute_expiry()
+		.unwrap_or_else(|| Duration::from_secs(u64::MAX))
+		.saturating_sub(duration_since_epoch);
+
+	// Set our invoices to expire after at most two weeks, so we'll need to refresh them using the
+	// reply path to the `OfferPaths` message.
+	let static_invoice_relative_expiry = Duration::from_secs(core::cmp::min(
+		offer_relative_expiry.as_secs(),
+		DEFAULT_RELATIVE_EXPIRY.as_secs(),
+	));
+
+	let static_invoice = create_static_invoice_builder(
+		&offer,
+		offer_nonce,
+		Some(static_invoice_relative_expiry),
+		create_blinded_payment_paths,
+		create_blinded_message_paths,
+		expanded_key,
+		&*entropy,
+		secp_ctx,
+		duration_since_epoch,
+	)
+	.and_then(|builder| builder.build_and_sign(secp_ctx))
+	.map_err(|e| {
+		log_error!(
+			logger,
+			"Failed to create static invoice when replying to OfferPaths message: {:?}",
+			e
+		);
+		()
+	})?;
+
+	let reply_path_context = {
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = signer::hmac_for_static_invoice_persisted_context(nonce, expanded_key);
+		AsyncPaymentsContext::StaticInvoicePersisted {
+			offer,
+			offer_nonce,
+			update_static_invoice_path,
+			static_invoice_absolute_expiry: static_invoice
+				.created_at()
+				.saturating_add(static_invoice.relative_expiry()),
+			nonce,
+			hmac,
+			path_absolute_expiry: duration_since_epoch.saturating_add(REPLY_PATH_RELATIVE_EXPIRY),
+		}
+	};
+
+	Ok((ServeStaticInvoice { invoice: static_invoice }, reply_path_context))
 }
 
 #[cfg(async_payments)]
