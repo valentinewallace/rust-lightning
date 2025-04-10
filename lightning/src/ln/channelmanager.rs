@@ -47,6 +47,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
+use crate::ln::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -2400,6 +2401,8 @@ where
 //
 // `pending_async_payments_messages`
 //
+// `async_receive_offer_cache`
+//
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
@@ -2626,6 +2629,7 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
+	async_receive_offer_cache: AsyncReceiveOfferCache,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -3591,6 +3595,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			async_receive_offer_cache: AsyncReceiveOfferCache::new(),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -13557,6 +13562,7 @@ where
 			(15, self.inbound_payment_id_secret, required),
 			(17, in_flight_monitor_updates, required),
 			(19, peer_storage_dir, optional_vec),
+			(21, self.async_receive_offer_cache, required),
 		});
 
 		Ok(())
@@ -14071,6 +14077,7 @@ where
 		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
+		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -14088,6 +14095,7 @@ where
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, required),
 			(19, peer_storage_dir, optional_vec),
+			(21, async_receive_offer_cache, (default_value, AsyncReceiveOfferCache::new())),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -14785,6 +14793,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			async_receive_offer_cache,
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 

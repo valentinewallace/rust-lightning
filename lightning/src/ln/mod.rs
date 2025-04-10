@@ -41,6 +41,7 @@ pub(crate) mod channel;
 
 pub(crate) mod onion_utils;
 mod outbound_payment;
+mod async_receive_offer_cache;
 pub mod wire;
 
 #[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
