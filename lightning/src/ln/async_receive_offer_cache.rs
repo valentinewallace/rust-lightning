@@ -266,6 +266,66 @@ impl AsyncReceiveOfferCache {
 		let context = MessageContext::AsyncPayments(reply_path_context);
 		Some((serve_invoice_message, responder.respond_with_reply_path(context)))
 	}
+
+	pub(super) fn handle_static_invoice_persisted(
+		&self, context: AsyncPaymentsContext, expanded_key: &inbound_payment::ExpandedKey,
+		duration_since_epoch: Duration,
+	) -> bool {
+		let (offer, offer_nonce, update_static_invoice_path, static_invoice_absolute_expiry) =
+			match context {
+				AsyncPaymentsContext::StaticInvoicePersisted {
+					offer,
+					offer_nonce,
+					update_static_invoice_path,
+					static_invoice_absolute_expiry,
+					nonce,
+					hmac,
+					path_absolute_expiry,
+				} => {
+					if let Err(()) =
+						signer::verify_static_invoice_persisted_context(nonce, hmac, expanded_key)
+					{
+						return false;
+					}
+
+					if duration_since_epoch > path_absolute_expiry
+						|| duration_since_epoch > static_invoice_absolute_expiry
+						|| offer.is_expired_no_std(duration_since_epoch)
+					{
+						return false;
+					}
+
+					(offer, offer_nonce, update_static_invoice_path, static_invoice_absolute_expiry)
+				},
+				_ => return false,
+			};
+
+		let mut offers = self.offers.lock().unwrap();
+		match offers.iter_mut().find(|cached_offer| cached_offer.offer.id() == offer.id()) {
+			Some(async_receive_offer) => {
+				debug_assert_eq!(
+					async_receive_offer.update_static_invoice_path,
+					update_static_invoice_path
+				);
+				debug_assert_eq!(async_receive_offer.offer_nonce, offer_nonce);
+				async_receive_offer.static_invoice_absolute_expiry = static_invoice_absolute_expiry;
+				async_receive_offer.invoice_update_attempts = 0;
+			},
+			None => {
+				const MAX_OFFERS: usize = 100;
+				if offers.len() >= MAX_OFFERS { return false }
+				offers.push(AsyncReceiveOffer {
+					offer,
+					offer_nonce,
+					update_static_invoice_path,
+					static_invoice_absolute_expiry,
+					invoice_update_attempts: 0,
+				});
+			},
+		}
+
+		true
+	}
 }
 
 #[cfg(async_payments)]

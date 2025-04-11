@@ -12699,7 +12699,19 @@ where
 
 	fn handle_static_invoice_persisted(
 		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
-	) {}
+	) {
+		#[cfg(async_payments)] {
+			let should_persist = self.async_receive_offer_cache.handle_static_invoice_persisted(
+				_context, &self.inbound_payment_key, self.duration_since_epoch()
+			);
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				match should_persist {
+					true => NotifyOption::DoPersist,
+					false => NotifyOption::SkipPersistNoEvents,
+				}
+			});
+		}
+	}
 
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
