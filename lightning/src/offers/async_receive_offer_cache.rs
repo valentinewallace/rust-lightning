@@ -192,6 +192,45 @@ const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 30 * 24 * 60 * 60;
 
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
+	/// Retrieve a cached [`Offer`] for receiving async payments as an often-offline recipient, as
+	/// well as returning a bool indicating whether the cache needs to be re-persisted.
+	///
+	// We need to re-persist the cache if a fresh offer was just marked as used to ensure we continue
+	// to keep this offer's invoice updated and don't replace it with the server.
+	pub fn get_async_receive_offer(
+		&mut self, duration_since_epoch: Duration,
+	) -> Result<(Offer, bool), ()> {
+		self.prune_expired_offers(duration_since_epoch, false);
+
+		// Find the freshest unused offer, where "freshness" is based on when the invoice was confirmed
+		// persisted by the server
+		let newest_ready_offer_opt = self
+			.offers_with_idx()
+			.filter_map(|(idx, offer)| match offer.status {
+				OfferStatus::Ready { invoice_confirmed_persisted_at } => {
+					Some((idx, offer, invoice_confirmed_persisted_at))
+				},
+				_ => None,
+			})
+			.max_by(|a, b| a.2.cmp(&b.2))
+			.map(|(idx, offer, _)| (idx, offer.offer.clone()));
+		if let Some((idx, newest_ready_offer)) = newest_ready_offer_opt {
+			self.offers[idx].as_mut().map(|offer| offer.status = OfferStatus::Used);
+			return Ok((newest_ready_offer, true));
+		}
+
+		// If no unused offers are available, return the used offer with the latest absolute expiry
+		self.offers_with_idx()
+			.filter(|(_, offer)| matches!(offer.status, OfferStatus::Used))
+			.max_by(|a, b| {
+				let abs_expiry_a = a.1.offer.absolute_expiry().unwrap_or(Duration::MAX);
+				let abs_expiry_b = b.1.offer.absolute_expiry().unwrap_or(Duration::MAX);
+				abs_expiry_a.cmp(&abs_expiry_b)
+			})
+			.map(|(_, cache_offer)| (cache_offer.offer.clone(), false))
+			.ok_or(())
+	}
+
 	/// Remove expired offers from the cache, returning whether new offers are needed.
 	pub(super) fn prune_expired_offers(
 		&mut self, duration_since_epoch: Duration, timer_tick_occurred: bool,
