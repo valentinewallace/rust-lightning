@@ -96,6 +96,22 @@ impl AsyncReceiveOfferCache {
 	// invoice before giving up.
 	const MAX_UPDATE_ATTEMPTS: u8 = 3;
 
+	pub(super) fn get_cached_offers(&self, duration_since_epoch: Duration) -> Vec<Offer> {
+		self.check_expire_offers(duration_since_epoch);
+
+		let offers = self.offers.lock().unwrap();
+		offers
+			.iter()
+			.filter_map(|offer| {
+				if offer.static_invoice_absolute_expiry < duration_since_epoch {
+					None
+				} else {
+					Some(offer.offer.clone())
+				}
+			})
+			.collect()
+	}
+
 	pub(super) fn check_refresh_cache<CBP, ES: Deref, L: Deref>(
 		&self, paths_to_static_invoice_server: &[BlindedMessagePath], create_blinded_paths: CBP,
 		expanded_key: &inbound_payment::ExpandedKey, entropy: ES, duration_since_epoch: Duration,
