@@ -4933,7 +4933,9 @@ where
 	fn check_refresh_async_receive_offers(&self) {
 		self.async_receive_offer_cache.check_refresh_cache(
 			&self.default_configuration.paths_to_static_invoice_server[..],
-			|ctx| self.create_blinded_paths(ctx), &self.inbound_payment_key, &*self.entropy_source,
+			|ctx| self.create_blinded_paths(ctx),
+			|amt, secret, ctx, exp| self.create_blinded_payment_paths(amt, secret, ctx, exp),
+			&self.inbound_payment_key, &*self.entropy_source, &self.secp_ctx,
 			self.duration_since_epoch(), &self.logger, &self.pending_async_payments_messages
 		);
 	}

@@ -23,7 +23,7 @@ use {
 	crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, PaymentContext},
 	crate::ln::channelmanager::enqueue_onion_message_with_reply_paths,
 	crate::ln::inbound_payment,
-	crate::offers::offer::{Amount, DerivedMetadata, OfferBuilder},
+	crate::offers::offer::{Amount, DerivedMetadata, OfferBuilder, OfferId},
 	crate::offers::parse::Bolt12SemanticError,
 	crate::offers::signer,
 	crate::offers::static_invoice::{StaticInvoiceBuilder, DEFAULT_RELATIVE_EXPIRY},
@@ -55,6 +55,21 @@ struct AsyncReceiveOffer {
 	update_static_invoice_path: Responder,
 	static_invoice_absolute_expiry: Duration,
 	invoice_update_attempts: u8,
+}
+
+impl AsyncReceiveOffer {
+	fn needs_invoice_refresh(&self, duration_since_epoch: Duration) -> bool {
+		const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
+		let time_until_invoice_expiry =
+			self.static_invoice_absolute_expiry.saturating_sub(duration_since_epoch);
+		let time_until_offer_expiry = self
+			.offer
+			.absolute_expiry()
+			.unwrap_or_else(|| Duration::from_secs(u64::MAX))
+			.saturating_sub(duration_since_epoch);
+
+		time_until_invoice_expiry < ONE_DAY && time_until_offer_expiry > time_until_invoice_expiry
+	}
 }
 
 impl_writeable_tlv_based!(AsyncReceiveOffer, {
@@ -112,15 +127,22 @@ impl AsyncReceiveOfferCache {
 			.collect()
 	}
 
-	pub(super) fn check_refresh_cache<CBP, ES: Deref, L: Deref>(
+	pub(super) fn check_refresh_cache<CBP, CBPP, ES: Deref, L: Deref>(
 		&self, paths_to_static_invoice_server: &[BlindedMessagePath], create_blinded_paths: CBP,
-		expanded_key: &inbound_payment::ExpandedKey, entropy: ES, duration_since_epoch: Duration,
+		create_blinded_payment_paths: CBPP, expanded_key: &inbound_payment::ExpandedKey,
+		entropy: ES, secp_ctx: &Secp256k1<secp256k1::All>, duration_since_epoch: Duration,
 		logger: &L,
 		pending_async_payments_messages: &Mutex<
 			Vec<(AsyncPaymentsMessage, MessageSendInstructions)>,
 		>,
 	) where
 		CBP: Fn(MessageContext) -> Result<Vec<BlindedMessagePath>, ()>,
+		CBPP: Fn(
+			Option<u64>,
+			PaymentSecret,
+			PaymentContext,
+			u32,
+		) -> Result<Vec<BlindedPaymentPath>, ()>,
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
@@ -133,7 +155,7 @@ impl AsyncReceiveOfferCache {
 				< Self::MAX_UPDATE_ATTEMPTS;
 
 		if needs_new_offers {
-			let nonce = Nonce::from_entropy_source(entropy);
+			let nonce = Nonce::from_entropy_source(&*entropy);
 			let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
 				nonce,
 				hmac: signer::hmac_for_offer_paths_context(nonce, expanded_key),
@@ -151,6 +173,60 @@ impl AsyncReceiveOfferCache {
 
 			self.offer_paths_request_attempts.fetch_add(1, Ordering::Relaxed);
 			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+			enqueue_onion_message_with_reply_paths(
+				message,
+				paths_to_static_invoice_server,
+				reply_paths,
+				&mut pending_async_payments_messages.lock().unwrap(),
+			);
+		}
+
+		// Now check and refresh the static invoices corresponding to the unexpiring offers.
+		let mut update_invoice_messages = Vec::new();
+		{
+			let offers = self.offers.lock().unwrap();
+			for offer in offers.iter() {
+				if !offer.needs_invoice_refresh(duration_since_epoch) {
+					continue;
+				}
+				let (offer, offer_id, offer_nonce, update_static_invoice_path) = (
+					offer.offer.clone(),
+					offer.offer.id(),
+					offer.offer_nonce,
+					offer.update_static_invoice_path.clone(),
+				);
+				match create_serve_static_invoice_message(
+					offer,
+					offer_nonce,
+					update_static_invoice_path,
+					&create_blinded_payment_paths,
+					&create_blinded_paths,
+					expanded_key,
+					&*entropy,
+					secp_ctx,
+					duration_since_epoch,
+					logger,
+				) {
+					Ok((msg, context)) => update_invoice_messages.push((msg, context, offer_id)),
+					Err(()) => continue,
+				}
+			}
+		}
+		for (serve_invoice_message, reply_path_context, offer_id) in update_invoice_messages {
+			let context = MessageContext::AsyncPayments(reply_path_context);
+			let reply_paths =
+				match create_blinded_paths(context) {
+					Ok(paths) => paths,
+					Err(()) => {
+						log_error!(logger, "Failed to create blinded paths when sending ServeStaticInvoice message");
+						continue;
+					},
+				};
+
+			if self.increment_invoice_update_attempts(offer_id).is_err() {
+				continue;
+			}
+			let message = AsyncPaymentsMessage::ServeStaticInvoice(serve_invoice_message);
 			enqueue_onion_message_with_reply_paths(
 				message,
 				paths_to_static_invoice_server,
@@ -341,6 +417,17 @@ impl AsyncReceiveOfferCache {
 		}
 
 		true
+	}
+
+	fn increment_invoice_update_attempts(&self, offer_id: OfferId) -> Result<(), ()> {
+		let mut offers = self.offers.lock().unwrap();
+		match offers.iter_mut().find(|offer| offer.offer.id() == offer_id) {
+			Some(offer) => {
+				offer.invoice_update_attempts += 1;
+				Ok(())
+			},
+			None => Err(()),
+		}
 	}
 }
 
