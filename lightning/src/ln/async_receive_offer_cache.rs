@@ -127,6 +127,18 @@ impl AsyncReceiveOfferCache {
 			.collect()
 	}
 
+	pub(super) fn remove_cached_offer(&self, offer_id: &OfferId) -> Result<(), ()> {
+		let mut offers = self.offers.lock().unwrap();
+		let offer_idx_opt = offers.iter().position(|offer| &offer.offer.id() == offer_id);
+		match offer_idx_opt {
+			Some(idx) => {
+				offers.swap_remove(idx);
+				Ok(())
+			},
+			None => return Err(())
+		}
+	}
+
 	pub(super) fn check_refresh_cache<CBP, CBPP, ES: Deref, L: Deref>(
 		&self, paths_to_static_invoice_server: &[BlindedMessagePath], create_blinded_paths: CBP,
 		create_blinded_payment_paths: CBPP, expanded_key: &inbound_payment::ExpandedKey,

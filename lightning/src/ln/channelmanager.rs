@@ -93,6 +93,7 @@ use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
 	crate::ln::async_receive_offer_cache,
+	crate::offers::offer::OfferId,
 	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
 };
 
@@ -10380,6 +10381,29 @@ where
 	#[cfg(async_payments)]
 	pub fn get_cached_async_receive_offers(&self) -> Vec<Offer> {
 		self.async_receive_offer_cache.get_cached_offers(self.duration_since_epoch())
+	}
+
+	/// Removes an [`Offer`] that was created for receiving async payments and is currently cached by
+	/// the [`ChannelManager`].
+	///
+	/// Offers are created and cached only if [`UserConfig::paths_to_static_invoice_server`] is set
+	/// and we succeeded in interactively building a [`StaticInvoice`] with the static invoice server.
+	///
+	/// Useful if we created and cached an offer that no longer works due to its blinded paths or
+	/// other parameters becoming invalid, to trigger LDK to interactively build new offers that can
+	/// then be retrieved via [`Self::get_cached_async_receive_offers`].
+	///
+	/// Errors if the offer corresponding to the provided [`OfferId`] could not be found.
+	#[cfg(async_payments)]
+	pub fn remove_cached_async_receive_offer(&self, offer_id: &OfferId) -> Result<(), ()> {
+		let remove_res = self.async_receive_offer_cache.remove_cached_offer(offer_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			match remove_res {
+				Ok(()) => NotifyOption::DoPersist,
+				Err(()) => NotifyOption::SkipPersistNoEvents,
+			}
+		});
+		remove_res
 	}
 
 	/// Create an offer for receiving async payments as an often-offline recipient.
