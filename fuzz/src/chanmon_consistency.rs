@@ -19,7 +19,7 @@
 //! channel being force-closed.
 
 use bitcoin::amount::Amount;
-use bitcoin::constants::genesis_block;
+use bitcoin::constants::{genesis_block, ChainHash};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::opcodes;
@@ -57,6 +57,7 @@ use lightning::ln::msgs::{
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::flow::OffersMessageFlow;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{
@@ -84,6 +85,7 @@ use lightning::io::Cursor;
 use lightning::util::dyn_signer::DynSigner;
 use std::cmp::{self, Ordering};
 use std::mem;
+use std::ops::Deref;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
 
@@ -113,6 +115,7 @@ impl FeeEstimator for FuzzEstimator {
 	}
 }
 
+#[derive(Clone)]
 struct FuzzRouter {}
 
 impl Router for FuzzRouter {
@@ -653,6 +656,19 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
+			let chain_hash = ChainHash::using_genesis_block(network);
+
+			let flow = OffersMessageFlow::new(
+				chain_hash,
+				params.best_block,
+				keys_manager.get_node_id(Recipient::Node).unwrap(),
+				best_block_timestamp,
+				keys_manager.get_inbound_payment_key(),
+				keys_manager.clone(),
+				&router,
+				&router,
+			);
+
 			(
 				ChannelManager::new(
 					$fee_estimator.clone(),
@@ -660,6 +676,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					broadcast.clone(),
 					&router,
 					&router,
+					flow,
 					Arc::clone(&logger),
 					keys_manager.clone(),
 					keys_manager.clone(),
