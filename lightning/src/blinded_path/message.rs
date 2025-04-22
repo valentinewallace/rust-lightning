@@ -11,6 +11,7 @@
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+use crate::offers::signer;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -19,9 +20,9 @@ use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, 
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{PaymentId, Verification};
 use crate::ln::msgs::DecodeError;
-use crate::ln::onion_utils;
+use crate::ln::{inbound_payment, onion_utils};
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -256,6 +257,48 @@ pub(crate) struct ForwardTlvs {
 	/// Senders to a blinded path use this value to concatenate the route they find to the
 	/// introduction node with the blinded path.
 	pub(crate) next_blinding_override: Option<PublicKey>,
+}
+
+pub(crate) struct UnauthenticatedDummyTlvs {}
+
+impl Writeable for UnauthenticatedDummyTlvs {
+	fn write<W: Writer>(&self, _writer: &mut W) -> Result<(), io::Error> {
+		Ok(())
+	}
+}
+
+impl Verification for UnauthenticatedDummyTlvs {
+	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
+	/// [`Nonce`].
+	fn hmac_data(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_dummy_tlvs(self, nonce, expanded_key)
+	}
+
+	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
+	fn verify_data(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_dummy_tlvs(self, hmac, nonce, expanded_key)
+	}
+}
+
+
+pub(crate) struct DummyTlvs {
+	pub(crate) dummy_tlvs: UnauthenticatedDummyTlvs,
+	/// An HMAC of `tlvs` along with a nonce used to construct it.
+	pub(crate) authentication: (Hmac<Sha256>, Nonce),
+}
+
+impl Writeable for DummyTlvs {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(writer, {
+			(65539, self.authentication, required),
+		});
+
+		Ok(())
+	}
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
