@@ -20,19 +20,19 @@ use super::async_payments::AsyncPaymentsMessage;
 use super::async_payments::AsyncPaymentsMessageHandler;
 use super::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler};
 use super::offers::OffersMessageHandler;
-use super::packet::OnionMessageContents;
+use super::packet::{DummyControlTlvs, OnionMessageContents};
 use super::packet::ParsedOnionMessageContents;
 use super::packet::{
 	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
 	SMALL_PACKET_HOP_DATA_LEN,
 };
 use crate::blinded_path::message::{
-	BlindedMessagePath, ForwardTlvs, MessageContext, MessageForwardNode, NextMessageHop,
-	ReceiveTlvs,
+	BlindedMessagePath, DummyTlvs, ForwardTlvs, MessageContext, MessageForwardNode, NextMessageHop, ReceiveTlvs
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
+use crate::ln::channelmanager::Verification;
 use crate::ln::msgs::{
 	self, BaseMessageHandler, MessageSendEvent, OnionMessage, OnionMessageHandler, SocketAddress,
 };
@@ -1102,6 +1102,29 @@ where
 				Err(())
 			},
 		},
+		Ok((
+			Payload::Dummy(DummyControlTlvs::Unblinded(DummyTlvs {
+				dummy_tlvs, authentication
+			})),
+			Some((next_hop_hmac, new_packet_bytes)),
+		)) => {
+			let expanded_key = node_signer.get_inbound_payment_key();
+			dummy_tlvs.verify_data(authentication.0, authentication.1, &expanded_key)?;
+
+			let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap();
+			let new_pubkey = our_node_id;
+			let outgoing_packet = Packet {
+				version: 0,
+				public_key: new_pubkey,
+				hop_data: new_packet_bytes,
+				hmac: next_hop_hmac,
+			};
+			let onion_message = OnionMessage {
+				blinding_point: our_node_id,
+				onion_routing_packet: outgoing_packet,
+			};
+			peel_onion_message(&onion_message, secp_ctx, node_signer, logger, custom_handler)
+		}
 		Ok((
 			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_hop,
