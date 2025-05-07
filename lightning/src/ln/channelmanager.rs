@@ -281,7 +281,7 @@ pub struct BlindedForward {
 	/// Overrides the next hop's [`msgs::UpdateAddHTLC::blinding_point`]. Set if this HTLC is being
 	/// forwarded within a [`BlindedPaymentPath`] that was concatenated to another blinded path that
 	/// starts at the next hop.
-	/// 
+	///
 	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	pub next_blinding_override: Option<PublicKey>,
 }
