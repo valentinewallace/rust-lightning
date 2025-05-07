@@ -23,6 +23,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
 
 /// The status of this offer in the cache.
+#[derive(Clone)]
 enum OfferStatus {
 	/// This offer has been returned to the user from the cache, so it needs to be stored until it
 	/// expires and its invoice needs to be kept updated.
@@ -41,6 +42,7 @@ enum OfferStatus {
 	Pending,
 }
 
+#[derive(Clone)]
 struct AsyncReceiveOffer {
 	offer: Offer,
 	/// Whether this offer is used, ready for use, or pending invoice persistence with the static
@@ -129,7 +131,8 @@ impl AsyncReceiveOfferCache {
 		if self.offers.is_empty() {
 			let num_offers =
 				core::cmp::min(max_invoices_stored_by_server as usize, MAX_CACHED_OFFERS_TARGET);
-			self.offers = Vec::with_capacity(num_offers);
+			//
+			self.offers = vec![None; num_offers];
 		}
 		Ok(())
 	}
@@ -139,6 +142,121 @@ impl AsyncReceiveOfferCache {
 // reuse of the same offer.
 #[cfg(async_payments)]
 const MAX_CACHED_OFFERS_TARGET: usize = 10;
+
+// The max number of times we'll attempt to request offer paths or attempt to refresh a static
+// invoice before giving up.
+#[cfg(async_payments)]
+const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+// If we have an offer that is replaceable and its invoice was confirmed as persisted more than 2
+// hours ago, we can go ahead and refresh it because we always want to have the freshest offer
+// possible when a user goes to retrieve a cached offer.
+#[cfg(async_payments)]
+const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
+
+#[cfg(async_payments)]
+impl AsyncReceiveOfferCache {
+	/// Remove expired offers from the cache, returning whether new offers are needed.
+	pub(super) fn prune_expired_offers(
+		&mut self, duration_since_epoch: Duration, timer_tick_occurred: bool,
+	) -> bool {
+		// Remove expired offers from the cache.
+		let mut offer_was_removed = false;
+		for offer_opt in self.offers.iter_mut() {
+			let offer_is_expired = offer_opt
+				.as_ref()
+				.map_or(false, |offer| offer.offer.is_expired_no_std(duration_since_epoch));
+			if offer_is_expired {
+				offer_opt.take();
+				offer_was_removed = true;
+			}
+		}
+
+		// Allow more offer paths requests to be sent out in a burst roughly once per minute, or if an
+		// offer was removed.
+		if timer_tick_occurred || offer_was_removed {
+			self.reset_offer_paths_request_attempts()
+		}
+
+		self.needs_new_offer_idx(duration_since_epoch).is_some()
+			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+	}
+
+	fn needs_new_offer_idx(&self, duration_since_epoch: Duration) -> Option<usize> {
+		// If we have any empty offer slots, return the first one we find
+		let mut offers_opt_iter = self.offers.iter().enumerate();
+		let empty_slot_idx_opt =
+			offers_opt_iter.find_map(|(idx, offer_opt)| offer_opt.is_none().then(|| idx));
+		if empty_slot_idx_opt.is_some() {
+			return empty_slot_idx_opt;
+		}
+
+		// If all of our offers are already used or pending, then none are available to be replaced
+		let no_replaceable_offers = self.offers_with_idx().all(|(_, offer)| {
+			matches!(offer.status, OfferStatus::Used)
+				|| matches!(offer.status, OfferStatus::Pending)
+		});
+		if no_replaceable_offers {
+			return None;
+		}
+
+		// If we only have 1 offer that is available for payments, then none are available to be
+		// replaced
+		let num_payable_offers = self
+			.offers_with_idx()
+			.filter(|(_, offer)| {
+				matches!(offer.status, OfferStatus::Used)
+					|| matches!(offer.status, OfferStatus::Ready { .. })
+			})
+			.count();
+		if num_payable_offers <= 1 {
+			return None;
+		}
+
+		// Filter for offers that were last updated more than two hours ago, so they are stale enough
+		// to warrant replacement
+		let two_hours_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
+		self.offers_with_idx()
+			.filter_map(|(idx, offer)| match offer.status {
+				OfferStatus::Ready { invoice_confirmed_persisted_at } => {
+					Some((idx, offer, invoice_confirmed_persisted_at))
+				},
+				_ => None,
+			})
+			.filter(|(_, _, invoice_confirmed_persisted_at)| {
+				*invoice_confirmed_persisted_at < two_hours_ago
+			})
+			// Get the stalest offer and return its index
+			.min_by(|a, b| a.2.cmp(&b.2))
+			.map(|(idx, _, _)| idx)
+	}
+
+	/// Returns an iterator over (offer_idx, offer)
+	fn offers_with_idx(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
+		self.offers.iter().enumerate().filter_map(|(idx, offer_opt)| {
+			if let Some(offer) = offer_opt {
+				Some((idx, offer))
+			} else {
+				None
+			}
+		})
+	}
+
+	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
+	// server. Calling this method allows the cache to self-limit how many requests are sent, in case
+	// the server goes unresponsive.
+	pub(super) fn new_offers_requested(&mut self, duration_since_epoch: Duration) {
+		self.offer_paths_request_attempts += 1;
+		self.last_offer_paths_request_timestamp = duration_since_epoch;
+	}
+
+	/// Called on timer tick (roughly once per minute) to allow another MAX_UPDATE_ATTEMPTS offer
+	/// paths requests to go out.
+	fn reset_offer_paths_request_attempts(&mut self) {
+		self.offer_paths_request_attempts = 0;
+		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+}
 
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
