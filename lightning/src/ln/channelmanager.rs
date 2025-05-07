@@ -5140,6 +5140,20 @@ where
 	}
 
 	#[cfg(async_payments)]
+	fn check_refresh_async_receive_offers(&self) {
+		let peers = self.get_peers_for_blinded_path();
+		match self.flow.check_refresh_async_receive_offers(peers, &*self.entropy_source) {
+			Err(()) => {
+				log_error!(
+					self.logger,
+					"Failed to create blinded paths when requesting async receive offer paths"
+				);
+			},
+			Ok(()) => {},
+		}
+	}
+
+	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
@@ -7132,6 +7146,9 @@ where
 			self.pending_outbound_payments.remove_stale_payments(
 				duration_since_epoch, &self.pending_events
 			);
+
+			#[cfg(async_payments)]
+			self.check_refresh_async_receive_offers();
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
 			// channel that need freeing, it's better to do that here and block a background task
@@ -11654,6 +11671,13 @@ where
 			return NotifyOption::SkipPersistHandleEvents;
 			//TODO: Also re-broadcast announcement_signatures
 		});
+
+		// While we usually refresh the AsyncReceiveOfferCache on a timer, we also want to start
+		// interactively building offers as soon as we can after startup. We can't start building offers
+		// until we have some peer connection(s) to send onion messages over, so as a minor optimization
+		// refresh the cache when a peer connects.
+		#[cfg(async_payments)]
+		self.check_refresh_async_receive_offers();
 		res
 	}
 
