@@ -417,6 +417,25 @@ pub enum AsyncPaymentsContext {
 		/// offer paths if we are no longer configured to accept paths from them.
 		path_absolute_expiry: core::time::Duration,
 	},
+	/// Context used by a reply path to a [`ServeStaticInvoice`] message, provided back to us in
+	/// corresponding [`StaticInvoicePersisted`] messages.
+	///
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	StaticInvoicePersisted {
+		/// The index of the offer in the cache corresponding to the [`StaticInvoice`] that has been
+		/// persisted. This invoice is now ready to be provided by the static invoice server in response
+		/// to [`InvoiceRequest`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		offer_slot: u8,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// TODO: elaborate?
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -501,6 +520,10 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(2, OfferPaths) => {
 		(0, path_absolute_expiry, required),
+	},
+	(3, StaticInvoicePersisted) => {
+		(0, offer_slot, required),
+		(2, path_absolute_expiry, required),
 	},
 );
 
