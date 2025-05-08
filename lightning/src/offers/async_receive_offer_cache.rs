@@ -316,6 +316,24 @@ impl AsyncReceiveOfferCache {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
 	}
+
+	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
+	/// server, which indicates that a new offer was persisted by the server and they are ready to
+	/// serve the corresponding static invoice to payers on our behalf.
+	///
+	/// Returns a bool indicating whether an offer was added/updated and re-persistence of the cache
+	/// is needed.
+	pub(super) fn static_invoice_persisted(
+		&mut self, offer_slot: u8, duration_since_epoch: Duration,
+	) -> bool {
+		if let Some(Some(ref mut offer)) = self.offers.get_mut(offer_slot as usize) {
+			offer.status =
+				OfferStatus::Ready { invoice_confirmed_persisted_at: duration_since_epoch };
+			return true;
+		}
+
+		false
+	}
 }
 
 impl Writeable for AsyncReceiveOfferCache {
