@@ -23,7 +23,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
 
 /// The status of this offer in the cache.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum OfferStatus {
 	/// This offer has been returned to the user from the cache, so it needs to be stored until it
 	/// expires and its invoice needs to be kept updated.
@@ -315,6 +315,30 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	/// Returns an iterator over the list of cached offers where we need to send an updated invoice to
+	/// the static invoice server.
+	pub(super) fn offers_needing_invoice_refresh(
+		&self,
+	) -> impl Iterator<Item = (&Offer, Nonce, u8, &Responder)> {
+		// For any offers which are either in use or pending confirmation by the server, we should send
+		// them a fresh invoice on each timer tick.
+		self.offers_with_idx().filter_map(|(idx, offer)| {
+			let needs_invoice_update =
+				offer.status == OfferStatus::Used || offer.status == OfferStatus::Pending;
+			if needs_invoice_update {
+				let offer_slot = idx.try_into().unwrap_or(u8::MAX);
+				Some((
+					&offer.offer,
+					offer.offer_nonce,
+					offer_slot,
+					&offer.update_static_invoice_path,
+				))
+			} else {
+				None
+			}
+		})
 	}
 
 	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
