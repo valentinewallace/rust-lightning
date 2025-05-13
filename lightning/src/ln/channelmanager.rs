@@ -4918,7 +4918,9 @@ where
 
 	#[cfg(async_payments)]
 	fn check_refresh_async_receive_offers(&self) {
-		match self.flow.check_refresh_async_receive_offers(self.get_peers_for_blinded_path()) {
+		let peers = self.get_peers_for_blinded_path();
+		let channels = self.list_usable_channels();
+		match self.flow.check_refresh_async_receive_offers(peers, channels) {
 			Err(()) => {
 				log_error!(self.logger, "Failed to create blinded paths when requesting async receive offer paths");
 			},
