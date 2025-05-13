@@ -5142,7 +5142,17 @@ where
 	#[cfg(async_payments)]
 	fn check_refresh_async_receive_offers(&self, timer_tick_occurred: bool) {
 		let peers = self.get_peers_for_blinded_path();
-		match self.flow.check_refresh_async_receive_offers(peers, timer_tick_occurred) {
+		let channels = self.list_usable_channels();
+		let entropy = &*self.entropy_source;
+		let router = &*self.router;
+		let refresh_res = self.flow.check_refresh_async_receive_offers(
+			peers,
+			channels,
+			entropy,
+			router,
+			timer_tick_occurred,
+		);
+		match refresh_res {
 			Err(()) => {
 				log_error!(
 					self.logger,
