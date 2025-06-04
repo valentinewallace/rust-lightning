@@ -57,6 +57,7 @@ use crate::routing::router::Router;
 use crate::sign::{EntropySource, NodeSigner};
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::util::ser::Writeable;
 
 #[cfg(async_payments)]
 use {
@@ -229,7 +230,17 @@ pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUE
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
 #[cfg(async_payments)]
-const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
+const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = TEMP_REPLY_PATH_RELATIVE_EXPIRY;
+
+// Default to async receive offers and the paths used to update them lasting 1 year.
+const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
+	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
@@ -1212,6 +1223,11 @@ where
 		self.async_receive_offer_cache.lock().unwrap().offers(self.duration_since_epoch())
 	}
 
+	/// Get the `AsyncReceiveOfferCache` for persistence.
+	pub(crate) fn writeable_async_receive_offer_cache(&self) -> impl Writeable + '_ {
+		&self.async_receive_offer_cache
+	}
+
 	/// Sends out [`OfferPathsRequest`] and [`ServeStaticInvoice`] onion messages if we are an
 	/// often-offline recipient and are configured to interactively build offers and static invoices
 	/// with a static invoice server.
@@ -1241,10 +1257,11 @@ where
 
 		// Check with the cache to see whether we need new offers to be interactively built with the
 		// static invoice server.
-		let mut async_receive_offer_cache = self.async_receive_offer_cache.lock().unwrap();
-		async_receive_offer_cache.prune_expired_offers(duration_since_epoch);
-		let needs_new_offers =
-			async_receive_offer_cache.should_request_offer_paths(duration_since_epoch);
+		let needs_new_offers = {
+			let mut async_receive_offer_cache = self.async_receive_offer_cache.lock().unwrap();
+			async_receive_offer_cache.prune_expired_offers(duration_since_epoch);
+			async_receive_offer_cache.should_request_offer_paths(duration_since_epoch)
+		};
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		if needs_new_offers {
@@ -1263,8 +1280,10 @@ where
 			};
 
 			// We can't fail past this point, so indicate to the cache that we've requested new offers.
-			async_receive_offer_cache.new_offers_requested(duration_since_epoch);
-			core::mem::drop(async_receive_offer_cache);
+			self.async_receive_offer_cache
+				.lock()
+				.unwrap()
+				.new_offers_requested(duration_since_epoch);
 
 			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
 			enqueue_onion_message_with_reply_paths(
@@ -1381,10 +1400,9 @@ where
 			_ => return None,
 		};
 
-		// Default to offers and the paths used to update them lasting 1 year.
-		const OFFER_PATH_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 		let (offer_paths, paths_expiry) = {
-			let path_absolute_expiry = duration_since_epoch.saturating_add(OFFER_PATH_EXPIRY);
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
 			let nonce = Nonce::from_entropy_source(&*entropy);
 			let hmac = signer::hmac_for_async_recipient_invreq_context(nonce, expanded_key);
 			let context = OffersContext::StaticInvoiceRequested {
@@ -1405,7 +1423,8 @@ where
 
 		let reply_path_context = {
 			let nonce = Nonce::from_entropy_source(entropy);
-			let path_absolute_expiry = duration_since_epoch.saturating_add(OFFER_PATH_EXPIRY);
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
 			let hmac = signer::hmac_for_serve_static_invoice_context(nonce, expanded_key);
 			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
 				nonce,
@@ -1646,5 +1665,11 @@ where
 
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.static_invoice_persisted(context, duration_since_epoch)
+	}
+
+	#[cfg(test)]
+	pub(crate) fn test_reset_more_offer_paths_request_attempts(&self) {
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		cache.test_reset_offer_paths_request_attempts();
 	}
 }

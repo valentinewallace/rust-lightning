@@ -83,16 +83,30 @@ impl AsyncReceiveOfferCache {
 	}
 }
 
+// The max number of times we'll attempt to request offer paths or attempt to refresh a static
+// invoice before giving up.
+const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
+
+// If we run out of attempts to request offer paths from the static invoice server, we'll stop
+// sending requests for some time. After this amount of time has passed, more requests are allowed
+// to be sent out.
+const PATHS_REQUESTS_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_PATHS_REQUESTS_BUFFER: Duration = PATHS_REQUESTS_BUFFER;
+
+// The target number of offers we want to have cached at any given time, to mitigate too much
+// reuse of the same offer.
+const NUM_CACHED_OFFERS_TARGET: usize = 3;
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_NUM_CACHED_OFFERS_TARGET: usize = NUM_CACHED_OFFERS_TARGET;
+
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
-	// The target number of offers we want to have cached at any given time, to mitigate too much
-	// reuse of the same offer.
-	const NUM_CACHED_OFFERS_TARGET: usize = 3;
-
-	// The max number of times we'll attempt to request offer paths or attempt to refresh a static
-	// invoice before giving up.
-	const MAX_UPDATE_ATTEMPTS: u8 = 3;
-
 	/// Retrieve our cached [`Offer`]s for receiving async payments as an often-offline recipient.
 	pub fn offers(&self, duration_since_epoch: Duration) -> Vec<Offer> {
 		const NEVER_EXPIRES: Duration = Duration::from_secs(u64::MAX);
@@ -138,7 +152,7 @@ impl AsyncReceiveOfferCache {
 	/// Checks whether we should request new offer paths from the always-online static invoice server.
 	pub(super) fn should_request_offer_paths(&self, duration_since_epoch: Duration) -> bool {
 		self.needs_new_offers(duration_since_epoch)
-			&& self.offer_paths_request_attempts < Self::MAX_UPDATE_ATTEMPTS
+			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
 	}
 
 	/// Returns whether the new paths we've just received from the static invoice server should be used
@@ -178,11 +192,11 @@ impl AsyncReceiveOfferCache {
 				let elapsed = duration_since_epoch.saturating_sub(offer_created_at).as_secs();
 
 				// If an offer is in the last 10% of its lifespan, it's expiring soon.
-				elapsed.saturating_mul(10) >= offer_lifespan.saturating_mul(9)
+				elapsed.saturating_mul(10) < offer_lifespan.saturating_mul(9)
 			})
 			.count();
 
-		num_unexpiring_offers < Self::NUM_CACHED_OFFERS_TARGET
+		num_unexpiring_offers < NUM_CACHED_OFFERS_TARGET
 	}
 
 	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
@@ -196,9 +210,8 @@ impl AsyncReceiveOfferCache {
 	/// If we haven't sent an offer paths request in a long time, reset the limit to allow more
 	/// requests to be sent out if/when needed.
 	fn check_reset_offer_paths_request_attempts(&mut self, duration_since_epoch: Duration) {
-		const REQUESTS_TIME_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
 		let should_reset =
-			self.last_offer_paths_request_timestamp.saturating_add(REQUESTS_TIME_BUFFER)
+			self.last_offer_paths_request_timestamp.saturating_add(PATHS_REQUESTS_BUFFER)
 				< duration_since_epoch;
 		if should_reset {
 			self.reset_offer_paths_request_attempts();
@@ -208,6 +221,11 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_reset_offer_paths_request_attempts(&mut self) {
+		self.reset_offer_paths_request_attempts()
 	}
 
 	/// Returns an iterator over the list of cached offers where the invoice is expiring soon and we
@@ -221,7 +239,7 @@ impl AsyncReceiveOfferCache {
 			if offer.offer.is_expired_no_std(duration_since_epoch) {
 				return None;
 			}
-			if offer.invoice_update_attempts >= Self::MAX_UPDATE_ATTEMPTS {
+			if offer.invoice_update_attempts >= MAX_UPDATE_ATTEMPTS {
 				return None;
 			}
 
