@@ -10776,6 +10776,17 @@ where
 		)
 	}
 
+	///
+	pub fn set_paths_to_static_invoice_server(
+		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+		max_invoices_stored_by_server: u8,
+	) -> Result<(), ()> {
+		self.flow.set_paths_to_static_invoice_server(
+			paths_to_static_invoice_server,
+			max_invoices_stored_by_server,
+		)
+	}
+
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
 	/// [`Bolt12Invoice`] once it is received.

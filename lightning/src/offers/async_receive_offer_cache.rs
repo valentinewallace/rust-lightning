@@ -114,7 +114,31 @@ impl AsyncReceiveOfferCache {
 	pub(super) fn paths_to_static_invoice_server(&self) -> Vec<BlindedMessagePath> {
 		self.paths_to_static_invoice_server.clone()
 	}
+
+	///
+	pub fn set_paths_to_static_invoice_server(
+		&mut self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+		max_invoices_stored_by_server: u8,
+	) -> Result<(), ()> {
+		if paths_to_static_invoice_server.is_empty() || max_invoices_stored_by_server == 0 {
+			return Err(());
+		}
+
+		self.paths_to_static_invoice_server = paths_to_static_invoice_server;
+		self.max_invoices_stored_by_server = max_invoices_stored_by_server;
+		if self.offers.is_empty() {
+			let num_offers =
+				core::cmp::min(max_invoices_stored_by_server as usize, MAX_CACHED_OFFERS_TARGET);
+			self.offers = Vec::with_capacity(num_offers);
+		}
+		Ok(())
+	}
 }
+
+// The target number of offers we want to have cached at any given time, to mitigate too much
+// reuse of the same offer.
+#[cfg(async_payments)]
+const MAX_CACHED_OFFERS_TARGET: usize = 10;
 
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

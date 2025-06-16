@@ -158,6 +158,21 @@ where
 		self
 	}
 
+	///
+	pub(crate) fn set_paths_to_static_invoice_server(
+		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+		max_invoices_stored_by_server: u8,
+	) -> Result<(), ()> {
+		*self.paths_to_static_invoice_server.lock().unwrap() =
+			paths_to_static_invoice_server.clone();
+
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		cache.set_paths_to_static_invoice_server(
+			paths_to_static_invoice_server,
+			max_invoices_stored_by_server,
+		)
+	}
+
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
 	fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey
