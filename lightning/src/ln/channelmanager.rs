@@ -13039,7 +13039,6 @@ where
 			return Err(());
 		}
 
-		let mut peer_has_announced_channel = false;
 		let mut res = Ok(());
 
 		PersistenceNotifierGuard::optionally_notify(self, || {
@@ -13127,9 +13126,6 @@ where
 							}),
 						ReconnectionMsg::None => {},
 					}
-					if chan.context().should_announce() {
-						peer_has_announced_channel = true;
-					}
 				}
 			}
 
@@ -13142,9 +13138,7 @@ where
 		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
 		self.check_refresh_async_receive_offer_cache(false);
-		let _ = self.flow.peer_connected(
-			counterparty_node_id, &init_msg.features, peer_has_announced_channel
-		);
+		let _ = self.flow.peer_connected(counterparty_node_id, &init_msg.features);
 		res
 	}
 
