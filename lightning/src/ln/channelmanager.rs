@@ -6334,12 +6334,15 @@ where
 				incoming_cltv_expiry,
 				hold_htlc,
 				..
-			} => PendingHTLCRouting::Forward {
-				onion_packet,
-				blinded,
-				incoming_cltv_expiry,
-				hold_htlc,
-				short_channel_id: next_hop_scid,
+			} => {
+				debug_assert!(hold_htlc.is_none(), "Held intercept HTLCs should not be surfaced in an event until the recipient comes online");
+				PendingHTLCRouting::Forward {
+					onion_packet,
+					blinded,
+					incoming_cltv_expiry,
+					hold_htlc,
+					short_channel_id: next_hop_scid,
+				}
 			},
 			_ => unreachable!(), // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
@@ -10786,7 +10789,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						},
 						hash_map::Entry::Vacant(entry) => {
-							if !is_our_scid
+							// In the case that we have an HTLC that we're supposed to hold onto until the
+							// recipient comes online *and* the outbound scid is encoded as
+							// `fake_scid::is_valid_intercept`, we should first wait for the recipient to come
+							// online before generating an `HTLCIntercepted` event, since the event cannot be
+							// acted on until the recipient is online to cooperatively open the JIT channel. Once
+							// we receive the `ReleaseHeldHtlc` message from the recipient, we will circle back
+							// here and resume generating the event below.
+							if pending_add.forward_info.routing.should_hold_htlc() {
+								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+									prev_htlc_id,
+									&prev_channel_id,
+									&prev_counterparty_node_id,
+								);
+								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+								match held_htlcs.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										entry.insert(pending_add);
+									},
+									hash_map::Entry::Occupied(_) => {
+										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+										fail_intercepted_htlc();
+									},
+								}
+							} else if !is_our_scid
 								&& pending_add.forward_info.incoming_amt_msat.is_some()
 								&& fake_scid::is_valid_intercept(
 									&self.fake_scid_rand_bytes,
@@ -10829,22 +10855,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										fail_intercepted_htlc();
-									},
-								}
-							} else if pending_add.forward_info.routing.should_hold_htlc() {
-								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-									prev_htlc_id,
-									&prev_channel_id,
-									&prev_counterparty_node_id,
-								);
-								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
-								match held_htlcs.entry(intercept_id) {
-									hash_map::Entry::Vacant(entry) => {
-										entry.insert(pending_add);
-									},
-									hash_map::Entry::Occupied(_) => {
-										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
 										fail_intercepted_htlc();
 									},
 								}
