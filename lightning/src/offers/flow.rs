@@ -1664,14 +1664,17 @@ where
 	/// track of which peers are connected, which allows for methods that can create blinded paths
 	/// without requiring a fresh set of [`MessageForwardNode`]s to be passed in.
 	///
+	/// `live_channel` should be set if we have an open, usable channel with this peer that has at
+	/// least six onchain confirmations.
+	///
 	/// MUST be called by always-online nodes that support holding HTLCs on behalf of often-offline
 	/// senders.
 	///
 	/// Errors if the peer does not support onion messages.
 	pub fn peer_connected(
-		&self, peer_node_id: PublicKey, features: &InitFeatures,
+		&self, peer_node_id: PublicKey, features: &InitFeatures, live_channel: bool,
 	) -> Result<(), ()> {
-		if !features.supports_onion_messages() {
+		if !features.supports_onion_messages() || !live_channel {
 			return Err(());
 		}
 

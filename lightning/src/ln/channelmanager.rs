@@ -13040,7 +13040,7 @@ where
 		}
 
 		let mut res = Ok(());
-
+		let mut peer_has_live_channel = false;
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			// If we have too many peers connected which don't have funded channels, disconnect the
 			// peer immediately (as long as it doesn't have funded channels). If we have a bunch of
@@ -13048,6 +13048,7 @@ where
 			// peers connect, but we'll reject new channels from them.
 			let connected_peers_without_funded_channels = self.peers_without_funded_channels(|node| node.is_connected);
 			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
+			let best_block_height = self.best_block.read().unwrap().height;
 
 			{
 				let mut peer_state_lock = self.per_peer_state.write().unwrap();
@@ -13074,7 +13075,6 @@ where
 						let mut peer_state = e.get().lock().unwrap();
 						peer_state.latest_features = init_msg.features.clone();
 
-						let best_block_height = self.best_block.read().unwrap().height;
 						if inbound_peer_limited &&
 							Self::unfunded_channel_count(&*peer_state, best_block_height) ==
 							peer_state.channel_by_id.len()
@@ -13126,6 +13126,11 @@ where
 							}),
 						ReconnectionMsg::None => {},
 					}
+					if chan.context().is_usable()
+						&& chan.context().channel_creation_height <= best_block_height.saturating_sub(6)
+					{
+						peer_has_live_channel = true;
+					}
 				}
 			}
 
@@ -13138,7 +13143,7 @@ where
 		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
 		self.check_refresh_async_receive_offer_cache(false);
-		let _ = self.flow.peer_connected(counterparty_node_id, &init_msg.features);
+		let _ = self.flow.peer_connected(counterparty_node_id, &init_msg.features, peer_has_live_channel);
 		res
 	}
 
