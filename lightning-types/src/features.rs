@@ -165,9 +165,13 @@ mod sealed {
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
-			ZeroConf | HtlcHold,
+			ZeroConf,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
+			// Byte 8 - 39
+			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 40
+			HtlcHold,
 		]
 	);
 	define_context!(
@@ -186,13 +190,17 @@ mod sealed {
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
-			ZeroConf | HtlcHold | Keysend,
+			ZeroConf | Keysend,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 31
 			,,,,,,,,,,,,,,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
+			// Byte 33 - 39
+			,,,,,,,
+			// Byte 40
+			HtlcHold,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -645,17 +653,6 @@ mod sealed {
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
 		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
 	define_feature!(
-		53,
-		HtlcHold,
-		[InitContext, NodeContext],
-		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
-		set_htlc_hold_optional,
-		set_htlc_hold_required,
-		clear_htlc_hold,
-		supports_htlc_hold,
-		requires_htlc_hold
-	);
-	define_feature!(
 		55,
 		Keysend,
 		[NodeContext],
@@ -712,6 +709,17 @@ mod sealed {
 		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
+	);
+	define_feature!(
+		321,
+		HtlcHold,
+		[InitContext, NodeContext],
+		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
+		set_htlc_hold_optional,
+		set_htlc_hold_required,
+		clear_htlc_hold,
+		supports_htlc_hold,
+		requires_htlc_hold
 	);
 
 	// Note: update the module-level docs when a new feature bit is added!
