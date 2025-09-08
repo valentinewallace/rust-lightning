@@ -10750,7 +10750,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_user_channel_id,
 						forward_info,
 					};
-					let mut fail_intercepted_htlc = || {
+
+					let mut fail_intercepted_htlc = |pending_add: PendingAddHTLCInfo| {
 						let htlc_source =
 							HTLCSource::PreviousHopData(pending_add.htlc_previous_hop_data());
 						let reason = HTLCFailReason::from_failure_code(
@@ -10766,24 +10767,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							failure_type,
 						));
 					};
+					let mut push_held_htlc = |pending_add: PendingAddHTLCInfo| {
+						let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+							prev_htlc_id,
+							&prev_channel_id,
+							&prev_counterparty_node_id,
+						);
+						let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+						match held_htlcs.entry(intercept_id) {
+							hash_map::Entry::Vacant(entry) => {
+								entry.insert(pending_add);
+							},
+							hash_map::Entry::Occupied(_) => {
+								debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+								fail_intercepted_htlc(pending_add);
+							},
+						}
+					};
+
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							if pending_add.forward_info.routing.should_hold_htlc() {
-								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-									prev_htlc_id,
-									&prev_channel_id,
-									&prev_counterparty_node_id,
-								);
-								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
-								match held_htlcs.entry(intercept_id) {
-									hash_map::Entry::Vacant(entry) => {
-										entry.insert(pending_add);
-									},
-									hash_map::Entry::Occupied(_) => {
-										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-										fail_intercepted_htlc();
-									},
-								}
+								push_held_htlc(pending_add);
 							} else {
 								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
 							}
@@ -10797,21 +10802,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// we receive the `ReleaseHeldHtlc` message from the recipient, we will circle back
 							// here and resume generating the event below.
 							if pending_add.forward_info.routing.should_hold_htlc() {
-								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-									prev_htlc_id,
-									&prev_channel_id,
-									&prev_counterparty_node_id,
-								);
-								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
-								match held_htlcs.entry(intercept_id) {
-									hash_map::Entry::Vacant(entry) => {
-										entry.insert(pending_add);
-									},
-									hash_map::Entry::Occupied(_) => {
-										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-										fail_intercepted_htlc();
-									},
-								}
+								push_held_htlc(pending_add);
 							} else if !is_our_scid
 								&& pending_add.forward_info.incoming_amt_msat.is_some()
 								&& fake_scid::is_valid_intercept(
@@ -10855,7 +10846,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										fail_intercepted_htlc();
+										fail_intercepted_htlc(pending_add);
 									},
 								}
 							} else {
