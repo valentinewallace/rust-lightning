@@ -1670,7 +1670,7 @@ where
 	/// MUST be called by always-online nodes that support holding HTLCs on behalf of often-offline
 	/// senders.
 	///
-	/// Errors if the peer does not support onion messages.
+	/// Errors if the peer does not support onion messages or we don't have a channel with them.
 	pub fn peer_connected(
 		&self, peer_node_id: PublicKey, features: &InitFeatures, live_channel: bool,
 	) -> Result<(), ()> {
