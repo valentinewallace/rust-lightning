@@ -650,8 +650,19 @@ impl Readable for PaymentId {
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
 pub struct InterceptId(pub [u8; 32]);
+
+impl Borrow<[u8]> for InterceptId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+impl_fmt_traits! {
+	impl fmt_traits for InterceptId {
+		const LENGTH: usize = 32;
+	}
+}
 
 impl InterceptId {
 	/// This intercept id corresponds to an HTLC that will be forwarded on
@@ -10888,6 +10899,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 						match held_htlcs.entry(intercept_id) {
 							hash_map::Entry::Vacant(entry) => {
+								log_trace!(
+									self.logger,
+									"Intercepted held HTLC with id {}, holding until the recipient is online",
+									intercept_id
+								);
 								entry.insert(pending_add);
 							},
 							hash_map::Entry::Occupied(_) => {
@@ -14925,6 +14941,7 @@ where
 						return;
 					},
 				}
+				log_trace!(self.logger, "Releasing held htlc with intercept_id {}", intercept_id);
 				let mut per_source_pending_forward = [(
 					htlc.prev_short_channel_id,
 					htlc.prev_counterparty_node_id,
