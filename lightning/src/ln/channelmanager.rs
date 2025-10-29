@@ -16402,18 +16402,6 @@ where
 			}
 		}
 
-		// Encode without retry info for 0.0.101 compatibility.
-		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
-		for (id, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
-				},
-				_ => {},
-			}
-		}
-
 		let mut pending_intercepted_htlcs = None;
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 		if our_pending_intercepts.len() != 0 {
@@ -16441,7 +16429,7 @@ where
 		}
 
 		write_tlv_fields!(writer, {
-			(1, pending_outbound_payments_no_retry, required),
+			// TLV 1 used to be used for pending_outbound_payments_no_retry
 			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, required),
 			(4, pending_claiming_payments, option),
@@ -17131,9 +17119,6 @@ where
 			};
 		}
 
-		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
-		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> =
-			None;
 		let mut pending_outbound_payments = None;
 		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
 			Some(new_hash_map());
@@ -17159,7 +17144,7 @@ where
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
-			(1, pending_outbound_payments_no_retry, option),
+			// TLV 1 used to be used for pending_outbound_payments_no_retry
 			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, option),
 			(4, pending_claiming_payments, option),
@@ -17199,14 +17184,8 @@ where
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
+		if pending_outbound_payments.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
-		} else if pending_outbound_payments.is_none() {
-			let mut outbounds = new_hash_map();
-			for (id, session_privs) in pending_outbound_payments_no_retry.unwrap().drain() {
-				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
-			}
-			pending_outbound_payments = Some(outbounds);
 		}
 		let pending_outbounds =
 			OutboundPayments::new(pending_outbound_payments.unwrap(), args.logger.clone());
