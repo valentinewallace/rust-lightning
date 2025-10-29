@@ -1403,15 +1403,39 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 }
 
 #[test]
-fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_0() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_1() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_2() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_3() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_4() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_5() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_6() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_7() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_8() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
@@ -2588,14 +2612,40 @@ enum AutoRetry {
 }
 
 #[test]
-fn automatic_retries() {
+fn automatic_retry_success() {
 	do_automatic_retries(AutoRetry::Success);
+}
+
+#[test]
+fn automatic_retry_spontaneous_payment() {
 	do_automatic_retries(AutoRetry::Spontaneous);
+}
+
+#[test]
+fn automatic_retry_attempts_fail() {
+	// The payment is automatically retried but fails due to running out of payment attempts.
 	do_automatic_retries(AutoRetry::FailAttempts);
+}
+
+#[test]
+fn automatic_retry_timeout_fail() {
+	// The payment is automatically retried but fails due to running out of time.
 	do_automatic_retries(AutoRetry::FailTimeout);
+}
+
+#[test]
+fn automatic_retry_restart_fail() {
+	// The payment is automatically retried but fails due to a node restart.
 	do_automatic_retries(AutoRetry::FailOnRestart);
+}
+
+#[test]
+fn automatic_retry_fail_on_retry() {
+	// The payment is automatically retried but the retry fails (in this case due to no channel being
+	// available).
 	do_automatic_retries(AutoRetry::FailOnRetry);
 }
+
 fn do_automatic_retries(test: AutoRetry) {
 	// Test basic automatic payment retries in ChannelManager. See individual `test` variant comments
 	// below.

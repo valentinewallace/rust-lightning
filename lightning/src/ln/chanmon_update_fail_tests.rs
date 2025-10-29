@@ -2839,10 +2839,17 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
+
+#[test]
+fn channel_holding_cell_serialize_with_disconnect_and_reload() {
+	do_channel_holding_cell_serialize(true, true);
+}
+#[test]
+fn channel_holding_cell_serialize_with_disconnect() {
+	do_channel_holding_cell_serialize(true, false);
+}
 #[test]
 fn channel_holding_cell_serialize() {
-	do_channel_holding_cell_serialize(true, true);
-	do_channel_holding_cell_serialize(true, false);
 	do_channel_holding_cell_serialize(false, true); // last arg doesn't matter
 }
 
