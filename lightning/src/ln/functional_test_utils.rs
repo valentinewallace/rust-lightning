@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::bump_transaction::sync::{
@@ -1282,6 +1282,24 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 		let n = added_monitors.len();
 		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
 		added_monitors.clear();
+	}
+}
+
+// Check whether the latest monitor updates added are as-expected.
+pub fn check_latest_n_monitor_updates<CM: AChannelManager, H: NodeHolder<CM = CM>, F>(
+	node: &H, channel_id: ChannelId, n: usize, matches: F,
+) where
+	F: Fn(usize, &ChannelMonitorUpdate) -> bool,
+{
+	if let Some(chain_monitor) = node.chain_monitor() {
+		let updates = chain_monitor.monitor_updates.lock().unwrap();
+		let chan_updates = updates.get(&channel_id).unwrap();
+		assert!(chan_updates.len() >= n, "Expected at least {n} updates, got {}", updates.len());
+		for (idx, update) in chan_updates.iter().rev().take(n).rev().enumerate() {
+			assert!(matches(idx, update));
+		}
+	} else {
+		panic!()
 	}
 }
 
@@ -3042,7 +3060,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array(),
 	);
 	if expect_per_path_claims {
-		assert!(events.len() > 1);
+		assert!(events.len() > 1, "Expected more than 1 event for per-path claims, got {events:?}");
 	} else {
 		assert_eq!(events.len(), 1);
 	}
