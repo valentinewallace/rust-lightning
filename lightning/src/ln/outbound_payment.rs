@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
+use crate::events::{self, Event, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{
 	EventCompletionAction, HTLCSource, PaymentCompleteUpdate, PaymentId,
@@ -2231,14 +2231,20 @@ where
 				log_info!(self.logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				let amount_msat = payment.get().total_msat();
-				pending_events.push_back((events::Event::PaymentSent {
-					payment_id: Some(payment_id),
-					payment_preimage,
-					payment_hash,
-					amount_msat,
-					fee_paid_msat,
-					bolt12_invoice: bolt12_invoice,
-				}, ev_completion_action.take()));
+				let duplicate_sent_event = pending_events.iter().find(|(ev, _)| match ev {
+					Event::PaymentSent { payment_id: ev_payment_id, .. } => &Some(payment_id) == ev_payment_id,
+					_ => false
+				}).is_some();
+				if !duplicate_sent_event {
+					pending_events.push_back((events::Event::PaymentSent {
+						payment_id: Some(payment_id),
+						payment_preimage,
+						payment_hash,
+						amount_msat,
+						fee_paid_msat,
+						bolt12_invoice,
+					}, ev_completion_action.take()));
+				}
 				payment.get_mut().mark_fulfilled();
 			}
 

@@ -51,7 +51,7 @@ use crate::ln::channel_state::{
 };
 use crate::ln::channelmanager::{
 	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource,
-	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
+	OpenChannelMessage, PaymentClaimDetails, PaymentId, PendingHTLCInfo, PendingHTLCStatus,
 	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
 	MIN_CLTV_EXPIRY_DELTA,
 };
@@ -72,6 +72,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
+use crate::routing::router::Path;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
@@ -12614,6 +12615,30 @@ where
 		self.context.next_holder_htlc_id += 1;
 
 		Ok(true)
+	}
+
+	pub(super) fn get_all_outbound_holding_cell_htlcs(
+		&self,
+	) -> Vec<(PaymentId, PaymentHash, [u8; 32], Path)> {
+		let mut htlcs = Vec::new();
+		for htlc in self.context.holding_cell_htlc_updates.iter() {
+			match htlc {
+				HTLCUpdateAwaitingACK::AddHTLC {
+					payment_hash,
+					source: HTLCSource::OutboundRoute { path, session_priv, payment_id, .. },
+					..
+				} => {
+					htlcs.push((
+						*payment_id,
+						*payment_hash,
+						session_priv.secret_bytes(),
+						path.clone(),
+					));
+				},
+				_ => {},
+			}
+		}
+		htlcs
 	}
 
 	#[rustfmt::skip]

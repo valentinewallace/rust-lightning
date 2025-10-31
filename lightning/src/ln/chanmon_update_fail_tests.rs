@@ -14,7 +14,9 @@
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
-use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{
+	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent, ANTI_REORG_DELAY,
+};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
@@ -2710,6 +2712,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &send.msgs[0]);
+	assert_eq!(send.msgs[0].payment_hash, payment_hash_1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &send.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
@@ -2773,6 +2776,28 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		if reload_a {
 			// The two pending monitor updates were replayed (but are still pending).
 			check_added_monitors(&nodes[0], 2);
+			check_latest_n_monitor_updates(
+				&nodes[0],
+				chan_id,
+				2,
+				|upd_idx, upd: &ChannelMonitorUpdate| {
+					assert_eq!(upd.updates.len(), 1);
+					match upd_idx {
+						0 => {
+							matches!(upd.updates[0],
+								ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage, .. }
+								if payment_preimage == payment_preimage_0)
+						},
+						1 => {
+							matches!(
+								upd.updates[0],
+								ChannelMonitorUpdateStep::CommitmentSecret { .. }
+							)
+						},
+						_ => panic!(),
+					}
+				},
+			);
 		} else {
 			// There should be no monitor updates as we are still pending awaiting a failed one.
 			check_added_monitors(&nodes[0], 0);
@@ -2810,6 +2835,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			expect_payment_sent(&nodes[1], payment_preimage_0, None, false, false);
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
+			assert_eq!(updates.update_add_htlcs[0].payment_hash, payment_hash_2);
 			updates.commitment_signed
 		},
 		_ => panic!("Unexpected event type!"),
@@ -2829,7 +2855,9 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentPathSuccessful { .. } => {},
+		Event::PaymentPathSuccessful { payment_hash, .. } => {
+			assert_eq!(payment_hash.unwrap(), payment_hash_0);
+		},
 		_ => panic!("Unexpected event"),
 	};
 
@@ -2839,10 +2867,17 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
+
+#[test]
+fn channel_holding_cell_serialize_with_disconnect_and_reload() {
+	do_channel_holding_cell_serialize(true, true);
+}
+#[test]
+fn channel_holding_cell_serialize_with_disconnect() {
+	do_channel_holding_cell_serialize(true, false);
+}
 #[test]
 fn channel_holding_cell_serialize() {
-	do_channel_holding_cell_serialize(true, true);
-	do_channel_holding_cell_serialize(true, false);
 	do_channel_holding_cell_serialize(false, true); // last arg doesn't matter
 }
 

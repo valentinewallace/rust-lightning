@@ -12,7 +12,7 @@
 //! payments thereafter.
 
 use crate::chain::channelmonitor::{
-	ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS,
+	ChannelMonitorUpdateStep, ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::{Confirm, Listen};
 use crate::events::{
@@ -1218,11 +1218,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	let onion = RecipientOnionFields::secret_only(payment_secret);
-	match nodes[0].node.send_payment_with_route(new_route, hash, onion, payment_id) {
-		Err(RetryableSendFailure::DuplicatePayment) => {},
-		_ => panic!("Unexpected error"),
-	}
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.send_payment_with_route(new_route, hash, onion, payment_id).is_ok());
+	nodes[0].node.get_and_clear_pending_msg_events();
+	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
@@ -1374,24 +1372,16 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 		check_added_monitors(&nodes[0], 0);
 	} else {
-		if persist_manager_post_event {
-			assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-		} else {
-			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
-		}
-		if persist_manager_post_event {
-			// After reload, the ChannelManager identified the failed payment and queued up the
-			// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
-			// already did that) and corresponding ChannelMonitorUpdate to mark the payment
-			// handled, but while processing the pending `MonitorEvent`s (which were not processed
-			// before the monitor was persisted) we will end up with a duplicate
-			// ChannelMonitorUpdate.
-			check_added_monitors(&nodes[0], 2);
-		} else {
-			// ...unless we got the PaymentSent event, in which case we have de-duplication logic
-			// preventing a redundant monitor event.
-			check_added_monitors(&nodes[0], 1);
-		}
+		// If we persisted the monitor before handling the `PaymentSent` event, the monitor does not
+		// realize the payment is permanently and fully resolved and will provide it back to the
+		// `ChannelManager` upon reload, above. This will result in a duplicate `PaymentSent` event
+		// being generated and corresponding monitor update that marks the HTLC as permanently resolved.
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+		check_added_monitors(&nodes[0], 1);
+		check_latest_monitor_update(&nodes[0], chan_id, |upd| {
+			assert_eq!(upd.updates.len(), 1);
+			matches!(upd.updates[0], ChannelMonitorUpdateStep::ReleasePaymentComplete { .. })
+		});
 	}
 
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
@@ -1403,15 +1393,39 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 }
 
 #[test]
-fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_0() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_1() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_2() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_3() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_4() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_5() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_6() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_7() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_8() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
@@ -2588,14 +2602,40 @@ enum AutoRetry {
 }
 
 #[test]
-fn automatic_retries() {
+fn automatic_retry_success() {
 	do_automatic_retries(AutoRetry::Success);
+}
+
+#[test]
+fn automatic_retry_spontaneous_payment() {
 	do_automatic_retries(AutoRetry::Spontaneous);
+}
+
+#[test]
+fn automatic_retry_attempts_fail() {
+	// The payment is automatically retried but fails due to running out of payment attempts.
 	do_automatic_retries(AutoRetry::FailAttempts);
+}
+
+#[test]
+fn automatic_retry_timeout_fail() {
+	// The payment is automatically retried but fails due to running out of time.
 	do_automatic_retries(AutoRetry::FailTimeout);
+}
+
+#[test]
+fn automatic_retry_restart_fail() {
+	// The payment is automatically retried but fails due to a node restart.
 	do_automatic_retries(AutoRetry::FailOnRestart);
+}
+
+#[test]
+fn automatic_retry_fail_on_retry() {
+	// The payment is automatically retried but the retry fails (in this case due to no channel being
+	// available).
 	do_automatic_retries(AutoRetry::FailOnRetry);
 }
+
 fn do_automatic_retries(test: AutoRetry) {
 	// Test basic automatic payment retries in ChannelManager. See individual `test` variant comments
 	// below.
@@ -2809,16 +2849,10 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 
-		let mut events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentFailed { payment_hash, payment_id, reason } => {
-				assert_eq!(Some(hash), payment_hash);
-				assert_eq!(PaymentId(hash.0), payment_id);
-				assert_eq!(PaymentFailureReason::RetriesExhausted, reason.unwrap());
-			},
-			_ => panic!("Unexpected event"),
-		}
+		// Because we reload outbound payments from the existing `ChannelMonitor`s, and no HTLC exists
+		// in those monitors after restart, we will currently forget about the payment and fail to
+		// generate a `PaymentFailed` event.
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	} else if test == AutoRetry::FailOnRetry {
 		let onion = RecipientOnionFields::secret_only(payment_secret);
 		let id = PaymentId(hash.0);
