@@ -1285,6 +1285,15 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	}
 }
 
+// Check whether the latest monitor update added is as-expected.
+pub fn check_latest_monitor_update<CM: AChannelManager, H: NodeHolder<CM = CM>, F>(
+	node: &H, channel_id: ChannelId, matches: F,
+) where
+	F: Fn(&ChannelMonitorUpdate) -> bool,
+{
+	check_latest_n_monitor_updates(node, channel_id, 1, |_idx, update| matches(update))
+}
+
 // Check whether the latest monitor updates added are as-expected.
 pub fn check_latest_n_monitor_updates<CM: AChannelManager, H: NodeHolder<CM = CM>, F>(
 	node: &H, channel_id: ChannelId, n: usize, matches: F,
