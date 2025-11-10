@@ -1106,6 +1106,12 @@ pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::Commitm
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
+			println!(
+				"VMW: # adds: {}, # fails: {}, # fulfills: {}",
+				updates.update_add_htlcs.len(),
+				updates.update_fail_htlcs.len(),
+				updates.update_fulfill_htlcs.len()
+			);
 			assert_eq!(node_id, recipient);
 			(*updates).clone()
 		},
@@ -1301,9 +1307,13 @@ pub fn check_latest_n_monitor_updates<CM: AChannelManager, H: NodeHolder<CM = CM
 	F: Fn(usize, &ChannelMonitorUpdate) -> bool,
 {
 	if let Some(chain_monitor) = node.chain_monitor() {
-		let updates = chain_monitor.monitor_updates.lock().unwrap();
-		let chan_updates = updates.get(&channel_id).unwrap();
-		assert!(chan_updates.len() >= n, "Expected at least {n} updates, got {}", updates.len());
+		let per_chan_updates = chain_monitor.monitor_updates.lock().unwrap();
+		let chan_updates = per_chan_updates.get(&channel_id).unwrap();
+		assert!(
+			chan_updates.len() >= n,
+			"Expected at least {n} updates, got {}",
+			chan_updates.len()
+		);
 		for (idx, update) in chan_updates.iter().rev().take(n).rev().enumerate() {
 			assert!(matches(idx, update));
 		}
@@ -2616,7 +2626,10 @@ macro_rules! expect_htlc_handling_failed_destinations {
 		for event in $events {
 			match event {
 				$crate::events::Event::HTLCHandlingFailed { ref failure_type, .. } => {
-					assert!($expected_failures.contains(&failure_type));
+					assert!(
+						$expected_failures.contains(&failure_type),
+						"actual failure type: {failure_type:?}"
+					);
 					num_expected_failures -= 1;
 				},
 				_ => panic!("Unexpected destination"),
@@ -2643,7 +2656,8 @@ pub fn expect_and_process_pending_htlcs_and_htlc_handling_failed(
 	let events = node.node.get_and_clear_pending_events();
 	expect_htlc_failure_conditions(events, expected_failures);
 	expect_and_process_pending_htlcs(node, false);
-	assert!(node.node.get_and_clear_pending_events().is_empty());
+	let events = node.node.get_and_clear_pending_events();
+	assert!(events.is_empty(), "{events:?}");
 }
 
 pub fn expect_and_process_pending_htlcs(node: &Node<'_, '_, '_>, process_twice: bool) {
@@ -3049,7 +3063,7 @@ macro_rules! expect_payment_claimed {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 			},
-			_ => panic!("Unexpected event"),
+			_ => panic!("Unexpected event: {events:?}"),
 		}
 	};
 }

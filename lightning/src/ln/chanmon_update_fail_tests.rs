@@ -2691,7 +2691,9 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	//
 	// Note that because, at the end, MonitorUpdateInProgress is still set, the HTLC generated in
 	// (c) will not be freed from the holding cell.
-	let (payment_preimage_0, payment_hash_0, ..) = route_payment(&nodes[1], &[&nodes[0]], 100_000);
+	let amt_msat_0 = 100_000;
+	let (payment_preimage_0, payment_hash_0, payment_secret_0, ..) =
+		route_payment(&nodes[1], &[&nodes[0]], amt_msat_0);
 
 	let onion_1 = RecipientOnionFields::secret_only(payment_secret_1);
 	let id_1 = PaymentId(payment_hash_1.0);
@@ -2798,6 +2800,13 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 					}
 				},
 			);
+
+			// We reload our pending inbound `update_add_htlc`s from `Channel`s on restart and re-decode
+			// their onions on the next call to `process_pending_htlc_forwards`, causing a duplicate
+			// `PaymentClaimable` event.
+			nodes[0].node.process_pending_htlc_forwards();
+			expect_payment_claimable!(nodes[0], payment_hash_0, payment_secret_0, amt_msat_0);
+			nodes[0].node.claim_funds(payment_preimage_0);
 		} else {
 			// There should be no monitor updates as we are still pending awaiting a failed one.
 			check_added_monitors(&nodes[0], 0);

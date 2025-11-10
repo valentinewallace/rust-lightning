@@ -212,7 +212,9 @@ enum InboundHTLCState {
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
 	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
-	Committed,
+	Committed {
+		update_add_htlc_opt: Option<msgs::UpdateAddHTLC>,
+	},
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
 	/// we'll drop it.
@@ -235,7 +237,7 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-			InboundHTLCState::Committed =>
+			InboundHTLCState::Committed { .. } =>
 				Some(InboundHTLCStateDetails::Committed),
 			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
@@ -254,7 +256,7 @@ impl fmt::Display for InboundHTLCState {
 			InboundHTLCState::RemoteAnnounced(_) => write!(f, "RemoteAnnounced"),
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => write!(f, "AwaitingRemoteRevokeToAnnounce"),
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => write!(f, "AwaitingAnnouncedRemoteRevoke"),
-			InboundHTLCState::Committed => write!(f, "Committed"),
+			InboundHTLCState::Committed { .. } => write!(f, "Committed"),
 			InboundHTLCState::LocalRemoved(_) => write!(f, "LocalRemoved"),
 		}
 	}
@@ -266,7 +268,7 @@ impl InboundHTLCState {
 			InboundHTLCState::RemoteAnnounced(_) => !generated_by_local,
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => !generated_by_local,
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => true,
-			InboundHTLCState::Committed => true,
+			InboundHTLCState::Committed { .. } => true,
 			InboundHTLCState::LocalRemoved(_) => !generated_by_local,
 		}
 	}
@@ -294,7 +296,7 @@ impl InboundHTLCState {
 				},
 				InboundHTLCResolution::Resolved { .. } => false,
 			},
-			InboundHTLCState::Committed | InboundHTLCState::LocalRemoved(_) => false,
+			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
 		}
 	}
 }
@@ -4053,7 +4055,7 @@ where
 
 		if self.pending_inbound_htlcs.iter()
 			.any(|htlc| match htlc.state {
-				InboundHTLCState::Committed => false,
+				InboundHTLCState::Committed { .. } => false,
 				// An HTLC removal from the local node is pending on the remote commitment.
 				InboundHTLCState::LocalRemoved(_) => true,
 				// An HTLC add from the remote node is pending on the local commitment.
@@ -4482,7 +4484,7 @@ where
 				(InboundHTLCState::RemoteAnnounced(..), _) => true,
 				(InboundHTLCState::AwaitingRemoteRevokeToAnnounce(..), _) => true,
 				(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(..), _) => true,
-				(InboundHTLCState::Committed, _) => true,
+				(InboundHTLCState::Committed { .. }, _) => true,
 				(InboundHTLCState::LocalRemoved(..), true) => true,
 				(InboundHTLCState::LocalRemoved(..), false) => false,
 			})
@@ -7296,7 +7298,7 @@ where
 					payment_preimage_arg
 				);
 				match htlc.state {
-					InboundHTLCState::Committed => {},
+					InboundHTLCState::Committed { .. } => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
 						if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						} else {
@@ -7390,7 +7392,7 @@ where
 
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			if let InboundHTLCState::Committed = htlc.state {
+			if let InboundHTLCState::Committed { .. } = htlc.state {
 			} else {
 				debug_assert!(
 					false,
@@ -7526,7 +7528,7 @@ where
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
-					InboundHTLCState::Committed => {},
+					InboundHTLCState::Committed { .. } => {},
 					InboundHTLCState::LocalRemoved(_) => {
 						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
 					},
@@ -7747,6 +7749,19 @@ where
 			}),
 		});
 		Ok(())
+	}
+
+	pub(super) fn get_committed_update_add_htlcs(&self) -> Vec<msgs::UpdateAddHTLC> {
+		self.context
+			.pending_inbound_htlcs
+			.iter()
+			.filter_map(|htlc| match htlc.state {
+				InboundHTLCState::Committed { ref update_add_htlc_opt } => {
+					update_add_htlc_opt.clone()
+				},
+				_ => None,
+			})
+			.collect()
 	}
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
@@ -8683,7 +8698,7 @@ where
 					false
 				};
 				if swap {
-					let mut state = InboundHTLCState::Committed;
+					let mut state = InboundHTLCState::Committed { update_add_htlc_opt: None };
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
@@ -8722,14 +8737,18 @@ where
 									PendingHTLCStatus::Forward(forward_info) => {
 										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
 										to_forward_infos.push((forward_info, htlc.htlc_id));
-										htlc.state = InboundHTLCState::Committed;
+										htlc.state = InboundHTLCState::Committed {
+											update_add_htlc_opt: None,
+										};
 									},
 								}
 							},
 							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								pending_update_adds.push(update_add_htlc);
-								htlc.state = InboundHTLCState::Committed;
+								pending_update_adds.push(update_add_htlc.clone());
+								htlc.state = InboundHTLCState::Committed {
+									update_add_htlc_opt: Some(update_add_htlc),
+								};
 							},
 						}
 					}
@@ -9266,7 +9285,7 @@ where
 					// in response to it yet, so don't touch it.
 					true
 				},
-				InboundHTLCState::Committed => true,
+				InboundHTLCState::Committed { .. } => true,
 				InboundHTLCState::LocalRemoved(_) => {
 					// We (hopefully) sent a commitment_signed updating this HTLC (which we can
 					// re-transmit if needed) and they may have even sent a revoke_and_ack back
@@ -14467,6 +14486,7 @@ where
 			}
 		}
 		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
+		let mut committed_update_add_htlcs: Vec<Option<msgs::UpdateAddHTLC>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -14486,8 +14506,9 @@ where
 					2u8.write(writer)?;
 					htlc_resolution.write(writer)?;
 				},
-				&InboundHTLCState::Committed => {
+				&InboundHTLCState::Committed { ref update_add_htlc_opt } => {
 					3u8.write(writer)?;
+					committed_update_add_htlcs.push(update_add_htlc_opt.clone());
 				},
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
@@ -14854,6 +14875,7 @@ where
 			(65, self.quiescent_action, option), // Added in 0.2
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
+			(71, committed_update_add_htlcs, optional_vec),
 		});
 
 		Ok(())
@@ -14937,7 +14959,7 @@ where
 						};
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
 					},
-					3 => InboundHTLCState::Committed,
+					3 => InboundHTLCState::Committed { update_add_htlc_opt: None },
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -15221,6 +15243,7 @@ where
 
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
+		let mut committed_update_add_htlcs_opt: Option<Vec<Option<msgs::UpdateAddHTLC>>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -15268,6 +15291,7 @@ where
 			(65, quiescent_action, upgradable_option), // Added in 0.2
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
+			(71, committed_update_add_htlcs_opt, optional_vec),
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15387,6 +15411,17 @@ where
 				}
 			}
 			// We expect all held HTLC flags to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		if let Some(committed_update_add_htlcs) = committed_update_add_htlcs_opt {
+			let mut iter = committed_update_add_htlcs.into_iter();
+			for htlc in pending_inbound_htlcs.iter_mut() {
+				if let InboundHTLCState::Committed { ref mut update_add_htlc_opt } = htlc.state {
+					*update_add_htlc_opt = iter.next().ok_or(DecodeError::InvalidValue)?;
+				}
+			}
 			if iter.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -15953,7 +15988,7 @@ mod tests {
 			amount_msat: htlc_amount_msat,
 			payment_hash: PaymentHash(Sha256::hash(&[42; 32]).to_byte_array()),
 			cltv_expiry: 300000000,
-			state: InboundHTLCState::Committed,
+			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
 		});
 
 		node_a_chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {

@@ -1449,7 +1449,9 @@ fn test_fulfill_restart_failure() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let amt_msat = 100_000;
+	let (payment_preimage, payment_hash, payment_secret, ..) =
+		route_payment(&nodes[0], &[&nodes[1]], amt_msat);
 
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
 	// pre-fulfill, which we do by serializing it here.
@@ -1471,6 +1473,8 @@ fn test_fulfill_restart_failure() {
 	nodes[0].node.peer_disconnected(node_b_id);
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash };
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
