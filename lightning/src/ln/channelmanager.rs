@@ -17275,7 +17275,8 @@ where
 		let mut in_flight_monitor_updates: Option<
 			HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 		> = None;
-		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
+		let mut decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> =
+			None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
@@ -17292,13 +17293,15 @@ where
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
 			(13, claimable_htlc_onion_fields, optional_vec),
-			(14, decode_update_add_htlcs, option),
+			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
-		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs_legacy =
+			decode_update_add_htlcs_legacy.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs = new_hash_map();
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -17609,7 +17612,25 @@ where
 				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
-					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+					is_channel_closed = match peer_state.channel_by_id.get(channel_id) {
+						Some(chan) => {
+							if let Some(funded_chan) = chan.as_funded() {
+								let inbound_committed_update_adds =
+									funded_chan.get_inbound_committed_update_adds();
+								if !inbound_committed_update_adds.is_empty() {
+									// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
+									// `Channel`. We are moving away from writing the `decode_update_add_htlcs` map as
+									// part of getting rid of `ChannelManager` persistence.
+									decode_update_add_htlcs.insert(
+										funded_chan.context.outbound_scid_alias(),
+										inbound_committed_update_adds,
+									);
+								}
+							}
+							false
+						},
+						None => true,
+					};
 				}
 
 				if is_channel_closed {
@@ -17673,6 +17694,12 @@ where
 								// the monitor was when forwarding the payment.
 								dedup_decode_update_add_htlcs(
 									&mut decode_update_add_htlcs,
+									&prev_hop_data,
+									"HTLC was forwarded to the closed channel",
+									&args.logger,
+								);
+								dedup_decode_update_add_htlcs(
+									&mut decode_update_add_htlcs_legacy,
 									&prev_hop_data,
 									"HTLC was forwarded to the closed channel",
 									&args.logger,
@@ -17908,6 +17935,17 @@ where
 				if fail_read {
 					return Err(DecodeError::InvalidValue);
 				}
+			}
+		}
+
+		for (src, _, _, _, _, _) in failed_htlcs.iter() {
+			if let HTLCSource::PreviousHopData(prev_hop_data) = src {
+				dedup_decode_update_add_htlcs(
+					&mut decode_update_add_htlcs,
+					prev_hop_data,
+					"HTLC was failed backwards during manager read",
+					&args.logger,
+				);
 			}
 		}
 
@@ -18161,6 +18199,17 @@ where
 			}
 		}
 
+		for htlcs in claimable_payments.values().map(|pmt| &pmt.htlcs) {
+			for prev_hop_data in htlcs.iter().map(|h| &h.prev_hop) {
+				dedup_decode_update_add_htlcs(
+					&mut decode_update_add_htlcs,
+					prev_hop_data,
+					"HTLC was already decoded and marked as a claimable payment",
+					&args.logger,
+				);
+			}
+		}
+
 		let best_block = BestBlock::new(best_block_hash, best_block_height);
 		let flow = OffersMessageFlow::new(
 			chain_hash,
@@ -18190,7 +18239,7 @@ where
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
-			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
+			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs_legacy),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
 				pending_claiming_payments: pending_claiming_payments.unwrap(),
