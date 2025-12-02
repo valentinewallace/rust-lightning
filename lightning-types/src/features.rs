@@ -175,6 +175,8 @@ mod sealed {
 			,
 			// Byte 19
 			HtlcHold | SplicePrototype,
+			// Byte 20
+			ZeroReserve,
 		]
 	);
 	define_context!(
@@ -204,8 +206,10 @@ mod sealed {
 			,
 			// Byte 19
 			HtlcHold | SplicePrototype,
-			// Byte 20 - 31
-			,,,,,,,,,,,,
+			// Byte 20
+			ZeroReserve,
+			// Byte 21 - 31
+			,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
 		]
@@ -731,6 +735,17 @@ mod sealed {
 		clear_splicing,
 		supports_splicing,
 		requires_splicing
+	);
+	define_feature!(
+		165, // The BOLTs PR uses feature bit 64/65, so add +100 for the experimental bit
+		ZeroReserve,
+		[InitContext, NodeContext],
+		"Feature flags for zero channel reserve",
+		set_zero_reserve_optional,
+		set_zero_reserve_required,
+		clear_zero_reserve,
+		supports_zero_reserve,
+		requires_zero_reserve
 	);
 	define_feature!(
 		259,
