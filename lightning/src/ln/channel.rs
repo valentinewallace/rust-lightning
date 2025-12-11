@@ -3491,10 +3491,6 @@ where
 		if holder_selected_channel_reserve_satoshis * 1000 >= full_channel_value_msat {
 			return Err(ChannelError::close(format!("Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.", holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg_push_msat)));
 		}
-		if msg_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			log_debug!(logger, "channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast stale states without any risk, implying this channel is very insecure for our counterparty.",
-				msg_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-		}
 		if holder_selected_channel_reserve_satoshis < open_channel_fields.dust_limit_satoshis {
 			return Err(ChannelError::close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", open_channel_fields.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
 		}
