@@ -290,7 +290,8 @@ pub struct OpenChannel {
 	pub common_fields: CommonOpenChannelFields,
 	/// The amount to push to the counterparty as part of the open, in milli-satoshi
 	pub push_msat: u64,
-	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	/// The minimum value unencumbered by HTLCs for the receiver of this message (the channel
+	/// initiatee) to keep in the channel
 	pub channel_reserve_satoshis: u64,
 }
 
@@ -368,7 +369,8 @@ pub struct CommonAcceptChannelFields {
 pub struct AcceptChannel {
 	/// Common fields of `accept_channel(2)`-like messages
 	pub common_fields: CommonAcceptChannelFields,
-	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	/// The minimum value unencumbered by HTLCs for the receiver of this message (the channel
+	/// initiator) to keep in the channel
 	pub channel_reserve_satoshis: u64,
 	#[cfg(taproot)]
 	/// Next nonce the channel initiator should use to create a funding output signature against
