@@ -154,9 +154,10 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Default value: `10_000` millionths (i.e., 1% of channel value)
 	///
-	/// Minimum value: If the calculated proportional value is less than `1000` sats, it will be
-	///                treated as `1000` sats instead, which is a safe implementation-specific lower
-	///                bound.
+	/// Minimum value: zero if the counterparty supports [`InitFeatures::supports_zero_reserve`].
+	///                Otherwise, If the calculated proportional value is less than `1000` sats,
+	///                it will be treated as `1000` sats instead, which is a safe
+	///                implementation-specific lower bound.
 	///
 	/// Maximum value: `1_000_000` (i.e., 100% of channel value. Any values larger than one million
 	///                will be treated as one million instead, although channel negotiations will

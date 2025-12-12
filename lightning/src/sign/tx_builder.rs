@@ -64,6 +64,19 @@ impl NextCommitmentStats {
 			))
 		}
 	}
+
+	// Check that the commitment transaction corresponding to `self` will have more than 0 outputs.
+	pub(crate) fn check_nondust_outputs_present(&self, dust_limit_sat: u64) -> Result<(), ()> {
+		let (holder_balance_after_fees_msat, counterparty_balance_after_fees_msat) =
+			self.get_holder_counterparty_balances_incl_fee_msat()?;
+		if holder_balance_after_fees_msat < dust_limit_sat.saturating_mul(1000)
+			&& counterparty_balance_after_fees_msat < dust_limit_sat.saturating_mul(1000)
+			&& self.nondust_htlc_count == 0
+		{
+			return Err(());
+		}
+		Ok(())
+	}
 }
 
 fn commit_plus_htlc_tx_fees_msat(

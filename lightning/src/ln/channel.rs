@@ -4800,6 +4800,14 @@ where
 				self.holder_max_htlc_value_in_flight_msat,
 			)));
 		}
+		if next_remote_commitment_stats
+			.check_nondust_outputs_present(self.counterparty_dust_limit_satoshis)
+			.is_err()
+		{
+			return Err(ChannelError::WarnAndDisconnect(String::from(
+				"Candidate HTLC would cause remote commitment tx to have 0 outputs",
+			)));
+		}
 
 		// Check that the remote can afford to pay for this HTLC on-chain at the current
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
@@ -4863,6 +4871,15 @@ where
 				return Err(ChannelError::close(
 					"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
 				));
+			}
+
+			if next_local_commitment_stats
+				.check_nondust_outputs_present(self.holder_dust_limit_satoshis)
+				.is_err()
+			{
+				return Err(ChannelError::WarnAndDisconnect(String::from(
+					"Candidate HTLC would cause local commitment tx to have 0 outputs",
+				)));
 			}
 		}
 
@@ -12687,6 +12704,26 @@ where
 				"Cannot send an HTLC while disconnected from channel counterparty".to_owned(),
 			));
 		}
+
+		let dust_exposure_limiting_feerate =
+			self.get_dust_exposure_limiting_feerate(&fee_estimator, self.funding.get_channel_type());
+		let next_remote_commitment_stats = self
+			.get_next_remote_commitment_stats(
+				self.funding,
+				Some(HTLCAmountDirection { outbound: true, amount_msat }),
+				false, // TODO check
+				0, // TODO check
+				self.context().feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			)
+			if next_remote_commitment_stats
+				.check_nondust_outputs_present(self.counterparty_dust_limit_satoshis)
+					.is_err()
+			{
+				return Err((LocalHTLCFailureReason::HTLCMinimum, String::from(
+							"Candidate HTLC would cause remote commitment tx to have 0 outputs",
+				)));
+			}
 
 		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
 		log_debug!(
