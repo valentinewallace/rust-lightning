@@ -16563,6 +16563,17 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
+// We plan to start writing this version in 0.5.
+//
+// LDK 0.5+ will reconstruct the set of pending HTLCs from `Channel{Monitor}` data that started
+// being written in 0.3, ignoring legacy `ChannelManager` HTLC maps on read and not writing them.
+// LDK 0.5+ will automatically fail to read if the pending HTLC set cannot be reconstructed, i.e.
+// if we were last written with pending HTLCs on 0.2- or if the new 0.3+ fields are missing.
+//
+// If 0.3 or 0.4 reads this manager version, it knows that the legacy maps were not written and
+// acts accordingly.
+const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: u8 = 5;
+
 impl_writeable_tlv_based!(PhantomRouteHints, {
 	(2, channels, required_vec),
 	(4, phantom_scid, required),
@@ -17322,6 +17333,8 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
 	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
+	// The `ChannelManager` version that was written.
+	version: u8,
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
@@ -17338,7 +17351,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 	fn read<R: io::Read>(
 		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, SP, L>,
 	) -> Result<Self, DecodeError> {
-		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+		let version = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let best_block_height: u32 = Readable::read(reader)?;
@@ -17360,21 +17373,26 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			channels.push(channel);
 		}
 
-		let forward_htlcs_count: u64 = Readable::read(reader)?;
-		let mut forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
-			hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
-		for _ in 0..forward_htlcs_count {
-			let short_channel_id = Readable::read(reader)?;
-			let pending_forwards_count: u64 = Readable::read(reader)?;
-			let mut pending_forwards = Vec::with_capacity(cmp::min(
-				pending_forwards_count as usize,
-				MAX_ALLOC_SIZE / mem::size_of::<HTLCForwardInfo>(),
-			));
-			for _ in 0..pending_forwards_count {
-				pending_forwards.push(Readable::read(reader)?);
-			}
-			forward_htlcs_legacy.insert(short_channel_id, pending_forwards);
-		}
+		let forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
+			if version < RECONSTRUCT_HTLCS_FROM_CHANS_VERSION {
+				let forward_htlcs_count: u64 = Readable::read(reader)?;
+				let mut fwds = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+				for _ in 0..forward_htlcs_count {
+					let short_channel_id = Readable::read(reader)?;
+					let pending_forwards_count: u64 = Readable::read(reader)?;
+					let mut pending_forwards = Vec::with_capacity(cmp::min(
+						pending_forwards_count as usize,
+						MAX_ALLOC_SIZE / mem::size_of::<HTLCForwardInfo>(),
+					));
+					for _ in 0..pending_forwards_count {
+						pending_forwards.push(Readable::read(reader)?);
+					}
+					fwds.insert(short_channel_id, pending_forwards);
+				}
+				fwds
+			} else {
+				new_hash_map()
+			};
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
 		let mut claimable_htlcs_list =
@@ -17585,6 +17603,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			version,
 		})
 	}
 }
@@ -17888,6 +17907,7 @@ impl<
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			version: _version,
 		} = data;
 
 		let empty_peer_state = || PeerState {
@@ -18431,7 +18451,7 @@ impl<
 		// `reconstruct_manager_from_monitors` is set below. Currently it is only set in tests, randomly
 		// to ensure the legacy codepaths also have test coverage.
 		#[cfg(not(test))]
-		let reconstruct_manager_from_monitors = false;
+		let reconstruct_manager_from_monitors = _version >= RECONSTRUCT_HTLCS_FROM_CHANS_VERSION;
 		#[cfg(test)]
 		let reconstruct_manager_from_monitors =
 			args.reconstruct_manager_from_monitors.unwrap_or_else(|| {
