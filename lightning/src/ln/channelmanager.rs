@@ -10147,7 +10147,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
 		chan.inbound_committed_unresolved_htlcs()
 			.iter()
-			.filter(|(_, htlc)| matches!(htlc, InboundUpdateAdd::WithOnion { .. }))
+			.filter(|(_, _, _, htlc)| matches!(htlc, InboundUpdateAdd::WithOnion { .. }))
 			.count()
 	}
 
@@ -18524,7 +18524,9 @@ impl<
 								let scid_alias = funded_chan.context.outbound_scid_alias();
 								let inbound_committed_update_adds =
 									funded_chan.inbound_committed_unresolved_htlcs();
-								for (payment_hash, htlc) in inbound_committed_update_adds {
+								for (payment_hash, htlc_id, cltv_expiry, htlc) in
+									inbound_committed_update_adds
+								{
 									match htlc {
 										InboundUpdateAdd::WithOnion { update_add_htlc } => {
 											// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
@@ -18540,9 +18542,32 @@ impl<
 											}
 										},
 										InboundUpdateAdd::Forwarded {
-											hop_data,
+											prev_outbound_scid_alias,
+											user_channel_id,
+											incoming_packet_shared_secret,
+											phantom_shared_secret,
+											trampoline_shared_secret,
+											blinded_failure,
+											channel_id,
+											outpoint,
+											counterparty_node_id,
 											outbound_amt_msat,
 										} => {
+											// Reconstruct the full HTLCPreviousHopData using
+											// htlc_id and cltv_expiry from the outer struct.
+											let hop_data = HTLCPreviousHopData {
+												prev_outbound_scid_alias,
+												user_channel_id,
+												htlc_id,
+												incoming_packet_shared_secret,
+												phantom_shared_secret,
+												trampoline_shared_secret,
+												blinded_failure,
+												channel_id,
+												outpoint,
+												counterparty_node_id,
+												cltv_expiry: Some(cltv_expiry),
+											};
 											already_forwarded_htlcs.push((
 												payment_hash,
 												hop_data,

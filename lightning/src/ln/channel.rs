@@ -50,10 +50,10 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
-	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
-	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
-	MIN_CLTV_EXPIRY_DELTA,
+	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
+	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
+	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -320,10 +320,20 @@ pub(super) enum InboundUpdateAdd {
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
 	/// its onion to be pruned and no longer persisted.
+	///
+	/// The fields stored here are used to fail/claim this HTLC backwards after restart if it's
+	/// missing in the outbound edge. Fields that are redundant with the outer [`InboundHTLCOutput`]
+	/// (i.e., `htlc_id` and `cltv_expiry`) are not stored here.
 	Forwarded {
-		/// Useful if we need to fail or claim this HTLC backwards after restart, if it's missing in the
-		/// outbound edge.
-		hop_data: HTLCPreviousHopData,
+		prev_outbound_scid_alias: u64,
+		user_channel_id: Option<u128>,
+		incoming_packet_shared_secret: [u8; 32],
+		phantom_shared_secret: Option<[u8; 32]>,
+		trampoline_shared_secret: Option<[u8; 32]>,
+		blinded_failure: Option<BlindedFailure>,
+		channel_id: ChannelId,
+		outpoint: OutPoint,
+		counterparty_node_id: Option<PublicKey>,
 		/// Useful if we need to claim this HTLC backwards after a restart and it's missing in the
 		/// outbound edge, to generate an accurate [`Event::PaymentForwarded`].
 		///
@@ -341,8 +351,18 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	},
 	(1, Legacy) => {},
 	(2, Forwarded) => {
-		(0, hop_data, required),
-		(2, outbound_amt_msat, required),
+		(0, prev_outbound_scid_alias, required),
+		(1, phantom_shared_secret, option),
+		(2, outpoint, required),
+		(3, blinded_failure, option),
+		// Note: htlc_id and cltv_expiry are not serialized here as they are redundant with
+		// the outer InboundHTLCOutput's fields.
+		(4, outbound_amt_msat, required),
+		(6, incoming_packet_shared_secret, required),
+		(7, user_channel_id, option),
+		(9, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(outpoint.0.unwrap()))),
+		(11, counterparty_node_id, option),
+		(13, trampoline_shared_secret, option),
 	},
 );
 
@@ -7862,9 +7882,15 @@ where
 	}
 
 	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	/// Returns committed inbound HTLCs that haven't been resolved yet.
+	///
+	/// The returned tuple contains `(payment_hash, htlc_id, cltv_expiry, update_add_htlc)`.
+	/// The `htlc_id` and `cltv_expiry` are included because when the [`InboundUpdateAdd`] is the
+	/// `Forwarded` variant, these fields are needed to reconstruct a full [`HTLCPreviousHopData`]
+	/// but are not stored redundantly in the variant itself.
 	pub(super) fn inbound_committed_unresolved_htlcs(
 		&self,
-	) -> Vec<(PaymentHash, InboundUpdateAdd)> {
+	) -> Vec<(PaymentHash, u64, u32, InboundUpdateAdd)> {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7886,7 +7912,12 @@ where
 					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
 						return None;
 					}
-					Some((htlc.payment_hash, update_add_htlc.clone()))
+					Some((
+						htlc.payment_hash,
+						htlc.htlc_id,
+						htlc.cltv_expiry,
+						update_add_htlc.clone(),
+					))
 				},
 				_ => None,
 			})
@@ -7936,7 +7967,33 @@ where
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
-					*update_add_htlc = InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat };
+					// Destructure hop_data, excluding htlc_id and cltv_expiry which are redundant
+					// with the outer InboundHTLCOutput.
+					let HTLCPreviousHopData {
+						prev_outbound_scid_alias,
+						user_channel_id,
+						htlc_id: _,
+						incoming_packet_shared_secret,
+						phantom_shared_secret,
+						trampoline_shared_secret,
+						blinded_failure,
+						channel_id,
+						outpoint,
+						counterparty_node_id,
+						cltv_expiry: _,
+					} = hop_data;
+					*update_add_htlc = InboundUpdateAdd::Forwarded {
+						prev_outbound_scid_alias,
+						user_channel_id,
+						incoming_packet_shared_secret,
+						phantom_shared_secret,
+						trampoline_shared_secret,
+						blinded_failure,
+						channel_id,
+						outpoint,
+						counterparty_node_id,
+						outbound_amt_msat,
+					};
 					return;
 				}
 			}
