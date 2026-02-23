@@ -1397,26 +1397,32 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// completes a monitor update containing the payment preimage. In that case, after the inbound
 	/// edge completes, we will surface an [`Event::PaymentForwarded`] as well as unblock the
 	/// outbound edge.
-	EmitEventOptionAndFreeOtherChannel {
-		event: Option<events::Event>,
+	EmitEventAndFreeOtherChannel {
+		event: events::Event,
 		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
 	},
-	/// Indicates we should immediately resume the operation of another channel, unless there is
-	/// some other reason why the channel is blocked. In practice this simply means immediately
-	/// removing the [`RAAMonitorUpdateBlockingAction`] provided from the blocking set.
+	/// Indicates we should resume the operation of another channel, unless there is some other
+	/// reason why the channel is blocked. In practice this simply means removing the
+	/// [`RAAMonitorUpdateBlockingAction`] provided from the blocking set.
 	///
 	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
 	/// from completing a monitor update which removes the payment preimage until the inbound edge
 	/// completes a monitor update containing the payment preimage. However, we use this variant
-	/// instead of [`Self::EmitEventOptionAndFreeOtherChannel`] when we discover that the claim was
-	/// in fact duplicative and we simply want to resume the outbound edge channel immediately.
+	/// instead of [`Self::EmitEventAndFreeOtherChannel`] when we discover that the claim was
+	/// in fact duplicative, or for trampoline payments with multiple incoming HTLCs where we
+	/// only want to emit a single event for the entire payment.
 	///
-	/// This variant should thus never be written to disk, as it is processed inline rather than
-	/// stored for later processing.
+	/// If `partial_trampoline` is true, this action represents a trampoline payment with multiple
+	/// incoming HTLCs where we've already emitted an event for a different HTLC. In this case,
+	/// this action may be present on disk and processed on startup.
+	///
+	/// If `partial_trampoline` is false, this action represents a duplicate claim that should
+	/// have been processed immediately, and thus should not be present on disk.
 	FreeOtherChannelImmediately {
 		downstream_counterparty_node_id: PublicKey,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
+		partial_trampoline: bool,
 	},
 }
 
@@ -1425,18 +1431,17 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, payment_hash, required),
 		(9999999999, pending_mpp_claim, (static_value, None)),
 	},
-	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
-	// *immediately*. However, for simplicity we implement read/write here.
+	// Note that FreeOtherChannelImmediately with partial_trampoline=false should never be written
+	// - we were supposed to free *immediately*. However, for simplicity we implement read/write
+	// here. partial_trampoline=true is used for trampoline payments with multiple incoming HTLCs.
 	(1, FreeOtherChannelImmediately) => {
 		(0, downstream_counterparty_node_id, required),
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
+		(7, partial_trampoline, (default_value, false)),
 	},
-	(2, EmitEventOptionAndFreeOtherChannel) => {
-		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
-		// with multiple incoming HTLCS, so nodes cannot downgrade while trampoline payments
-		// are in the process of being resolved.
-		(0, event, upgradable_option),
+	(2, EmitEventAndFreeOtherChannel) => {
+		(0, event, upgradable_required),
 		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
 		// required by clients. If we downgrade to something prior to 0.0.116 this may result in
 		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
@@ -9253,27 +9258,37 @@ where
 								downstream_counterparty_node_id: other_chan.counterparty_node_id,
 								downstream_channel_id: other_chan.channel_id,
 								blocking_action: other_chan.blocking_action,
+								partial_trampoline: false,
 							}),
 							None,
 						)
 					} else {
 						(None, None)
 					}
-				} else {
-					let event = make_payment_forwarded_event(htlc_claim_value_msat);
-					if let Some(ref payment_forwarded) = event {
-						debug_assert!(matches!(
-							payment_forwarded,
-							&events::Event::PaymentForwarded { .. }
-						));
-					}
+				} else if let Some(event) = make_payment_forwarded_event(htlc_claim_value_msat) {
+					debug_assert!(matches!(
+						event,
+						events::Event::PaymentForwarded { .. }
+					));
 					(
-						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
+						Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 							event,
 							downstream_counterparty_and_funding_outpoint: chan_to_release,
 						}),
 						None,
 					)
+				} else if let Some(chan) = chan_to_release {
+					(
+						Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+							downstream_counterparty_node_id: chan.counterparty_node_id,
+							downstream_channel_id: chan.channel_id,
+							blocking_action: chan.blocking_action,
+							partial_trampoline: true,
+						}),
+						None,
+					)
+				} else {
+					(None, None)
 				}
 			},
 		);
@@ -9451,6 +9466,7 @@ where
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
+								..
 							} = action
 							{
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
@@ -9952,13 +9968,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 				},
-				MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
+				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 					event,
 					downstream_counterparty_and_funding_outpoint,
 				} => {
-					if let Some(event) = event {
-						self.pending_events.lock().unwrap().push_back((event, None));
-					}
+					self.pending_events.lock().unwrap().push_back((event, None));
 					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
 						self.handle_monitor_update_release(
 							unblocked.counterparty_node_id,
@@ -9971,6 +9985,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					downstream_counterparty_node_id,
 					downstream_channel_id,
 					blocking_action,
+					..
 				} => {
 					self.handle_monitor_update_release(
 						downstream_counterparty_node_id,
@@ -18740,7 +18755,7 @@ where
 					let logger =
 						WithContext::from(&args.logger, Some(node_id), Some(*channel_id), None);
 					for action in actions.iter() {
-						if let MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
+						if let MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 							downstream_counterparty_and_funding_outpoint:
 								Some(EventUnblockedChannel {
 									counterparty_node_id: blocked_node_id,
@@ -18771,10 +18786,25 @@ where
 							}
 						}
 						if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-							..
+							downstream_counterparty_node_id: blocked_node_id,
+							downstream_channel_id: blocked_channel_id,
+							blocking_action,
+							partial_trampoline,
 						} = action
 						{
-							debug_assert!(false, "Non-event-generating channel freeing should not appear in our queue");
+							debug_assert!(*partial_trampoline, "Non-event-generating channel freeing (non-trampoline) should not appear in our queue");
+							if let Some(blocked_peer_state) = per_peer_state.get(blocked_node_id) {
+								log_trace!(logger,
+									"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+									blocked_channel_id);
+								blocked_peer_state
+									.lock()
+									.unwrap()
+									.actions_blocking_raa_monitor_updates
+									.entry(*blocked_channel_id)
+									.or_insert_with(Vec::new)
+									.push(blocking_action.clone());
+							}
 						}
 					}
 					// Note that we may have a post-update action for a channel that has no pending
