@@ -12,7 +12,7 @@
 
 use crate::chain::transaction::OutPoint;
 use crate::events::HTLCHandlingFailureReason;
-use crate::ln::channelmanager::{ClaimableHTLC, HTLCPreviousHopData, OnionPayload};
+use crate::ln::channelmanager::{HTLCPreviousHopData, MppPart};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
@@ -129,13 +129,11 @@ fn do_test_trampoline_mpp_validation(test_case: Option<TrampolineMppValidationTe
 		cltv_expiry_height: next_trampoline_cltv,
 	};
 
-	let htlc1 = ClaimableHTLC::new(
+	let htlc1 = MppPart::new(
 		test_prev_hop_data(),
 		update_add_value,
 		sender_intended_incoming_value,
 		update_add_cltv,
-		OnionPayload::Trampoline { next_hop_info: next_hop_info.clone(), next_trampoline },
-		None,
 	);
 	assert!(nodes[0]
 		.node
@@ -148,13 +146,11 @@ fn do_test_trampoline_mpp_validation(test_case: Option<TrampolineMppValidationTe
 		)
 		.is_ok());
 
-	let htlc2 = ClaimableHTLC::new(
+	let htlc2 = MppPart::new(
 		test_prev_hop_data(),
 		update_add_value,
 		sender_intended_incoming_value,
 		update_add_cltv,
-		OnionPayload::Trampoline { next_hop_info: next_hop_info.clone(), next_trampoline },
-		None,
 	);
 	let onion2 = if mismatch_payment_secret {
 		RecipientOnionFields {
