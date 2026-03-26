@@ -1282,18 +1282,26 @@ impl ClaimablePayment {
 	}
 }
 
+/// Tracks trampoline HTLCs being accumulated before forwarding.
+struct TrampolinePayment {
+	onion_fields: RecipientOnionFields,
+	htlcs: Vec<ClaimableHTLC>,
+}
+
 /// Increments MPP timeout tick for all HTLCs and returns a boolean indicating whether the HTLC
 /// set has hit its MPP timeout. Will return false if the set has reached the sender's intended
 /// total, as the MPP has completed in this case.
-fn check_mpp_timeout(payment: &mut ClaimablePayment) -> bool {
+fn check_mpp_timeout(
+	htlcs: &mut Vec<ClaimableHTLC>, onion_fields: &RecipientOnionFields,
+) -> bool {
 	// This condition determining whether the MPP is complete here must match exactly the condition
 	// used in `process_pending_htlc_forwards`.
-	let total_intended_recvd_value = payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
-	let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
+	let total_intended_recvd_value = htlcs.iter().map(|h| h.sender_intended_value).sum();
+	let total_mpp_value = onion_fields.total_mpp_amount_msat;
 	if total_mpp_value <= total_intended_recvd_value {
 		return false;
 	}
-	payment.htlcs.iter_mut().any(|htlc| htlc.mpp_timer_tick())
+	htlcs.iter_mut().any(|htlc| htlc.mpp_timer_tick())
 }
 
 /// Represent the channel funding transaction type.
@@ -2875,7 +2883,7 @@ pub struct ChannelManager<
 
 	/// The sets of trampoline payments which are in the process of being accumulated on inbound
 	/// channel(s).
-	awaiting_trampoline_forwards: Mutex<HashMap<PaymentHash, ClaimablePayment>>,
+	awaiting_trampoline_forwards: Mutex<HashMap<PaymentHash, TrampolinePayment>>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -8298,21 +8306,22 @@ impl<
 	// MPP accumulation. On successful add, returns Ok() with a boolean indicating whether all
 	// MPP parts have arrived. Callers *MUST NOT* fail htlcs if Ok(..) is returned.
 	fn check_claimable_incoming_htlc(
-		&self, claimable_payment: &mut ClaimablePayment, claimable_htlc: ClaimableHTLC,
-		mut onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
+		&self, htlcs: &mut Vec<ClaimableHTLC>, payment_onion_fields: &mut RecipientOnionFields,
+		claimable_htlc: ClaimableHTLC, mut onion_fields: RecipientOnionFields,
+		payment_hash: PaymentHash,
 	) -> Result<bool, ()> {
-		let onions_compatible = claimable_payment.onion_fields.check_merge(&mut onion_fields);
+		let onions_compatible = payment_onion_fields.check_merge(&mut onion_fields);
 		if onions_compatible.is_err() {
 			return Err(());
 		}
 		let mut total_intended_recvd_value = claimable_htlc.sender_intended_value;
-		for htlc in claimable_payment.htlcs.iter() {
+		for htlc in htlcs.iter() {
 			total_intended_recvd_value += htlc.sender_intended_value;
 			if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
 				break;
 			}
 		}
-		let total_mpp_value = claimable_payment.onion_fields.total_mpp_amount_msat;
+		let total_mpp_value = payment_onion_fields.total_mpp_amount_msat;
 		// The condition determining whether an MPP is complete must
 		// match exactly the condition used in `timer_tick_occurred`
 		if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
@@ -8327,24 +8336,24 @@ impl<
 			);
 			return Err(());
 		} else if total_intended_recvd_value >= total_mpp_value {
-			claimable_payment.htlcs.push(claimable_htlc);
-			let amount_msat = claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum();
-			claimable_payment
-				.htlcs
+			htlcs.push(claimable_htlc);
+			let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
+			htlcs
 				.iter_mut()
 				.for_each(|htlc| htlc.total_value_received = Some(amount_msat));
-			let counterparty_skimmed_fee_msat = claimable_payment.total_counterparty_skimmed_msat();
+			let counterparty_skimmed_fee_msat =
+				htlcs.iter().map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum::<u64>();
 			debug_assert!(
 				total_intended_recvd_value.saturating_sub(amount_msat)
 					<= counterparty_skimmed_fee_msat
 			);
-			claimable_payment.htlcs.sort();
+			htlcs.sort();
 			Ok(true)
 		} else {
 			// Nothing to do - we haven't reached the total
 			// payment value yet, wait until we receive more
 			// MPP parts.
-			claimable_payment.htlcs.push(claimable_htlc);
+			htlcs.push(claimable_htlc);
 			Ok(false)
 		}
 	}
@@ -8387,7 +8396,8 @@ impl<
 		let htlc_expiry = claimable_htlc.cltv_expiry;
 		if self
 			.check_claimable_incoming_htlc(
-				claimable_payment,
+				&mut claimable_payment.htlcs,
+				&mut claimable_payment.onion_fields,
 				claimable_htlc,
 				onion_fields,
 				payment_hash,
@@ -8434,10 +8444,9 @@ impl<
 		let mut trampoline_payments = self.awaiting_trampoline_forwards.lock().unwrap();
 
 		let mut committed_to_claimable = false;
-		let claimable_payment = trampoline_payments.entry(payment_hash).or_insert_with(|| {
+		let trampoline_payment = trampoline_payments.entry(payment_hash).or_insert_with(|| {
 			committed_to_claimable = true;
-			ClaimablePayment {
-				purpose: events::PaymentPurpose::Trampoline {},
+			TrampolinePayment {
 				htlcs: Vec::new(),
 				onion_fields: onion_fields.clone(),
 			}
@@ -8447,7 +8456,8 @@ impl<
 		let prev_hop = claimable_htlc.prev_hop.clone();
 		if !self
 			.check_claimable_incoming_htlc(
-				claimable_payment,
+				&mut trampoline_payment.htlcs,
+				&mut trampoline_payment.onion_fields,
 				claimable_htlc,
 				onion_fields,
 				payment_hash,
@@ -8472,9 +8482,9 @@ impl<
 			return Ok(());
 		}
 
-		let incoming_amt_msat: u64 = claimable_payment.htlcs.iter().map(|h| h.value).sum();
+		let incoming_amt_msat: u64 = trampoline_payment.htlcs.iter().map(|h| h.value).sum();
 		let incoming_cltv_expiry =
-			claimable_payment.htlcs.iter().map(|h| h.cltv_expiry).min().unwrap();
+			trampoline_payment.htlcs.iter().map(|h| h.cltv_expiry).min().unwrap();
 
 		let (forwarding_fee_proportional_millionths, forwarding_fee_base_msat, cltv_delta) = {
 			let config = self.config.read().unwrap();
@@ -8492,7 +8502,7 @@ impl<
 
 		let trampoline_source = || -> HTLCSource {
 			HTLCSource::TrampolineForward {
-				previous_hop_data: claimable_payment
+				previous_hop_data: trampoline_payment
 					.htlcs
 					.iter()
 					.map(|htlc| htlc.prev_hop.clone())
@@ -9235,7 +9245,8 @@ impl<
 						return false;
 					}
 					if let OnionPayload::Invoice { .. } = payment.htlcs[0].onion_payload {
-						let mpp_timeout = check_mpp_timeout(payment);
+						let mpp_timeout =
+						check_mpp_timeout(&mut payment.htlcs, &payment.onion_fields);
 						if mpp_timeout {
 							timed_out_mpp_htlcs.extend(payment.htlcs.drain(..).map(|h| {
 								(
@@ -9258,29 +9269,22 @@ impl<
 					debug_assert!(false);
 					return false;
 				}
-				if let OnionPayload::Trampoline { .. } = payment.htlcs[0].onion_payload {
-					let mpp_timeout = check_mpp_timeout(payment);
-					if mpp_timeout {
-						let previous_hop_data =
-							payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
+				let mpp_timeout =
+					check_mpp_timeout(&mut payment.htlcs, &payment.onion_fields);
+				if mpp_timeout {
+					let previous_hop_data =
+						payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
 
-						timed_out_mpp_htlcs.push((
-							HTLCSource::TrampolineForward {
-								previous_hop_data,
-								outbound_payment: None,
-							},
-							*payment_hash,
-							HTLCHandlingFailureType::TrampolineForward {},
-						));
-					}
-					!mpp_timeout
-				} else {
-					debug_assert!(
-						false,
-						"awaiting_trampoline_forwards should only contain trampolines"
-					);
-					true
+					timed_out_mpp_htlcs.push((
+						HTLCSource::TrampolineForward {
+							previous_hop_data,
+							outbound_payment: None,
+						},
+						*payment_hash,
+						HTLCHandlingFailureType::TrampolineForward {},
+					));
 				}
+				!mpp_timeout
 			});
 
 			for (htlc_source, payment_hash, failure_type) in timed_out_mpp_htlcs.drain(..) {
@@ -16619,37 +16623,29 @@ impl<
 					debug_assert!(false);
 					return false;
 				}
-				if let OnionPayload::Trampoline { .. } = payment.htlcs[0].onion_payload {
-					let htlc_timed_out = payment
-						.htlcs
-						.iter()
-						.any(|htlc| htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER));
-					if htlc_timed_out {
-						let previous_hop_data =
-							payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
+				let htlc_timed_out = payment
+					.htlcs
+					.iter()
+					.any(|htlc| htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER));
+				if htlc_timed_out {
+					let previous_hop_data =
+						payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
 
-						let failure_reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
-						timed_out_htlcs.push((
-							HTLCSource::TrampolineForward {
-								previous_hop_data,
-								outbound_payment: None,
-							},
-							*payment_hash,
-							HTLCFailReason::reason(
-								failure_reason,
-								self.get_htlc_inbound_temp_fail_data(failure_reason),
-							),
-							HTLCHandlingFailureType::TrampolineForward {},
-						));
-					}
-					!htlc_timed_out
-				} else {
-					debug_assert!(
-						false,
-						"awaiting_trampoline_forwards should only contain trampolines"
-					);
-					true
+					let failure_reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
+					timed_out_htlcs.push((
+						HTLCSource::TrampolineForward {
+							previous_hop_data,
+							outbound_payment: None,
+						},
+						*payment_hash,
+						HTLCFailReason::reason(
+							failure_reason,
+							self.get_htlc_inbound_temp_fail_data(failure_reason),
+						),
+						HTLCHandlingFailureType::TrampolineForward {},
+					));
 				}
+				!htlc_timed_out
 			});
 
 			let mut intercepted_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
