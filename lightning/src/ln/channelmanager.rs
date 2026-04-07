@@ -60,9 +60,9 @@ use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
-	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
-	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	FundedChannel, FundingTxSigned, HeldHtlcReleaseResult, InboundV1Channel, InteractiveTxMsgError,
+	OutboundHop, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
+	SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -7501,23 +7501,37 @@ impl<
 							Some(update_add_htlc.payment_hash),
 						);
 						if pending_add.forward_info.routing.should_hold_htlc() {
-							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
-							let intercept_id = intercept_id();
-							match held_htlcs.entry(intercept_id) {
-								hash_map::Entry::Vacant(entry) => {
-									log_debug!(
-										logger,
-										"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
-									);
-									entry.insert(pending_add);
-								},
-								hash_map::Entry::Occupied(_) => {
-									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-									log_error!(logger, "Duplicate intercept id for HTLC");
-									fail_htlc_continue_to_next!(
-										LocalHTLCFailureReason::TemporaryNodeFailure
-									);
-								},
+							// Check whether a ReleaseHeldHtlc arrived while the HTLC
+							// was in transit from channel state to the decode queue. If
+							// so, the channel's Committed copy will have hold_htlc
+							// cleared as a signal, even though the decode-queue clone
+							// still has it set.
+							let released_in_transit = self
+								.do_funded_channel_callback(incoming_scid_alias, |chan| {
+									chan.is_inbound_htlc_released(update_add_htlc.htlc_id)
+								})
+								.unwrap_or(false);
+							if !released_in_transit {
+								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+								let intercept_id = intercept_id();
+								match held_htlcs.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										log_debug!(
+											logger,
+											"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
+										);
+										entry.insert(pending_add);
+									},
+									hash_map::Entry::Occupied(_) => {
+										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+										log_error!(logger, "Duplicate intercept id for HTLC");
+										fail_htlc_continue_to_next!(
+											LocalHTLCFailureReason::TemporaryNodeFailure
+										);
+									},
+								}
+							} else {
+								htlc_forwards.push(pending_add);
 							}
 						} else if intercept_forward {
 							let intercept_id = intercept_id();
@@ -17193,6 +17207,35 @@ impl<
 				htlc_id,
 			} => {
 				let _serialize_guard = PersistenceNotifierGuard::notify_on_drop(self);
+				let channel_result = self
+					.do_funded_channel_callback(prev_outbound_scid_alias, |chan| {
+						chan.release_pending_inbound_held_htlc(htlc_id)
+					});
+				match channel_result {
+					Some(HeldHtlcReleaseResult::Released) => {
+						log_trace!(
+							self.logger,
+							"Cleared hold_htlc flag on in-channel HTLC {} for intercept_id {}",
+							htlc_id,
+							intercept_id
+						);
+						return;
+					},
+					Some(HeldHtlcReleaseResult::Signaled) => {
+						// The HTLC is in Committed state — a clone is in transit to or
+						// already in the decode queue. The Committed copy's hold_htlc
+						// was cleared as a signal for process_pending_update_add_htlcs.
+						// Continue checking decode and intercept in case the clone has
+						// already been processed.
+						log_trace!(
+							self.logger,
+							"Signaled release on Committed HTLC {} for intercept_id {}, continuing checks",
+							htlc_id, intercept_id
+						);
+					},
+					_ => {},
+				}
+
 				// It's possible the release_held_htlc message raced ahead of us transitioning the pending
 				// update_add to `Self::pending_intercept_htlcs`. If that's the case, update the pending
 				// update_add to indicate that the HTLC should be released immediately.

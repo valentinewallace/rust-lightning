@@ -388,6 +388,19 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
+/// Result of [`FundedChannel::release_pending_inbound_held_htlc`].
+pub(super) enum HeldHtlcReleaseResult {
+	/// `hold_htlc` was cleared on the copy that will flow through the decode pipeline. The release
+	/// is fully handled.
+	Released,
+	/// The HTLC is in `Committed` state — a clone was already taken for the decode pipeline.
+	/// `hold_htlc` was cleared on the `Committed` copy as a signal, but the caller must continue
+	/// checking `decode_update_add_htlcs` and `pending_intercepted_htlcs`.
+	Signaled,
+	/// The HTLC was not found in channel state.
+	NotFound,
+}
+
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone, PartialEq))]
 enum OutboundHTLCState {
@@ -8106,6 +8119,73 @@ where
 			}
 		}
 		debug_assert!(false, "If we go to prune an inbound HTLC it should be present")
+	}
+
+	/// Clears the `hold_htlc` flag for a pending inbound HTLC. This is used when a
+	/// [`ReleaseHeldHtlc`] onion message arrives before the HTLC has been fully decoded.
+	pub(super) fn release_pending_inbound_held_htlc(
+		&mut self, htlc_id: u64,
+	) -> HeldHtlcReleaseResult {
+		// Check monitor_pending_update_adds first: the HTLC may have already been promoted by RAA
+		// processing but is waiting for a monitor update to complete before being pushed to
+		// decode_update_add_htlcs.
+		for update_add in self.context.monitor_pending_update_adds.iter_mut() {
+			if update_add.htlc_id == htlc_id {
+				update_add.hold_htlc.take();
+				return HeldHtlcReleaseResult::Released;
+			}
+		}
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			if htlc.htlc_id != htlc_id {
+				continue;
+			}
+			match &mut htlc.state {
+				// Pre-promotion: clearing hold_htlc here directly affects the copy that will
+				// be cloned into the decode pipeline when RAA promotes the HTLC.
+				InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
+					update_add_htlc,
+				})
+				| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(
+					InboundHTLCResolution::Pending { update_add_htlc },
+				)
+				| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(
+					InboundHTLCResolution::Pending { update_add_htlc },
+				) => {
+					update_add_htlc.hold_htlc.take();
+					return HeldHtlcReleaseResult::Released;
+				},
+				// Post-promotion: a clone was already taken for the decode pipeline, but
+				// clearing hold_htlc here marks the release so is_inbound_htlc_released can
+				// detect it later.
+				InboundHTLCState::Committed {
+					update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+				} => {
+					update_add_htlc.hold_htlc.take();
+					return HeldHtlcReleaseResult::Signaled;
+				},
+				_ => return HeldHtlcReleaseResult::NotFound,
+			}
+		}
+		HeldHtlcReleaseResult::NotFound
+	}
+
+	/// Returns whether a previously-held inbound HTLC has been released via
+	/// [`Self::release_pending_inbound_held_htlc`]. This is used by the decode pipeline to detect
+	/// releases that arrived while the HTLC's clone was in transit between channel state and
+	/// `decode_update_add_htlcs`.
+	pub(super) fn is_inbound_htlc_released(&self, htlc_id: u64) -> bool {
+		for htlc in self.context.pending_inbound_htlcs.iter() {
+			if htlc.htlc_id != htlc_id {
+				continue;
+			}
+			return match &htlc.state {
+				InboundHTLCState::Committed {
+					update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+				} => update_add_htlc.hold_htlc.is_none(),
+				_ => false,
+			};
+		}
+		false
 	}
 
 	/// Useful for testing crash scenarios where the holding cell is not persisted.
