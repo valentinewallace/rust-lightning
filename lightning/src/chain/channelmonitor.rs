@@ -4653,51 +4653,65 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
 	}
 
-	#[rustfmt::skip]
-	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
-		update.updates.iter().filter_map(|update| {
-			// Soon we will drop the first branch here in favor of the second.
-			// In preparation, we just add the second branch without deleting the first.
-			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitment` variant.
-			match update {
-				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
-					ref htlc_outputs, commitment_number, their_per_commitment_point,
-					feerate_per_kw: Some(feerate_per_kw),
-					to_broadcaster_value_sat: Some(to_broadcaster_value),
-					to_countersignatory_value_sat: Some(to_countersignatory_value) } => {
-
-					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
-						htlc.transaction_output_index.map(|_| htlc).cloned()
-					}).collect::<Vec<_>>();
-
-					// This monitor update variant is only applicable while there's a single
-					// `FundingScope` active, otherwise we expect to see
-					// `LatestCounterpartyCommitment` instead.
-					debug_assert!(self.pending_funding.is_empty());
-					let channel_parameters = &self.funding.channel_parameters;
-					let commitment_tx = self.build_counterparty_commitment_tx(
-						channel_parameters,
+	fn counterparty_commitment_txs_from_update(
+		&self, update: &ChannelMonitorUpdate,
+	) -> Vec<CommitmentTransaction> {
+		update
+			.updates
+			.iter()
+			.filter_map(|update| {
+				// Soon we will drop the first branch here in favor of the second.
+				// In preparation, we just add the second branch without deleting the first.
+				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitment` variant.
+				match update {
+					&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+						commitment_txid,
+						ref htlc_outputs,
 						commitment_number,
-						&their_per_commitment_point,
-						to_broadcaster_value,
-						to_countersignatory_value,
-						feerate_per_kw,
-						nondust_htlcs,
-					);
+						their_per_commitment_point,
+						feerate_per_kw: Some(feerate_per_kw),
+						to_broadcaster_value_sat: Some(to_broadcaster_value),
+						to_countersignatory_value_sat: Some(to_countersignatory_value),
+					} => {
+						let nondust_htlcs = htlc_outputs
+							.iter()
+							.filter_map(|(htlc, _)| {
+								htlc.transaction_output_index.map(|_| htlc).cloned()
+							})
+							.collect::<Vec<_>>();
 
-					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
+						// This monitor update variant is only applicable while there's a single
+						// `FundingScope` active, otherwise we expect to see
+						// `LatestCounterpartyCommitment` instead.
+						debug_assert!(self.pending_funding.is_empty());
+						let channel_parameters = &self.funding.channel_parameters;
+						let commitment_tx = self.build_counterparty_commitment_tx(
+							channel_parameters,
+							commitment_number,
+							&their_per_commitment_point,
+							to_broadcaster_value,
+							to_countersignatory_value,
+							feerate_per_kw,
+							nondust_htlcs,
+						);
 
-					Some(vec![commitment_tx])
-				},
-				&ChannelMonitorUpdateStep::LatestCounterpartyCommitment { ref commitment_txs, .. } => {
-					Some(commitment_txs.clone())
-				},
-				&ChannelMonitorUpdateStep::RenegotiatedFunding { ref counterparty_commitment_tx, .. } => {
-					Some(vec![counterparty_commitment_tx.clone()])
-				},
-				_ => None,
-			}
-		}).flatten().collect()
+						debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
+
+						Some(vec![commitment_tx])
+					},
+					&ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
+						ref commitment_txs,
+						..
+					} => Some(commitment_txs.clone()),
+					&ChannelMonitorUpdateStep::RenegotiatedFunding {
+						ref counterparty_commitment_tx,
+						..
+					} => Some(vec![counterparty_commitment_tx.clone()]),
+					_ => None,
+				}
+			})
+			.flatten()
+			.collect()
 	}
 
 	#[rustfmt::skip]
