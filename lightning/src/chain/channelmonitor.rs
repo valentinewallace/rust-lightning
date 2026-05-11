@@ -2069,6 +2069,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			htlc_outputs,
 			commitment_number,
 			their_per_commitment_point,
+			None,
 		)
 	}
 
@@ -3546,9 +3547,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		self.provide_latest_counterparty_commitment_tx(commitment_tx.trust().txid(), Vec::new(), commitment_tx.commitment_number(),
-				commitment_tx.per_commitment_point());
+				commitment_tx.per_commitment_point(), Some(commitment_tx.clone()));
 		// Soon, we will only populate this field
-		self.funding.cur_counterparty_commitment_tx = Some(commitment_tx.clone());
 		self.initial_counterparty_commitment_tx = Some(commitment_tx);
 	}
 
@@ -3556,6 +3556,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn provide_latest_counterparty_commitment_tx(
 		&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64, their_per_commitment_point: PublicKey,
+		commitment_tx: Option<CommitmentTransaction>,
 	) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
@@ -3569,6 +3570,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.funding.current_counterparty_commitment_txid = Some(txid);
 		self.funding.counterparty_claimable_outpoints.insert(txid, htlc_outputs);
 		self.current_counterparty_commitment_number = commitment_number;
+
+		if let Some(commitment_tx) = commitment_tx {
+			self.funding.prev_counterparty_commitment_tx = self.funding.cur_counterparty_commitment_tx.take();
+			self.funding.cur_counterparty_commitment_tx = Some(commitment_tx);
+		}
 
 		//TODO: Merge this into the other per-counterparty-transaction output storage stuff
 		match self.their_cur_per_commitment_points {
@@ -3619,21 +3625,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			nondust_htlcs.chain(dust_htlcs).collect::<Vec<_>>()
 		};
 
-		let current_funding_commitment_tx = commitment_txs.first().unwrap();
-		self.provide_latest_counterparty_commitment_tx(
-			current_funding_commitment_tx.trust().txid(),
-			htlcs_for_commitment(current_funding_commitment_tx),
-			current_funding_commitment_tx.commitment_number(),
-			current_funding_commitment_tx.per_commitment_point(),
-		);
+		let current_funding_commitment_tx = commitment_txs.first().unwrap().clone();
 		// Note: CommitmentSecret and new counterparty commitments may be batched
 		// in a single ChannelMonitorUpdate (e.g. when revoke_and_ack frees the
 		// holding cell). This is safe because get_pending_justice_txs checks both
 		// cur and prev for available secrets, so the revoked commitment remains
 		// accessible in prev after rotation.
-		self.funding.prev_counterparty_commitment_tx =
-			self.funding.cur_counterparty_commitment_tx.take();
-		self.funding.cur_counterparty_commitment_tx = Some(current_funding_commitment_tx.clone());
+		self.provide_latest_counterparty_commitment_tx(
+			current_funding_commitment_tx.trust().txid(),
+			htlcs_for_commitment(&current_funding_commitment_tx),
+			current_funding_commitment_tx.commitment_number(),
+			current_funding_commitment_tx.per_commitment_point(),
+			Some(current_funding_commitment_tx),
+		);
 
 		for (pending_funding, commitment_tx) in
 			self.pending_funding.iter_mut().zip(commitment_txs.iter().skip(1))
@@ -4286,10 +4290,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitment`.
 				// For now we just add the code to handle the new updates.
 				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitment` variant.
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+					commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, ..
+				} => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					if self.pending_funding.is_empty() {
-						self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point)
+						// If this update was persisted by a pre-2023-06 LDK version, the feerate
+						// and balance fields will be `None` and we can't rebuild the full
+						// `CommitmentTransaction` for justice-tx tracking; fall back to txid/htlc-only.
+						let commitment_tx = self.counterparty_commitment_txs_from_update_step(update).pop();
+						self.provide_latest_counterparty_commitment_tx(
+							*commitment_txid, htlc_outputs.clone(), *commitment_number,
+							*their_per_commitment_point, commitment_tx,
+						)
 					} else {
 						log_error!(logger, "Received unexpected non-splice counterparty commitment monitor update");
 						ret = Err(());
@@ -4371,23 +4384,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
-			}
-		}
-
-		// Populate cur/prev for the LatestCounterpartyCommitmentTXInfo path, which
-		// doesn't go through update_counterparty_commitment_data.
-		for commitment_tx in self.counterparty_commitment_txs_from_update(updates) {
-			let txid = commitment_tx.trust().built_transaction().txid;
-			let funding = core::iter::once(&mut self.funding)
-				.chain(self.pending_funding.iter_mut())
-				.find(|f| f.current_counterparty_commitment_txid == Some(txid));
-			if let Some(funding) = funding {
-				if funding.cur_counterparty_commitment_tx.as_ref()
-					.map(|c| c.trust().built_transaction().txid) != Some(txid)
-				{
-					funding.prev_counterparty_commitment_tx = funding.cur_counterparty_commitment_tx.take();
-					funding.cur_counterparty_commitment_tx = Some(commitment_tx);
-				}
 			}
 		}
 
